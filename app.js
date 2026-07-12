@@ -89,6 +89,29 @@ function setupSort() {
   });
 }
 
+// Charge la liste des vaisseaux et remplit le menu déroulant.
+async function loadShips() {
+  const ships = await fetch("data/ships.json").then((r) => r.json()).catch(() => []);
+  const sel = $("ship");
+  ships.forEach((s) => {
+    const o = document.createElement("option");
+    o.value = s.scu;
+    o.textContent = `${s.name} — ${s.scu.toLocaleString("fr-FR")} SCU`;
+    sel.appendChild(o);
+  });
+  // Choisir un vaisseau met à jour la soute.
+  sel.addEventListener("change", () => {
+    if (sel.value) {
+      $("cargo").value = sel.value;
+      render();
+    }
+  });
+  // Modifier la soute à la main repasse en "Personnalisé".
+  $("cargo").addEventListener("input", () => {
+    if ($("cargo").value !== sel.value) sel.value = "";
+  });
+}
+
 async function init() {
   setupSort();
   ["cargo", "budget", "search", "system", "sameSystem", "capStock"].forEach((id) =>
@@ -99,6 +122,7 @@ async function init() {
     const [routes, meta] = await Promise.all([
       fetch("data/routes.json").then((r) => r.json()),
       fetch("data/meta.json").then((r) => r.json()).catch(() => null),
+      loadShips(),
     ]);
     ROUTES = routes;
 

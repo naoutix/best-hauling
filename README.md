@@ -24,7 +24,8 @@ Pas de serveur, pas de clé API, pas de coût.
 ## Fonctionnalités
 
 - Liste triable : profit/voyage, marge/SCU, ROI, unités, commodité.
-- Entrées **capacité de soute (SCU)** et **budget (aUEC)** → profit réel par voyage.
+- Sélecteur de **vaisseau** (128 modèles UEX) qui remplit automatiquement la soute (SCU).
+- Entrées **capacité de soute (SCU)** et **budget (aUEC)** → unités à acheter, coût total, profit réel par voyage.
 - Filtres : commodité, système d'achat, « même système uniquement » (routes sans saut),
   et « limiter au stock UEX » (le stock in-game étant souvent périmé, désactivé par défaut).
 - Repère les sauts inter-systèmes (Stanton ↔ Pyro).

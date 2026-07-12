@@ -36,6 +36,8 @@ async function main() {
   const terminals = await getJSON("terminals?type=commodity");
   log("Récupération de tous les prix…");
   const prices = await getJSON("commodities_prices_all");
+  log("Récupération des vaisseaux…");
+  const vehicles = await getJSON("vehicles");
 
   // Index terminal id -> infos de localisation (uniquement terminaux disponibles).
   const term = new Map();
@@ -118,10 +120,17 @@ async function main() {
     systems,
   };
 
+  // Vaisseaux avec soute (>= 1 SCU), hors véhicules terrestres. Pour le filtre "vaisseau".
+  const ships = vehicles
+    .filter((v) => v.scu >= 1 && !v.is_ground_vehicle)
+    .map((v) => ({ name: v.name_full || v.name, scu: v.scu }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
   await mkdir(OUT_DIR, { recursive: true });
   await writeFile(join(OUT_DIR, "routes.json"), JSON.stringify(top));
+  await writeFile(join(OUT_DIR, "ships.json"), JSON.stringify(ships));
   await writeFile(join(OUT_DIR, "meta.json"), JSON.stringify(meta, null, 2));
-  log(`OK — ${top.length} routes, ${byCommodity.size} commodités, ${term.size} terminaux.`);
+  log(`OK — ${top.length} routes, ${byCommodity.size} commodités, ${term.size} terminaux, ${ships.length} vaisseaux.`);
 }
 
 main().catch((e) => {
