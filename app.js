@@ -90,11 +90,11 @@ function render() {
         <td class="loc"><div class="commodity-cell">${commodityIcon(r.kind)}<span>${r.commodity}</span></div></td>
         <td>
           <div>${r.buy.terminal}${sysBadge(r.buy.system)}${outpostTag(r.buy.outpost)}</div>
-          <div class="loc-sub">${r.buy.planet} · ${fmt(r.buy.price)} aUEC</div>
+          <div class="loc-sub">${r.buy.planet} · ${fmt(r.buy.price)} aUEC · <span class="stock" title="Stock disponible à l'achat (relevé UEX)">stock ${fmt(r.buy.stock)} SCU</span></div>
         </td>
         <td>
           <div>${r.sell.terminal}${sysBadge(r.sell.system)}${outpostTag(r.sell.outpost)}</div>
-          <div class="loc-sub">${r.sell.planet} · ${fmt(r.sell.price)} aUEC${r.same_system ? "" : ' <span class="cross">⚡ saut inter-système</span>'}</div>
+          <div class="loc-sub">${r.sell.planet} · ${fmt(r.sell.price)} aUEC · <span class="stock" title="Demande / stock à la vente (relevé UEX)">demande ${fmt(r.sell.demand)} SCU</span>${r.same_system ? "" : ' <span class="cross">⚡ saut inter-système</span>'}</div>
         </td>
         <td class="num">${fmt(r.margin)}</td>
         <td class="num roi-badge">${r.roi}%</td>

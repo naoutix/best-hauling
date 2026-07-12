@@ -109,6 +109,7 @@ main { padding: 0 20px; }
 
 /* ---------- Panneau de contrôles ---------- */
 .controls {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   gap: 18px;
@@ -118,8 +119,18 @@ main { padding: 0 20px; }
   backdrop-filter: blur(6px);
   border: 1px solid var(--line);
   border-left: 2px solid var(--accent-dim);
-  clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
 }
+/* Coins biseautés décoratifs (sans rogner le menu déroulant, contrairement à clip-path) */
+.controls::before,
+.controls::after {
+  content: "";
+  position: absolute;
+  width: 16px; height: 16px;
+  border-color: var(--accent-dim);
+  pointer-events: none;
+}
+.controls::before { top: -1px; right: -1px; border-top: 2px solid; border-right: 2px solid; }
+.controls::after { bottom: -1px; left: -1px; border-bottom: 2px solid; border-left: 2px solid; }
 
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field > label { font-size: 11px; color: var(--accent); text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600; }
@@ -268,6 +279,7 @@ tbody tr:hover td { border-bottom-color: var(--line-bright); }
   margin-left: 6px; white-space: nowrap; vertical-align: middle;
 }
 .cross { color: var(--warn); font-size: 11px; }
+.stock { color: #5f7891; }
 
 .profit { color: var(--good); font-weight: 700; text-shadow: 0 0 10px rgba(74, 222, 128, 0.25); }
 .roi-badge { color: var(--warn); }
