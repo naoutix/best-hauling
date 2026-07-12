@@ -6,7 +6,7 @@ let sortKey = "profit";
 let sortDir = -1; // -1 = décroissant, 1 = croissant
 
 const $ = (id) => document.getElementById(id);
-const fmt = (n) => Math.round(n).toLocaleString("fr-FR");
+const fmt = (n) => (n == null || !isFinite(n) ? "—" : Math.round(n).toLocaleString("fr-FR"));
 
 // Formatte le nom d'un système en badge coloré.
 function sysBadge(system) {
@@ -15,18 +15,22 @@ function sysBadge(system) {
 }
 
 // Calcule les champs dérivés d'une route selon les entrées utilisateur.
-function evaluate(r, cargo, budget, capStock) {
-  const affordable = budget > 0 ? Math.floor(budget / r.buy.price) : Infinity;
-  let units = Math.min(cargo, affordable);
+// useCargo / useBudget désactivent la contrainte correspondante (limite = illimitée).
+function evaluate(r, cargo, budget, capStock, useCargo, useBudget) {
+  const byCargo = useCargo ? cargo : Infinity;
+  const byBudget = useBudget && budget > 0 ? Math.floor(budget / r.buy.price) : Infinity;
+  let units = Math.min(byCargo, byBudget);
   if (capStock && r.buy.stock > 0) units = Math.min(units, r.buy.stock);
-  if (!isFinite(units) || units < 0) units = 0;
+  // Aucune contrainte de volume active -> valeurs par voyage non définies (on classe alors par marge).
+  const bounded = isFinite(units);
+  if (bounded && units < 0) units = 0;
   return {
     ...r,
     buyPrice: r.buy.price,
     sellPrice: r.sell.price,
-    units,
-    investment: units * r.buy.price,
-    profit: units * r.margin,
+    units: bounded ? units : null,
+    investment: bounded ? units * r.buy.price : null,
+    profit: bounded ? units * r.margin : null,
   };
 }
 
@@ -34,6 +38,8 @@ function render() {
   const cargo = Math.max(0, Number($("cargo").value) || 0);
   const budget = Math.max(0, Number($("budget").value) || 0);
   const capStock = $("capStock").checked;
+  const useCargo = $("useCargo").checked;
+  const useBudget = $("useBudget").checked;
   const sameOnly = $("sameSystem").checked;
   const sysFilter = $("system").value;
   const q = $("search").value.trim().toLowerCase();
@@ -43,9 +49,16 @@ function render() {
     if (sysFilter && r.buy.system !== sysFilter) return false;
     if (q && !r.commodity.toLowerCase().includes(q)) return false;
     return true;
-  }).map((r) => evaluate(r, cargo, budget, capStock));
+  }).map((r) => evaluate(r, cargo, budget, capStock, useCargo, useBudget));
 
-  rows.sort((a, b) => (a[sortKey] > b[sortKey] ? sortDir : a[sortKey] < b[sortKey] ? -sortDir : 0));
+  // Tri : les valeurs nulles (contraintes désactivées) vont toujours en bas.
+  rows.sort((a, b) => {
+    const av = a[sortKey], bv = b[sortKey];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return av > bv ? sortDir : av < bv ? -sortDir : 0;
+  });
 
   const tbody = $("rows");
   tbody.innerHTML = rows
@@ -112,11 +125,27 @@ async function loadShips() {
   });
 }
 
+// Grise le champ soute/budget quand sa contrainte est désactivée.
+function syncToggles() {
+  const cargoOff = !$("useCargo").checked;
+  const budgetOff = !$("useBudget").checked;
+  $("cargo").disabled = cargoOff;
+  $("ship").disabled = cargoOff;
+  $("budget").disabled = budgetOff;
+}
+
 async function init() {
   setupSort();
   ["cargo", "budget", "search", "system", "sameSystem", "capStock"].forEach((id) =>
     $(id).addEventListener("input", render)
   );
+  ["useCargo", "useBudget"].forEach((id) =>
+    $(id).addEventListener("change", () => {
+      syncToggles();
+      render();
+    })
+  );
+  syncToggles();
 
   try {
     const [routes, meta] = await Promise.all([
