@@ -2,8 +2,12 @@
 
 // État global
 let ROUTES = [];
-let sortKey = "profit";
+let LOOPS = [];
+let view = "routes"; // "routes" | "loops"
+let sortKey = "profitHour";
 let sortDir = -1; // -1 = décroissant, 1 = croissant
+let loopSortKey = "profit";
+let loopSortDir = -1;
 
 const $ = (id) => document.getElementById(id);
 const fmt = (n) => (n == null || !isFinite(n) ? "—" : Math.round(n).toLocaleString("fr-FR"));
@@ -34,6 +38,33 @@ function commodityIcon(kind) {
   return `<span class="cicon k-${k}" title="${k}">${emoji}</span>`;
 }
 
+// Marqueur pour les commodités illégales (risque de scan / zones de sécurité).
+function illegalTag(isIllegal) {
+  return isIllegal ? ' <span class="illegal" title="Commodité illégale : contrebande, risque de scan">⛔ illégal</span>' : "";
+}
+
+// Estimation grossière du temps de trajet (minutes) depuis la distance UEX
+// (unité orbite→orbite) : manutention aux terminaux + trajet + saut inter-système.
+// Constantes approximatives — servent surtout à classer les routes entre elles.
+const HANDLING = 3, PER_DIST = 0.06, JUMP = 4;
+function tripMinutes(distance, cross) {
+  return 2 * HANDLING + (distance || 0) * PER_DIST + (cross ? JUMP : 0);
+}
+function loopMinutes(distance, cross) {
+  return 4 * HANDLING + (distance || 0) * PER_DIST + (cross ? 2 * JUMP : 0);
+}
+
+// Comparateur de tri qui renvoie toujours les valeurs nulles en bas.
+function bySort(key, dir) {
+  return (a, b) => {
+    const av = a[key], bv = b[key];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return av > bv ? dir : av < bv ? -dir : 0;
+  };
+}
+
 // Calcule les champs dérivés d'une route selon les entrées utilisateur.
 // useCargo / useBudget désactivent la contrainte correspondante (limite = illimitée).
 function evaluate(r, cargo, budget, capStock, useCargo, useBudget) {
@@ -44,13 +75,17 @@ function evaluate(r, cargo, budget, capStock, useCargo, useBudget) {
   // Aucune contrainte de volume active -> valeurs par voyage non définies (on classe alors par marge).
   const bounded = isFinite(units);
   if (bounded && units < 0) units = 0;
+  const profit = bounded ? units * r.margin : null;
+  const minutes = tripMinutes(r.distance, !r.same_system);
   return {
     ...r,
     buyPrice: r.buy.price,
     sellPrice: r.sell.price,
     units: bounded ? units : null,
     investment: bounded ? units * r.buy.price : null,
-    profit: bounded ? units * r.margin : null,
+    profit,
+    minutes,
+    profitHour: profit == null ? null : (profit * 60) / minutes,
   };
 }
 
@@ -62,32 +97,27 @@ function render() {
   const useBudget = $("useBudget").checked;
   const sameOnly = $("sameSystem").checked;
   const noOutpost = $("noOutpost").checked;
+  const legalOnly = $("legalOnly").checked;
   const sysFilter = $("system").value;
   const q = $("search").value.trim().toLowerCase();
 
   let rows = ROUTES.filter((r) => {
     if (sameOnly && !r.same_system) return false;
     if (noOutpost && (r.buy.outpost || r.sell.outpost)) return false;
+    if (legalOnly && r.illegal) return false;
     if (sysFilter && r.buy.system !== sysFilter) return false;
     if (q && !r.commodity.toLowerCase().includes(q)) return false;
     return true;
   }).map((r) => evaluate(r, cargo, budget, capStock, useCargo, useBudget));
 
-  // Tri : les valeurs nulles (contraintes désactivées) vont toujours en bas.
-  rows.sort((a, b) => {
-    const av = a[sortKey], bv = b[sortKey];
-    if (av == null && bv == null) return 0;
-    if (av == null) return 1;
-    if (bv == null) return -1;
-    return av > bv ? sortDir : av < bv ? -sortDir : 0;
-  });
+  rows.sort(bySort(sortKey, sortDir));
 
   const tbody = $("rows");
   tbody.innerHTML = rows
     .map(
       (r) => `
       <tr>
-        <td class="loc"><div class="commodity-cell">${commodityIcon(r.kind)}<span>${r.commodity}</span></div></td>
+        <td class="loc"><div class="commodity-cell">${commodityIcon(r.kind)}<span>${r.commodity}${illegalTag(r.illegal)}</span></div></td>
         <td>
           <div>${r.buy.terminal}${sysBadge(r.buy.system)}${outpostTag(r.buy.outpost)}</div>
           <div class="loc-sub">${r.buy.planet} · ${fmt(r.buy.price)} aUEC · <span class="stock" title="Stock disponible à l'achat (relevé UEX)">stock ${fmt(r.buy.stock)} SCU</span></div>
@@ -101,11 +131,103 @@ function render() {
         <td class="num">${fmt(r.units)}</td>
         <td class="num">${fmt(r.investment)}</td>
         <td class="num profit">${fmt(r.profit)}</td>
+        <td class="num profit" title="Estimation ${Math.round(r.minutes)} min/voyage">${fmt(r.profitHour)}</td>
       </tr>`
     )
     .join("");
 
   $("empty").hidden = rows.length > 0;
+}
+
+// ---------- Vue "Boucles aller-retour" ----------
+function evaluateLoop(l, cargo, budget, capStock, useCargo, useBudget) {
+  const legUnits = (leg) => {
+    const byCargo = useCargo ? cargo : Infinity;
+    const byBudget = useBudget && budget > 0 ? Math.floor(budget / leg.buyPrice) : Infinity;
+    let u = Math.min(byCargo, byBudget);
+    if (capStock && leg.stock > 0) u = Math.min(u, leg.stock);
+    return u;
+  };
+  const uOut = legUnits(l.out), uBack = legUnits(l.back);
+  const bounded = isFinite(uOut) && isFinite(uBack);
+  const cross = l.a.system !== l.b.system;
+  const minutes = loopMinutes(l.distance, cross);
+  const profit = bounded ? uOut * l.out.margin + uBack * l.back.margin : null;
+  return {
+    ...l,
+    cross,
+    unitsOut: bounded ? uOut : null,
+    unitsBack: bounded ? uBack : null,
+    units: bounded ? uOut + uBack : null,
+    investment: bounded ? Math.max(uOut * l.out.buyPrice, uBack * l.back.buyPrice) : null,
+    profit,
+    minutes,
+    profitHour: profit == null ? null : (profit * 60) / minutes,
+  };
+}
+
+function renderLoops() {
+  const cargo = Math.max(0, Number($("cargo").value) || 0);
+  const budget = Math.max(0, Number($("budget").value) || 0);
+  const capStock = $("capStock").checked;
+  const useCargo = $("useCargo").checked;
+  const useBudget = $("useBudget").checked;
+  const sameOnly = $("sameSystem").checked;
+  const noOutpost = $("noOutpost").checked;
+  const legalOnly = $("legalOnly").checked;
+  const sysFilter = $("system").value;
+  const q = $("search").value.trim().toLowerCase();
+
+  let rows = LOOPS.filter((l) => {
+    if (sameOnly && l.a.system !== l.b.system) return false;
+    if (noOutpost && (l.a.outpost || l.b.outpost)) return false;
+    if (legalOnly && (l.out.illegal || l.back.illegal)) return false;
+    if (sysFilter && l.a.system !== sysFilter && l.b.system !== sysFilter) return false;
+    if (q && !(l.out.commodity.toLowerCase().includes(q) || l.back.commodity.toLowerCase().includes(q))) return false;
+    return true;
+  }).map((l) => evaluateLoop(l, cargo, budget, capStock, useCargo, useBudget));
+
+  rows.sort(bySort(loopSortKey, loopSortDir));
+
+  $("loopRows").innerHTML = rows
+    .map(
+      (l) => `
+      <tr>
+        <td class="loc">
+          <div>${l.a.terminal}${sysBadge(l.a.system)}${outpostTag(l.a.outpost)}</div>
+          <div class="loc-sub">⇄ ${l.b.terminal}${sysBadge(l.b.system)}${outpostTag(l.b.outpost)}${l.cross ? ' <span class="cross">⚡ inter-système</span>' : ""}</div>
+        </td>
+        <td>
+          <div class="commodity-cell">${commodityIcon(l.out.kind)}<span>${l.out.commodity}${illegalTag(l.out.illegal)}</span></div>
+          <div class="loc-sub">${fmt(l.out.buyPrice)} → ${fmt(l.out.sellPrice)} · marge ${fmt(l.out.margin)}</div>
+        </td>
+        <td>
+          <div class="commodity-cell">${commodityIcon(l.back.kind)}<span>${l.back.commodity}${illegalTag(l.back.illegal)}</span></div>
+          <div class="loc-sub">${fmt(l.back.buyPrice)} → ${fmt(l.back.sellPrice)} · marge ${fmt(l.back.margin)}</div>
+        </td>
+        <td class="num">${fmt(l.loopMargin)}</td>
+        <td class="num">${l.units == null ? "—" : fmt(l.unitsOut) + " + " + fmt(l.unitsBack)}</td>
+        <td class="num profit">${fmt(l.profit)}</td>
+        <td class="num profit" title="Estimation ${Math.round(l.minutes)} min/boucle">${fmt(l.profitHour)}</td>
+      </tr>`
+    )
+    .join("");
+
+  $("empty").hidden = rows.length > 0;
+}
+
+// Bascule entre les deux vues et rafraîchit la bonne table.
+function refresh() {
+  if (view === "loops") renderLoops();
+  else render();
+}
+function switchView(v) {
+  view = v;
+  $("viewRoutes").classList.toggle("active", v === "routes");
+  $("viewLoops").classList.toggle("active", v === "loops");
+  $("routes").hidden = v !== "routes";
+  $("loops").hidden = v !== "loops";
+  refresh();
 }
 
 function setupSort() {
@@ -117,9 +239,22 @@ function setupSort() {
         sortKey = key;
         sortDir = key === "commodity" ? 1 : -1;
       }
-      document.querySelectorAll("th").forEach((h) => h.classList.remove("sorted-asc", "sorted-desc"));
+      document.querySelectorAll("#routes th").forEach((h) => h.classList.remove("sorted-asc", "sorted-desc"));
       th.classList.add(sortDir === -1 ? "sorted-desc" : "sorted-asc");
       render();
+    });
+  });
+}
+
+function setupLoopSort() {
+  document.querySelectorAll("th[data-sort-loop]").forEach((th) => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.sortLoop;
+      if (loopSortKey === key) loopSortDir *= -1;
+      else { loopSortKey = key; loopSortDir = -1; }
+      document.querySelectorAll("#loops th").forEach((h) => h.classList.remove("sorted-asc", "sorted-desc"));
+      th.classList.add(loopSortDir === -1 ? "sorted-desc" : "sorted-asc");
+      renderLoops();
     });
   });
 }
@@ -179,7 +314,7 @@ async function loadShips() {
     $("cargo").value = s.scu;
     hide();
     showCard(s);
-    render();
+    refresh();
   }
 
   function highlight() {
@@ -241,24 +376,29 @@ function syncToggles() {
 
 async function init() {
   setupSort();
-  ["cargo", "budget", "search", "system", "sameSystem", "noOutpost", "capStock"].forEach((id) =>
-    $(id).addEventListener("input", render)
+  setupLoopSort();
+  ["cargo", "budget", "search", "system", "sameSystem", "noOutpost", "legalOnly", "capStock"].forEach((id) =>
+    $(id).addEventListener("input", refresh)
   );
   ["useCargo", "useBudget"].forEach((id) =>
     $(id).addEventListener("change", () => {
       syncToggles();
-      render();
+      refresh();
     })
   );
+  $("viewRoutes").addEventListener("click", () => switchView("routes"));
+  $("viewLoops").addEventListener("click", () => switchView("loops"));
   syncToggles();
 
   try {
-    const [routes, meta] = await Promise.all([
+    const [routes, loops, meta] = await Promise.all([
       fetch("data/routes.json").then((r) => r.json()),
+      fetch("data/loops.json").then((r) => r.json()).catch(() => []),
       fetch("data/meta.json").then((r) => r.json()).catch(() => null),
       loadShips(),
     ]);
     ROUTES = routes;
+    LOOPS = loops;
 
     // Remplit le filtre système.
     const systems = [...new Set(routes.map((r) => r.buy.system))].sort();
@@ -272,10 +412,10 @@ async function init() {
     if (meta) {
       const d = new Date(meta.generated_at * 1000);
       $("meta").innerHTML =
-        `<b>${meta.routes}</b> routes · <b>${meta.commodities}</b> commodités<br>` +
+        `<b>${meta.routes}</b> routes · <b>${meta.loops ?? LOOPS.length}</b> boucles · <b>${meta.commodities}</b> commodités<br>` +
         `Mis à jour le ${d.toLocaleString("fr-FR")}`;
     }
-    render();
+    refresh();
   } catch (e) {
     $("meta").textContent = "Erreur de chargement des données.";
     $("empty").hidden = false;

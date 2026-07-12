@@ -55,12 +55,15 @@ async function main() {
   log("Récupération des commodités…");
   const commodities = await getJSON("commodities");
   const kindById = new Map(commodities.map((c) => [c.id, normalizeKind(c.kind)]));
+  const illegalById = new Map(commodities.map((c) => [c.id, !!c.is_illegal]));
 
   // Index terminal id -> infos de localisation (uniquement terminaux disponibles).
   const term = new Map();
   for (const t of terminals) {
     if (!t.is_available) continue;
     term.set(t.id, {
+      id: t.id,
+      orbit: t.id_orbit || 0,
       name: t.nickname || t.name,
       code: t.code,
       system: t.star_system_name || "?",
@@ -78,7 +81,13 @@ async function main() {
     if (!loc) continue; // terminal indisponible ou hors périmètre
     let c = byCommodity.get(p.id_commodity);
     if (!c) {
-      c = { name: p.commodity_name, kind: kindById.get(p.id_commodity) || "other", buys: [], sells: [] };
+      c = {
+        name: p.commodity_name,
+        kind: kindById.get(p.id_commodity) || "other",
+        illegal: illegalById.get(p.id_commodity) || false,
+        buys: [],
+        sells: [],
+      };
       byCommodity.set(p.id_commodity, c);
     }
     if (p.price_buy > 0) {
@@ -117,17 +126,105 @@ async function main() {
       routes.push({
         commodity: c.name,
         kind: c.kind,
+        illegal: c.illegal,
         buy: { terminal: buy.name, system: buy.system, planet: buy.planet, price: buy.price, stock: buy.stock, outpost: buy.outpost },
         sell: { terminal: sell.name, system: sell.system, planet: sell.planet, price: sell.price, demand: sell.demand, outpost: sell.outpost },
         margin,
         roi: Math.round((margin / buy.price) * 1000) / 10, // % ROI, 1 décimale
         same_system: buy.system === sell.system,
+        // Ids/orbites temporaires pour le calcul de distance (retirés avant écriture).
+        _o: buy.id, _d: sell.id, _oo: buy.orbit, _do: sell.orbit,
       });
     }
   }
 
   routes.sort((a, b) => b.margin - a.margin);
   const top = routes.slice(0, MAX_ROUTES);
+
+  // Distance orbite→orbite via l'API UEX, mise en cache par paire d'orbites.
+  const distCache = new Map();
+  async function getDistance(oId, dId, oOrbit, dOrbit) {
+    if (!oOrbit || !dOrbit || oOrbit === dOrbit) return 0; // même orbite = négligeable
+    const key = `${oOrbit}-${dOrbit}`;
+    if (distCache.has(key)) return distCache.get(key);
+    let val = null;
+    try {
+      const d = await getJSON(`terminals_distances?id_terminal_origin=${oId}&id_terminal_destination=${dId}`);
+      if (d && d.distance != null) val = Number(d.distance);
+    } catch {
+      val = null; // paires inter-systèmes parfois non renvoyées
+    }
+    distCache.set(key, val);
+    return val;
+  }
+
+  log(`Calcul des distances (${top.length} routes)…`);
+  for (const r of top) {
+    r.distance = await getDistance(r._o, r._d, r._oo, r._do);
+    delete r._o; delete r._d; delete r._oo; delete r._do;
+  }
+
+  // ---------- Boucles aller-retour (ne pas repartir à vide) ----------
+  // Meilleure marge par paire de terminaux orientée (A -> B), toutes commodités confondues.
+  const bestLeg = new Map();
+  for (const [, c] of byCommodity) {
+    for (const b of c.buys) {
+      for (const s of c.sells) {
+        if (b.id === s.id) continue;
+        const margin = s.price - b.price;
+        if (margin <= 0) continue;
+        const key = `${b.id}->${s.id}`;
+        const cur = bestLeg.get(key);
+        if (!cur || margin > cur.margin) {
+          bestLeg.set(key, {
+            aId: b.id, bId: s.id,
+            commodity: c.name, kind: c.kind, illegal: c.illegal,
+            buyPrice: b.price, sellPrice: s.price, margin,
+            stock: b.stock, demand: s.demand,
+          });
+        }
+      }
+    }
+  }
+
+  const legInfo = (leg) => ({
+    commodity: leg.commodity, kind: leg.kind, illegal: leg.illegal,
+    buyPrice: leg.buyPrice, sellPrice: leg.sellPrice, margin: leg.margin,
+    stock: leg.stock, demand: leg.demand,
+  });
+  const termInfo = (id) => {
+    const t = term.get(id);
+    return { terminal: t.name, system: t.system, planet: t.planet, outpost: t.outpost };
+  };
+
+  const loops = [];
+  const seenPair = new Set();
+  for (const [key, out] of bestLeg) {
+    const backKey = `${out.bId}->${out.aId}`;
+    const back = bestLeg.get(backKey);
+    if (!back) continue;
+    const pairId = out.aId < out.bId ? `${out.aId}-${out.bId}` : `${out.bId}-${out.aId}`;
+    if (seenPair.has(pairId)) continue;
+    seenPair.add(pairId);
+    loops.push({
+      a: termInfo(out.aId),
+      b: termInfo(out.bId),
+      out: legInfo(out),
+      back: legInfo(back),
+      loopMargin: out.margin + back.margin,
+      _a: out.aId, _b: out.bId, _ao: term.get(out.aId).orbit, _bo: term.get(out.bId).orbit,
+    });
+  }
+  loops.sort((a, b) => b.loopMargin - a.loopMargin);
+  const topLoops = loops.slice(0, 160);
+
+  log(`Distances des boucles (${topLoops.length})…`);
+  for (const l of topLoops) {
+    const d1 = await getDistance(l._a, l._b, l._ao, l._bo);
+    const d2 = await getDistance(l._b, l._a, l._bo, l._ao);
+    l.distance = (d1 || 0) + (d2 || 0); // aller-retour
+    delete l._a; delete l._b; delete l._ao; delete l._bo;
+  }
 
   const systems = [...new Set(top.flatMap((r) => [r.buy.system, r.sell.system]))].sort();
   const meta = {
@@ -137,6 +234,7 @@ async function main() {
     commodities: byCommodity.size,
     terminals: term.size,
     routes: top.length,
+    loops: topLoops.length,
     systems,
   };
 
@@ -148,9 +246,10 @@ async function main() {
 
   await mkdir(OUT_DIR, { recursive: true });
   await writeFile(join(OUT_DIR, "routes.json"), JSON.stringify(top));
+  await writeFile(join(OUT_DIR, "loops.json"), JSON.stringify(topLoops));
   await writeFile(join(OUT_DIR, "ships.json"), JSON.stringify(ships));
   await writeFile(join(OUT_DIR, "meta.json"), JSON.stringify(meta, null, 2));
-  log(`OK — ${top.length} routes, ${byCommodity.size} commodités, ${term.size} terminaux, ${ships.length} vaisseaux.`);
+  log(`OK — ${top.length} routes, ${topLoops.length} boucles, ${byCommodity.size} commodités, ${term.size} terminaux, ${ships.length} vaisseaux.`);
 }
 
 main().catch((e) => {

@@ -282,6 +282,32 @@ tbody tr:hover td { border-bottom-color: var(--line-bright); }
 }
 .cross { color: var(--warn); font-size: 11px; }
 .stock { color: #5f7891; }
+.illegal {
+  display: inline-block; font-size: 10px; padding: 1px 7px; border-radius: 3px;
+  background: rgba(248, 113, 113, 0.10); border: 1px solid #6b1c1c; color: #f87171;
+  margin-left: 6px; white-space: nowrap; vertical-align: middle;
+}
+
+/* Sélecteur de vue (Trajets simples / Boucles) */
+.view-switch { display: flex; gap: 8px; margin: 22px 0 0; }
+.vbtn {
+  font-family: var(--font);
+  font-size: 13px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--line-bright);
+  padding: 9px 18px;
+  cursor: pointer;
+  clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.vbtn:hover { color: var(--text); border-color: var(--accent-dim); }
+.vbtn.active {
+  color: #04222c;
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 14px rgba(34, 211, 238, 0.35);
+}
 
 .profit { color: var(--good); font-weight: 700; text-shadow: 0 0 10px rgba(74, 222, 128, 0.25); }
 .roi-badge { color: var(--warn); }

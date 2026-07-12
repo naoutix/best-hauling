@@ -46,6 +46,7 @@
       <div class="field checks">
         <label><input id="sameSystem" type="checkbox" /> Même système uniquement</label>
         <label><input id="noOutpost" type="checkbox" /> Exclure les avant-postes</label>
+        <label><input id="legalOnly" type="checkbox" /> Commodités légales uniquement</label>
         <label><input id="capStock" type="checkbox" /> Limiter au stock UEX</label>
       </div>
     </section>
@@ -61,6 +62,11 @@
       </div>
     </aside>
 
+    <div class="view-switch">
+      <button id="viewRoutes" class="vbtn active" data-view="routes">Trajets simples</button>
+      <button id="viewLoops" class="vbtn" data-view="loops">Boucles aller-retour ⇄</button>
+    </div>
+
     <div class="table-wrap">
       <table id="routes">
         <thead>
@@ -72,11 +78,28 @@
             <th data-sort="roi" class="num">ROI</th>
             <th data-sort="units" class="num">Unités à acheter</th>
             <th data-sort="investment" class="num">Coût total</th>
-            <th data-sort="profit" class="num sorted-desc">Profit/voyage</th>
+            <th data-sort="profit" class="num">Profit/voyage</th>
+            <th data-sort="profitHour" class="num sorted-desc">Profit/heure</th>
           </tr>
         </thead>
         <tbody id="rows"></tbody>
       </table>
+
+      <table id="loops" hidden>
+        <thead>
+          <tr>
+            <th>Boucle&nbsp;⇄</th>
+            <th>Aller</th>
+            <th>Retour</th>
+            <th data-sort-loop="loopMargin" class="num">Marge boucle/SCU</th>
+            <th data-sort-loop="units" class="num">Unités (A+R)</th>
+            <th data-sort-loop="profit" class="num sorted-desc">Profit boucle</th>
+            <th data-sort-loop="profitHour" class="num">Profit/heure</th>
+          </tr>
+        </thead>
+        <tbody id="loopRows"></tbody>
+      </table>
+
       <p id="empty" class="empty" hidden>Aucune route ne correspond aux filtres.</p>
     </div>
   </main>

@@ -31,6 +31,11 @@ Pas de serveur, pas de clé API, pas de coût.
 - Entrées **capacité de soute (SCU)** et **budget (aUEC)** → unités à acheter, coût total, profit réel par voyage.
 - Chaque contrainte est **désactivable** : couper le budget → meilleure route pour ta soute peu
   importe le prix ; couper la soute → meilleure route pour ton budget peu importe le volume.
+- **Profit/heure** : estimation du temps de trajet à partir de la distance UEX (orbite→orbite)
+  + manutention + saut inter-système, pour classer les routes par rentabilité horaire.
+- Vue **Boucles aller-retour** : meilleures boucles A⇄B (une commodité à l'aller, une autre au
+  retour) pour ne jamais repartir à vide.
+- Filtre **commodités légales uniquement** (exclut la contrebande / le risque de scan).
 - Filtres : commodité, système d'achat, « même système uniquement » (routes sans saut),
   « exclure les avant-postes » (élévateurs de fret peu fiables — garde stations et villes),
   et « limiter au stock UEX » (le stock in-game étant souvent périmé, désactivé par défaut).
