@@ -64,6 +64,7 @@ function render() {
         <td class="num">${fmt(r.margin)}</td>
         <td class="num roi-badge">${r.roi}%</td>
         <td class="num">${fmt(r.units)}</td>
+        <td class="num">${fmt(r.investment)}</td>
         <td class="num profit">${fmt(r.profit)}</td>
       </tr>`
     )
