@@ -16,10 +16,10 @@
   </header>
 
   <section class="controls">
-    <div class="field">
+    <div class="field ship-field">
       <label for="ship">Vaisseau</label>
-      <input id="ship" type="text" list="shipList" placeholder="Tape un nom (ex : Railen)" autocomplete="off" />
-      <datalist id="shipList"></datalist>
+      <input id="ship" type="text" placeholder="Tape un nom (ex : Railen)" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="shipList" />
+      <ul id="shipList" class="autocomplete" role="listbox" hidden></ul>
     </div>
     <div class="field">
       <label class="toggle"><input id="useCargo" type="checkbox" checked /> Soute (SCU)</label>

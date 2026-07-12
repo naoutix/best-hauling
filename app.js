@@ -102,29 +102,84 @@ function setupSort() {
   });
 }
 
-// Charge la liste des vaisseaux et alimente l'autocomplétion (recherche par sous-chaîne).
+// Charge les vaisseaux et gère une autocomplétion maison (filtre par sous-chaîne,
+// fiable sur tous les navigateurs, avec navigation clavier).
 async function loadShips() {
   const ships = await fetch("data/ships.json").then((r) => r.json()).catch(() => []);
   const input = $("ship");
   const list = $("shipList");
-  const byName = new Map(); // nom (minuscule) -> soute
+  const byName = new Map(ships.map((s) => [s.name.toLowerCase(), s.scu]));
+  let matches = [];
+  let active = -1;
 
-  ships.forEach((s) => {
-    byName.set(s.name.toLowerCase(), s.scu);
-    const o = document.createElement("option");
-    o.value = s.name; // le datalist filtre en sous-chaîne : "railen" trouve "Gatac Railen"
-    o.label = `${s.scu.toLocaleString("fr-FR")} SCU`;
-    list.appendChild(o);
+  function hide() {
+    list.hidden = true;
+    list.innerHTML = "";
+    active = -1;
+    input.setAttribute("aria-expanded", "false");
+  }
+
+  function show(q) {
+    matches = ships.filter((s) => s.name.toLowerCase().includes(q)).slice(0, 12);
+    if (!matches.length) return hide();
+    active = 0;
+    list.innerHTML = matches
+      .map(
+        (s, i) =>
+          `<li role="option" data-i="${i}" class="${i === 0 ? "active" : ""}">` +
+          `<span>${s.name}</span><span class="scu">${s.scu.toLocaleString("fr-FR")} SCU</span></li>`
+      )
+      .join("");
+    list.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+  }
+
+  function choose(s) {
+    if (!s) return;
+    input.value = s.name;
+    $("cargo").value = s.scu;
+    hide();
+    render();
+  }
+
+  function highlight() {
+    [...list.children].forEach((li, i) => li.classList.toggle("active", i === active));
+    list.children[active]?.scrollIntoView({ block: "nearest" });
+  }
+
+  input.addEventListener("input", () => {
+    const q = input.value.trim().toLowerCase();
+    q ? show(q) : hide();
   });
 
-  // Saisir/choisir un vaisseau connu met à jour la soute.
-  input.addEventListener("input", () => {
-    const scu = byName.get(input.value.trim().toLowerCase());
-    if (scu != null) {
-      $("cargo").value = scu;
-      render();
+  input.addEventListener("keydown", (e) => {
+    if (list.hidden) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      active = Math.min(active + 1, matches.length - 1);
+      highlight();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      active = Math.max(active - 1, 0);
+      highlight();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      choose(matches[active]);
+    } else if (e.key === "Escape") {
+      hide();
     }
   });
+
+  // mousedown (et non click) pour devancer le blur du champ.
+  list.addEventListener("mousedown", (e) => {
+    const li = e.target.closest("li");
+    if (!li) return;
+    e.preventDefault();
+    choose(matches[Number(li.dataset.i)]);
+  });
+
+  input.addEventListener("blur", () => setTimeout(hide, 150));
+
   // Modifier la soute à la main efface le nom du vaisseau.
   $("cargo").addEventListener("input", () => {
     const scu = byName.get(input.value.trim().toLowerCase());
