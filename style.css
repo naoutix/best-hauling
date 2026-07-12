@@ -130,6 +130,8 @@ tbody tr:hover { background: var(--panel); }
 .sys.pyro { color: #f0783a; border-color: #5a2e1c; }
 .sys.stanton { color: #35c1e8; border-color: #1c3d5a; }
 
+.outpost { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--panel-2); border: 1px solid #5a4a1c; color: var(--warn); margin-left: 4px; white-space: nowrap; }
+
 .profit { color: var(--good); font-weight: 700; }
 .roi-badge { color: var(--warn); }
 .cross { color: var(--warn); font-size: 11px; }

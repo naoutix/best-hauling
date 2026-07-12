@@ -48,6 +48,8 @@ async function main() {
       code: t.code,
       system: t.star_system_name || "?",
       planet: t.planet_name || "",
+      // Avant-poste de surface = élévateur de fret peu fiable. Stations/villes = fiables.
+      outpost: t.id_outpost > 0,
     });
   }
 
@@ -97,8 +99,8 @@ async function main() {
       seen.add(key);
       routes.push({
         commodity: c.name,
-        buy: { terminal: buy.name, system: buy.system, planet: buy.planet, price: buy.price, stock: buy.stock },
-        sell: { terminal: sell.name, system: sell.system, planet: sell.planet, price: sell.price, demand: sell.demand },
+        buy: { terminal: buy.name, system: buy.system, planet: buy.planet, price: buy.price, stock: buy.stock, outpost: buy.outpost },
+        sell: { terminal: sell.name, system: sell.system, planet: sell.planet, price: sell.price, demand: sell.demand, outpost: sell.outpost },
         margin,
         roi: Math.round((margin / buy.price) * 1000) / 10, // % ROI, 1 décimale
         same_system: buy.system === sell.system,

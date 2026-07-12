@@ -14,6 +14,11 @@ function sysBadge(system) {
   return `<span class="sys ${cls}">${system}</span>`;
 }
 
+// Marqueur pour les avant-postes (élévateur de fret peu fiable).
+function outpostTag(isOutpost) {
+  return isOutpost ? ' <span class="outpost" title="Avant-poste : élévateur de fret parfois en panne">⚠ avant-poste</span>' : "";
+}
+
 // Calcule les champs dérivés d'une route selon les entrées utilisateur.
 // useCargo / useBudget désactivent la contrainte correspondante (limite = illimitée).
 function evaluate(r, cargo, budget, capStock, useCargo, useBudget) {
@@ -41,11 +46,13 @@ function render() {
   const useCargo = $("useCargo").checked;
   const useBudget = $("useBudget").checked;
   const sameOnly = $("sameSystem").checked;
+  const noOutpost = $("noOutpost").checked;
   const sysFilter = $("system").value;
   const q = $("search").value.trim().toLowerCase();
 
   let rows = ROUTES.filter((r) => {
     if (sameOnly && !r.same_system) return false;
+    if (noOutpost && (r.buy.outpost || r.sell.outpost)) return false;
     if (sysFilter && r.buy.system !== sysFilter) return false;
     if (q && !r.commodity.toLowerCase().includes(q)) return false;
     return true;
@@ -67,11 +74,11 @@ function render() {
       <tr>
         <td class="loc">${r.commodity}</td>
         <td>
-          <div>${r.buy.terminal}${sysBadge(r.buy.system)}</div>
+          <div>${r.buy.terminal}${sysBadge(r.buy.system)}${outpostTag(r.buy.outpost)}</div>
           <div class="loc-sub">${r.buy.planet} · ${fmt(r.buy.price)} aUEC</div>
         </td>
         <td>
-          <div>${r.sell.terminal}${sysBadge(r.sell.system)}</div>
+          <div>${r.sell.terminal}${sysBadge(r.sell.system)}${outpostTag(r.sell.outpost)}</div>
           <div class="loc-sub">${r.sell.planet} · ${fmt(r.sell.price)} aUEC${r.same_system ? "" : ' <span class="cross">⚡ saut inter-système</span>'}</div>
         </td>
         <td class="num">${fmt(r.margin)}</td>
@@ -198,7 +205,7 @@ function syncToggles() {
 
 async function init() {
   setupSort();
-  ["cargo", "budget", "search", "system", "sameSystem", "capStock"].forEach((id) =>
+  ["cargo", "budget", "search", "system", "sameSystem", "noOutpost", "capStock"].forEach((id) =>
     $(id).addEventListener("input", render)
   );
   ["useCargo", "useBudget"].forEach((id) =>

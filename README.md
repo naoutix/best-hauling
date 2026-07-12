@@ -30,6 +30,7 @@ Pas de serveur, pas de clé API, pas de coût.
 - Chaque contrainte est **désactivable** : couper le budget → meilleure route pour ta soute peu
   importe le prix ; couper la soute → meilleure route pour ton budget peu importe le volume.
 - Filtres : commodité, système d'achat, « même système uniquement » (routes sans saut),
+  « exclure les avant-postes » (élévateurs de fret peu fiables — garde stations et villes),
   et « limiter au stock UEX » (le stock in-game étant souvent périmé, désactivé par défaut).
 - Repère les sauts inter-systèmes (Stanton ↔ Pyro).
 
