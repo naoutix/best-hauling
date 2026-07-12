@@ -102,26 +102,33 @@ function setupSort() {
   });
 }
 
-// Charge la liste des vaisseaux et remplit le menu déroulant.
+// Charge la liste des vaisseaux et alimente l'autocomplétion (recherche par sous-chaîne).
 async function loadShips() {
   const ships = await fetch("data/ships.json").then((r) => r.json()).catch(() => []);
-  const sel = $("ship");
+  const input = $("ship");
+  const list = $("shipList");
+  const byName = new Map(); // nom (minuscule) -> soute
+
   ships.forEach((s) => {
+    byName.set(s.name.toLowerCase(), s.scu);
     const o = document.createElement("option");
-    o.value = s.scu;
-    o.textContent = `${s.name} — ${s.scu.toLocaleString("fr-FR")} SCU`;
-    sel.appendChild(o);
+    o.value = s.name; // le datalist filtre en sous-chaîne : "railen" trouve "Gatac Railen"
+    o.label = `${s.scu.toLocaleString("fr-FR")} SCU`;
+    list.appendChild(o);
   });
-  // Choisir un vaisseau met à jour la soute.
-  sel.addEventListener("change", () => {
-    if (sel.value) {
-      $("cargo").value = sel.value;
+
+  // Saisir/choisir un vaisseau connu met à jour la soute.
+  input.addEventListener("input", () => {
+    const scu = byName.get(input.value.trim().toLowerCase());
+    if (scu != null) {
+      $("cargo").value = scu;
       render();
     }
   });
-  // Modifier la soute à la main repasse en "Personnalisé".
+  // Modifier la soute à la main efface le nom du vaisseau.
   $("cargo").addEventListener("input", () => {
-    if ($("cargo").value !== sel.value) sel.value = "";
+    const scu = byName.get(input.value.trim().toLowerCase());
+    if (String(scu) !== $("cargo").value) input.value = "";
   });
 }
 

@@ -18,7 +18,8 @@
   <section class="controls">
     <div class="field">
       <label for="ship">Vaisseau</label>
-      <select id="ship"><option value="">— Personnalisé —</option></select>
+      <input id="ship" type="text" list="shipList" placeholder="Tape un nom (ex : Railen)" autocomplete="off" />
+      <datalist id="shipList"></datalist>
     </div>
     <div class="field">
       <label class="toggle"><input id="useCargo" type="checkbox" checked /> Soute (SCU)</label>

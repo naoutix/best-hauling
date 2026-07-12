@@ -24,7 +24,8 @@ Pas de serveur, pas de clé API, pas de coût.
 ## Fonctionnalités
 
 - Liste triable : profit/voyage, marge/SCU, ROI, unités, commodité.
-- Sélecteur de **vaisseau** (128 modèles UEX) qui remplit automatiquement la soute (SCU).
+- Champ **vaisseau** avec autocomplétion par sous-chaîne (taper « railen » trouve « Gatac Railen »)
+  qui remplit automatiquement la soute (SCU) — 128 modèles UEX.
 - Entrées **capacité de soute (SCU)** et **budget (aUEC)** → unités à acheter, coût total, profit réel par voyage.
 - Chaque contrainte est **désactivable** : couper le budget → meilleure route pour ta soute peu
   importe le prix ; couper la soute → meilleure route pour ton budget peu importe le volume.
