@@ -38,7 +38,8 @@ Pas de serveur, pas de clé API, pas de coût.
 - Filtre **commodités légales uniquement** (exclut la contrebande / le risque de scan).
 - Filtres : commodité, système d'achat, « même système uniquement » (routes sans saut),
   « exclure les avant-postes » (élévateurs de fret peu fiables — garde stations et villes),
-  et « limiter au stock UEX » (le stock in-game étant souvent périmé, désactivé par défaut).
+  et « limiter au stock & à la demande UEX » (plafonne les unités par le stock dispo à l'achat
+  ET la demande à la vente ; relevés souvent périmés, donc désactivé par défaut).
 - Repère les sauts inter-systèmes (Stanton ↔ Pyro).
 
 ## Déploiement (une seule fois)

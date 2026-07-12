@@ -71,7 +71,10 @@ function evaluate(r, cargo, budget, capStock, useCargo, useBudget) {
   const byCargo = useCargo ? cargo : Infinity;
   const byBudget = useBudget && budget > 0 ? Math.floor(budget / r.buy.price) : Infinity;
   let units = Math.min(byCargo, byBudget);
-  if (capStock && r.buy.stock > 0) units = Math.min(units, r.buy.stock);
+  if (capStock) {
+    if (r.buy.stock > 0) units = Math.min(units, r.buy.stock); // stock dispo à l'achat
+    if (r.sell.demand > 0) units = Math.min(units, r.sell.demand); // demande à la vente
+  }
   // Aucune contrainte de volume active -> valeurs par voyage non définies (on classe alors par marge).
   const bounded = isFinite(units);
   if (bounded && units < 0) units = 0;
@@ -145,7 +148,10 @@ function evaluateLoop(l, cargo, budget, capStock, useCargo, useBudget) {
     const byCargo = useCargo ? cargo : Infinity;
     const byBudget = useBudget && budget > 0 ? Math.floor(budget / leg.buyPrice) : Infinity;
     let u = Math.min(byCargo, byBudget);
-    if (capStock && leg.stock > 0) u = Math.min(u, leg.stock);
+    if (capStock) {
+      if (leg.stock > 0) u = Math.min(u, leg.stock); // stock dispo à l'achat
+      if (leg.demand > 0) u = Math.min(u, leg.demand); // demande à la destination
+    }
     return u;
   };
   const uOut = legUnits(l.out), uBack = legUnits(l.back);
