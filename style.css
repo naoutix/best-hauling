@@ -110,6 +110,8 @@ main { padding: 0 20px; }
 /* ---------- Panneau de contrôles ---------- */
 .controls {
   position: relative;
+  z-index: 20; /* passe au-dessus de la carte vaisseau et du tableau qui suivent,
+                  sinon le backdrop-filter piège le menu déroulant sous ces éléments */
   display: flex;
   flex-wrap: wrap;
   gap: 18px;
