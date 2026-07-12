@@ -19,6 +19,21 @@ function outpostTag(isOutpost) {
   return isOutpost ? ' <span class="outpost" title="Avant-poste : élévateur de fret parfois en panne">⚠ avant-poste</span>' : "";
 }
 
+// Icône emoji par catégorie de commodité (repère visuel).
+const KIND_ICON = {
+  metal: "🔩", alloy: "⛓️", mineral: "💎", raw: "⛏️", nonmetal: "🪨",
+  gas: "💨", halogen: "⚗️", fuel: "⛽",
+  agricultural: "🌾", food: "🍎", natural: "🌿", organic: "🧬",
+  drug: "☠️", vice: "🍸", medical: "⚕️",
+  scrap: "♻️", waste: "🗑️", manmade: "⚙️", explosive: "💥",
+  temporary: "⏳", other: "📦",
+};
+function commodityIcon(kind) {
+  const k = kind || "other";
+  const emoji = KIND_ICON[k] || KIND_ICON.other;
+  return `<span class="cicon k-${k}" title="${k}">${emoji}</span>`;
+}
+
 // Calcule les champs dérivés d'une route selon les entrées utilisateur.
 // useCargo / useBudget désactivent la contrainte correspondante (limite = illimitée).
 function evaluate(r, cargo, budget, capStock, useCargo, useBudget) {
@@ -72,7 +87,7 @@ function render() {
     .map(
       (r) => `
       <tr>
-        <td class="loc">${r.commodity}</td>
+        <td class="loc"><div class="commodity-cell">${commodityIcon(r.kind)}<span>${r.commodity}</span></div></td>
         <td>
           <div>${r.buy.terminal}${sysBadge(r.buy.system)}${outpostTag(r.buy.outpost)}</div>
           <div class="loc-sub">${r.buy.planet} · ${fmt(r.buy.price)} aUEC</div>
@@ -141,11 +156,29 @@ async function loadShips() {
     input.setAttribute("aria-expanded", "true");
   }
 
+  function showCard(s) {
+    const card = $("shipCard");
+    const img = $("shipImg");
+    const wrap = img.parentElement;
+    if (s.photo) {
+      wrap.style.display = "";
+      img.onerror = () => (wrap.style.display = "none"); // masque si l'image échoue
+      img.alt = s.name;
+      img.src = s.photo;
+    } else {
+      wrap.style.display = "none";
+    }
+    $("shipCardName").textContent = s.name;
+    $("shipCardScu").innerHTML = `Soute : <b>${s.scu.toLocaleString("fr-FR")} SCU</b>`;
+    card.hidden = false;
+  }
+
   function choose(s) {
     if (!s) return;
     input.value = s.name;
     $("cargo").value = s.scu;
     hide();
+    showCard(s);
     render();
   }
 
@@ -187,10 +220,13 @@ async function loadShips() {
 
   input.addEventListener("blur", () => setTimeout(hide, 150));
 
-  // Modifier la soute à la main efface le nom du vaisseau.
+  // Modifier la soute à la main efface le nom du vaisseau et la carte.
   $("cargo").addEventListener("input", () => {
     const scu = byName.get(input.value.trim().toLowerCase());
-    if (String(scu) !== $("cargo").value) input.value = "";
+    if (String(scu) !== $("cargo").value) {
+      input.value = "";
+      $("shipCard").hidden = true;
+    }
   });
 }
 

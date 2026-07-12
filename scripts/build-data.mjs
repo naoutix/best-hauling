@@ -31,6 +31,20 @@ function log(...a) {
   console.log("[build-data]", ...a);
 }
 
+// Normalise la catégorie d'une commodité (corrige casse et fautes de frappe UEX).
+function normalizeKind(k) {
+  k = (k || "").toLowerCase().trim();
+  const fix = {
+    minteral: "mineral",
+    "man-made": "manmade",
+    medicine: "medical",
+    organics: "organic",
+    "raw materials": "raw",
+    "non-metal": "nonmetal",
+  };
+  return fix[k] || k || "other";
+}
+
 async function main() {
   log("Récupération des terminaux…");
   const terminals = await getJSON("terminals?type=commodity");
@@ -38,6 +52,9 @@ async function main() {
   const prices = await getJSON("commodities_prices_all");
   log("Récupération des vaisseaux…");
   const vehicles = await getJSON("vehicles");
+  log("Récupération des commodités…");
+  const commodities = await getJSON("commodities");
+  const kindById = new Map(commodities.map((c) => [c.id, normalizeKind(c.kind)]));
 
   // Index terminal id -> infos de localisation (uniquement terminaux disponibles).
   const term = new Map();
@@ -61,7 +78,7 @@ async function main() {
     if (!loc) continue; // terminal indisponible ou hors périmètre
     let c = byCommodity.get(p.id_commodity);
     if (!c) {
-      c = { name: p.commodity_name, buys: [], sells: [] };
+      c = { name: p.commodity_name, kind: kindById.get(p.id_commodity) || "other", buys: [], sells: [] };
       byCommodity.set(p.id_commodity, c);
     }
     if (p.price_buy > 0) {
@@ -99,6 +116,7 @@ async function main() {
       seen.add(key);
       routes.push({
         commodity: c.name,
+        kind: c.kind,
         buy: { terminal: buy.name, system: buy.system, planet: buy.planet, price: buy.price, stock: buy.stock, outpost: buy.outpost },
         sell: { terminal: sell.name, system: sell.system, planet: sell.planet, price: sell.price, demand: sell.demand, outpost: sell.outpost },
         margin,
@@ -125,7 +143,7 @@ async function main() {
   // Vaisseaux avec soute (>= 1 SCU), hors véhicules terrestres. Pour le filtre "vaisseau".
   const ships = vehicles
     .filter((v) => v.scu >= 1 && !v.is_ground_vehicle)
-    .map((v) => ({ name: v.name_full || v.name, scu: v.scu }))
+    .map((v) => ({ name: v.name_full || v.name, scu: v.scu, photo: v.url_photo || "" }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
   await mkdir(OUT_DIR, { recursive: true });

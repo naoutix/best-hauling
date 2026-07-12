@@ -7,61 +7,79 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <div class="scanlines" aria-hidden="true"></div>
+
   <header>
-    <div class="title">
-      <h1>Best&nbsp;Hauling</h1>
-      <p class="sub">Meilleures routes d'arbitrage de commodités — Star Citizen</p>
+    <div class="brand">
+      <div class="logo" aria-hidden="true">◈</div>
+      <div class="title">
+        <h1>Best&nbsp;Hauling</h1>
+        <p class="sub">Manifeste de fret · meilleures routes d'arbitrage — Star&nbsp;Citizen</p>
+      </div>
     </div>
     <div class="meta" id="meta">Chargement…</div>
   </header>
 
-  <section class="controls">
-    <div class="field ship-field">
-      <label for="ship">Vaisseau</label>
-      <input id="ship" type="text" placeholder="Tape un nom (ex : Railen)" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="shipList" />
-      <ul id="shipList" class="autocomplete" role="listbox" hidden></ul>
-    </div>
-    <div class="field">
-      <label class="toggle"><input id="useCargo" type="checkbox" checked /> Soute (SCU)</label>
-      <input id="cargo" type="number" min="1" step="1" value="96" />
-    </div>
-    <div class="field">
-      <label class="toggle"><input id="useBudget" type="checkbox" checked /> Budget (aUEC)</label>
-      <input id="budget" type="number" min="0" step="1000" value="1000000" />
-    </div>
-    <div class="field">
-      <label for="search">Commodité</label>
-      <input id="search" type="text" placeholder="ex : Laranite" />
-    </div>
-    <div class="field">
-      <label for="system">Système d'achat</label>
-      <select id="system"><option value="">Tous</option></select>
-    </div>
-    <div class="field checks">
-      <label><input id="sameSystem" type="checkbox" /> Même système uniquement</label>
-      <label><input id="noOutpost" type="checkbox" /> Exclure les avant-postes</label>
-      <label><input id="capStock" type="checkbox" /> Limiter au stock UEX</label>
-    </div>
-  </section>
+  <main>
+    <section class="controls">
+      <div class="field ship-field">
+        <label for="ship">Vaisseau</label>
+        <input id="ship" type="text" placeholder="Tape un nom (ex : Railen)" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="shipList" />
+        <ul id="shipList" class="autocomplete" role="listbox" hidden></ul>
+      </div>
+      <div class="field">
+        <label class="toggle"><input id="useCargo" type="checkbox" checked /> Soute (SCU)</label>
+        <input id="cargo" type="number" min="1" step="1" value="96" />
+      </div>
+      <div class="field">
+        <label class="toggle"><input id="useBudget" type="checkbox" checked /> Budget (aUEC)</label>
+        <input id="budget" type="number" min="0" step="1000" value="1000000" />
+      </div>
+      <div class="field">
+        <label for="search">Commodité</label>
+        <input id="search" type="text" placeholder="ex : Laranite" />
+      </div>
+      <div class="field">
+        <label for="system">Système d'achat</label>
+        <select id="system"><option value="">Tous</option></select>
+      </div>
+      <div class="field checks">
+        <label><input id="sameSystem" type="checkbox" /> Même système uniquement</label>
+        <label><input id="noOutpost" type="checkbox" /> Exclure les avant-postes</label>
+        <label><input id="capStock" type="checkbox" /> Limiter au stock UEX</label>
+      </div>
+    </section>
 
-  <div class="table-wrap">
-    <table id="routes">
-      <thead>
-        <tr>
-          <th data-sort="commodity">Commodité</th>
-          <th data-sort="buyPrice">Acheter</th>
-          <th data-sort="sellPrice">Vendre</th>
-          <th data-sort="margin" class="num">Marge/SCU</th>
-          <th data-sort="roi" class="num">ROI</th>
-          <th data-sort="units" class="num">Unités à acheter</th>
-          <th data-sort="investment" class="num">Coût total</th>
-          <th data-sort="profit" class="num sorted-desc">Profit/voyage</th>
-        </tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
-    <p id="empty" class="empty" hidden>Aucune route ne correspond aux filtres.</p>
-  </div>
+    <aside id="shipCard" class="ship-card" hidden>
+      <div class="ship-img-wrap">
+        <img id="shipImg" class="ship-img" alt="" loading="lazy" />
+      </div>
+      <div class="ship-card-info">
+        <span class="ship-card-label">◈ Vaisseau sélectionné</span>
+        <span id="shipCardName" class="ship-card-name"></span>
+        <span id="shipCardScu" class="ship-card-scu"></span>
+      </div>
+    </aside>
+
+    <div class="table-wrap">
+      <table id="routes">
+        <thead>
+          <tr>
+            <th data-sort="commodity">Commodité</th>
+            <th data-sort="buyPrice">Acheter</th>
+            <th data-sort="sellPrice">Vendre</th>
+            <th data-sort="margin" class="num">Marge/SCU</th>
+            <th data-sort="roi" class="num">ROI</th>
+            <th data-sort="units" class="num">Unités à acheter</th>
+            <th data-sort="investment" class="num">Coût total</th>
+            <th data-sort="profit" class="num sorted-desc">Profit/voyage</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p id="empty" class="empty" hidden>Aucune route ne correspond aux filtres.</p>
+    </div>
+  </main>
 
   <footer>
     <p>
