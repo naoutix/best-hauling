@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Best Hauling — Routes commerciales Star Citizen</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="title">
+      <h1>Best&nbsp;Hauling</h1>
+      <p class="sub">Meilleures routes d'arbitrage de commodités — Star Citizen</p>
+    </div>
+    <div class="meta" id="meta">Chargement…</div>
+  </header>
+
+  <section class="controls">
+    <div class="field">
+      <label for="cargo">Soute (SCU)</label>
+      <input id="cargo" type="number" min="1" step="1" value="96" />
+    </div>
+    <div class="field">
+      <label for="budget">Budget (aUEC)</label>
+      <input id="budget" type="number" min="0" step="1000" value="1000000" />
+    </div>
+    <div class="field">
+      <label for="search">Commodité</label>
+      <input id="search" type="text" placeholder="ex : Laranite" />
+    </div>
+    <div class="field">
+      <label for="system">Système d'achat</label>
+      <select id="system"><option value="">Tous</option></select>
+    </div>
+    <div class="field checks">
+      <label><input id="sameSystem" type="checkbox" /> Même système uniquement</label>
+      <label><input id="capStock" type="checkbox" /> Limiter au stock UEX</label>
+    </div>
+  </section>
+
+  <div class="table-wrap">
+    <table id="routes">
+      <thead>
+        <tr>
+          <th data-sort="commodity">Commodité</th>
+          <th data-sort="buyPrice">Acheter</th>
+          <th data-sort="sellPrice">Vendre</th>
+          <th data-sort="margin" class="num">Marge/SCU</th>
+          <th data-sort="roi" class="num">ROI</th>
+          <th data-sort="units" class="num">Unités</th>
+          <th data-sort="profit" class="num sorted-desc">Profit/voyage</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <p id="empty" class="empty" hidden>Aucune route ne correspond aux filtres.</p>
+  </div>
+
+  <footer>
+    <p>
+      Données : <a id="src" href="https://uexcorp.space" target="_blank" rel="noopener">UEX Corp</a>.
+      Non affilié à Cloud Imperium Games. Les prix et stocks in-game varient — vérifie avant de voler.
+    </p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+# Notes perso — ne pas publier sur le repo public
+checklist-achat-idris.md
+
+# Config locale Claude Code
+.claude/
+
+# Dépendances / OS
+node_modules/
+.DS_Store
+Thumbs.db
