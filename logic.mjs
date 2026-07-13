@@ -121,6 +121,48 @@ export function scuBoxes(n) {
   return out;
 }
 
+// ---------- Chaîne multi-sauts (A -> B -> C ...) ----------
+// Meilleure chaîne de `hops` sauts depuis `start`, sans revisiter un terminal.
+// adj : Map<terminal, leg[]> ; leg = { to, margin, stock, demand, buyPrice, ... }.
+// Recherche par faisceau (beam) : approximation robuste et bornée en temps. Chaque saut
+// remplit la soute (`cargo`), plafonnée par stock/demande ; le budget se reconstitue à la
+// vente donc n'est pas une contrainte de chaîne. Renvoie { path, legs, profit } ou null.
+export function bestChain(adj, start, hops, { cargo = Infinity, beam = 40 } = {}) {
+  const legUnits = (leg) => {
+    let u = cargo;
+    if (leg.stock > 0) u = Math.min(u, leg.stock);
+    if (leg.demand > 0) u = Math.min(u, leg.demand);
+    return isFinite(u) ? Math.max(0, u) : 0; // sans borne de volume : rien (chaîne = soute finie)
+  };
+  let paths = [{ path: [start], visited: new Set([start]), profit: 0, legs: [] }];
+  let best = null;
+  for (let h = 0; h < hops; h++) {
+    const next = [];
+    for (const p of paths) {
+      const u = p.path[p.path.length - 1];
+      for (const leg of adj.get(u) || []) {
+        if (leg.margin <= 0 || p.visited.has(leg.to)) continue;
+        const units = legUnits(leg);
+        if (units <= 0) continue;
+        const legProfit = units * leg.margin;
+        const visited = new Set(p.visited);
+        visited.add(leg.to);
+        next.push({
+          path: [...p.path, leg.to],
+          visited,
+          profit: p.profit + legProfit,
+          legs: [...p.legs, { ...leg, units, profit: legProfit }],
+        });
+      }
+    }
+    if (!next.length) break;
+    next.sort((a, b) => b.profit - a.profit);
+    paths = next.slice(0, beam);
+    if (!best || paths[0].profit > best.profit) best = paths[0]; // chaque saut ajoute un profit positif
+  }
+  return best ? { path: best.path, legs: best.legs, profit: best.profit } : null;
+}
+
 // ---------- Unités ajoutables d'une commodité candidate (suggestions) ----------
 export function addableUnits(it, rem) {
   let u = rem.cargoLeft;

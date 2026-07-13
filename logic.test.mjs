@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   tripMinutes, loopMinutes, ageDays, pairAge, freshnessFactor, availabilityFactor,
-  normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits, scuBoxes,
+  normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits, scuBoxes, bestChain,
 } from "./logic.mjs";
 
 // ---------- Temps de trajet ----------
@@ -216,4 +216,52 @@ test("addableUnits : min(espace, stock, demande, budget/prix)", () => {
   assert.equal(addableUnits(it, { cargoLeft: 10, budgetLeft: Infinity }), 10);       // soute limite
   assert.equal(addableUnits(it, { cargoLeft: 50, budgetLeft: 1500 }), 15);           // budget limite
   assert.equal(addableUnits(it, { cargoLeft: 0, budgetLeft: Infinity }), 0);         // plein
+});
+
+// ---------- bestChain (chaîne multi-sauts) ----------
+// Graphe : A->B (marge 10), A->C (marge 5), B->C (marge 20), C->D (marge 30), B->A (marge 3).
+const leg = (to, margin, o = {}) => ({ to, margin, stock: 0, demand: 0, buyPrice: 100, ...o });
+const ADJ = new Map([
+  ["A", [leg("B", 10), leg("C", 5)]],
+  ["B", [leg("C", 20), leg("A", 3)]],
+  ["C", [leg("D", 30)]],
+  ["D", []],
+]);
+
+test("bestChain : choisit la chaîne 2 sauts la plus rentable", () => {
+  // A->B->C = (10+20)*50 = 1500 ; A->C->D = (5+30)*50 = 1750 -> gagne
+  const r = bestChain(ADJ, "A", 2, { cargo: 50 });
+  assert.deepEqual(r.path, ["A", "C", "D"]);
+  assert.equal(r.profit, 1750);
+  assert.equal(r.legs.length, 2);
+  assert.equal(r.legs[0].units, 50);
+});
+
+test("bestChain : ne revisite jamais un terminal (pas de A->B->A)", () => {
+  const r = bestChain(ADJ, "A", 3, { cargo: 10 });
+  const unique = new Set(r.path);
+  assert.equal(unique.size, r.path.length); // tous distincts
+});
+
+test("bestChain : s'arrête si aucune extension (renvoie la meilleure chaîne atteinte)", () => {
+  // Depuis C, un seul saut possible (C->D) ; demander 3 sauts -> chaîne d'1 saut.
+  const r = bestChain(ADJ, "C", 3, { cargo: 10 });
+  assert.deepEqual(r.path, ["C", "D"]);
+  assert.equal(r.legs.length, 1);
+});
+
+test("bestChain : les unités par saut sont plafonnées par stock/demande", () => {
+  const adj = new Map([
+    ["A", [leg("B", 10, { stock: 20, demand: 999 })]],
+    ["B", [leg("C", 10, { stock: 999, demand: 5 })]],
+    ["C", []],
+  ]);
+  const r = bestChain(adj, "A", 2, { cargo: 100 });
+  assert.equal(r.legs[0].units, 20); // stock A->B
+  assert.equal(r.legs[1].units, 5);  // demande B->C
+  assert.equal(r.profit, 20 * 10 + 5 * 10);
+});
+
+test("bestChain : null si aucun saut rentable", () => {
+  assert.equal(bestChain(new Map([["A", []]]), "A", 3, { cargo: 50 }), null);
 });
