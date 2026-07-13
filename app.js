@@ -217,10 +217,13 @@ function render() {
   normalizeScores(rows);
   rows.sort(bySort(sortKey, sortDir));
 
-  const tbody = $("rows");
-  tbody.innerHTML = rows
-    .map(
-      (r) => `
+  $("rows").innerHTML = rows.map(routeRowHTML).join("");
+  $("empty").hidden = rows.length > 0;
+}
+
+// Ligne de tableau pour une route évaluée (partagée par « Trajets simples » et « En route »).
+function routeRowHTML(r) {
+  return `
       <tr>
         <td class="loc"><div class="commodity-cell">${commodityIcon(r.kind)}<span>${esc(r.commodity)}${illegalTag(r.illegal)}${suspectTag(r)}</span></div></td>
         <td>
@@ -238,11 +241,7 @@ function render() {
         <td class="num">${fmt(r.investment)}</td>
         <td class="num profit">${fmt(r.profit)}</td>
         <td class="num profit" title="Estimation ${Math.round(r.minutes)} min/voyage">${fmt(r.profitHour)}</td>
-      </tr>`
-    )
-    .join("");
-
-  $("empty").hidden = rows.length > 0;
+      </tr>`;
 }
 
 // ---------- Vue "Boucles aller-retour" ----------
@@ -321,9 +320,192 @@ function renderLoops() {
   $("empty").hidden = rows.length > 0;
 }
 
-// Bascule entre les deux vues et rafraîchit la bonne table.
+// ---------- Mode « En route » (trajet dirigé) + manifeste multi-commodité ----------
+let MARKET = null;            // graphe d'échange, chargé à la demande
+let enrouteReady = false;     // datalist/destSystem peuplés une seule fois
+let originMap = new Map();    // libellé « Nom — Système » -> index terminal
+let enrouteOrigin = null;     // index du terminal de départ sélectionné
+
+async function loadMarket() {
+  if (!MARKET) {
+    MARKET = await fetch("data/market.json").then((r) => r.json()).catch(() => ({ terminals: [], commodities: [] }));
+  }
+  return MARKET;
+}
+
+// Peuple la liste des terminaux de départ (ceux où l'on peut acheter). Idempotent.
+function setupEnRoute() {
+  if (enrouteReady) return;
+  const seen = new Set();
+  const opts = [];
+  MARKET.commodities.forEach((c) => c.buys.forEach((b) => {
+    if (!seen.has(b[0])) {
+      seen.add(b[0]);
+      const t = MARKET.terminals[b[0]];
+      const label = `${t.name} — ${t.system}`;
+      originMap.set(label, b[0]);
+      opts.push(label);
+    }
+  }));
+  opts.sort((a, b) => a.localeCompare(b, "fr"));
+  $("originList").innerHTML = opts.map((l) => `<option value="${esc(l)}"></option>`).join("");
+  enrouteReady = true;
+  resolveOrigin(); // au cas où une valeur a été restaurée
+}
+
+// Résout le terminal de départ depuis le texte du champ (libellé exact).
+function resolveOrigin() {
+  const v = $("origin").value.trim();
+  enrouteOrigin = originMap.has(v) ? originMap.get(v) : null;
+}
+
+// Construit un objet « route » (compatible evaluate/routeRowHTML) depuis un achat + une vente.
+function dealFrom(c, b, s) {
+  const bt = MARKET.terminals[b[0]], st = MARKET.terminals[s[0]];
+  const margin = s[1] - b[1];
+  return {
+    commodity: c.name, kind: c.kind, illegal: c.illegal,
+    buy: { terminal: bt.name, system: bt.system, planet: bt.planet, outpost: bt.outpost, price: b[1], stock: b[2], updated: b[3], status: b[4] },
+    sell: { terminal: st.name, system: st.system, planet: st.planet, outpost: st.outpost, price: s[1], demand: s[2], updated: s[3], status: s[4] },
+    margin, roi: Math.round((margin / b[1]) * 1000) / 10,
+    same_system: bt.system === st.system,
+    distance: 0,       // distance exacte indisponible hors routes.json -> estimation grossière
+    refBuy: 0, refSell: 0,
+  };
+}
+
+// Meilleure vente par commodité depuis le terminal `origin`, filtrée par système d'arrivée.
+function enRouteDeals(origin, destSystem) {
+  const deals = [];
+  MARKET.commodities.forEach((c) => {
+    const b = c.buys.find((x) => x[0] === origin);
+    if (!b) return;
+    let best = null;
+    for (const s of c.sells) {
+      if (s[0] === origin) continue;
+      if (destSystem && MARKET.terminals[s[0]].system !== destSystem) continue;
+      if (!best || s[1] > best[1]) best = s;
+    }
+    if (best && best[1] > b[1]) deals.push(dealFrom(c, b, best));
+  });
+  return deals;
+}
+
+// Manifeste : destination (terminal) qui maximise le profit d'un chargement multi-commodité
+// depuis `origin`, soute remplie par marge décroissante. Toujours plafonné par stock/demande
+// (c'est justement ce qui force à diversifier). Null si la soute n'est pas contrainte.
+function bestManifest(origin, destSystem, f) {
+  if (!f.useCargo || !(f.cargo > 0)) return null;
+  const byDest = new Map();
+  MARKET.commodities.forEach((c) => {
+    if (f.legalOnly && c.illegal) return;
+    const b = c.buys.find((x) => x[0] === origin);
+    if (!b) return;
+    c.sells.forEach((s) => {
+      if (s[0] === origin) return;
+      const st = MARKET.terminals[s[0]];
+      if (destSystem && st.system !== destSystem) return;
+      if (f.noOutpost && st.outpost) return;
+      const margin = s[1] - b[1];
+      if (margin <= 0) return;
+      if (!byDest.has(s[0])) byDest.set(s[0], []);
+      byDest.get(s[0]).push({ name: c.name, kind: c.kind, illegal: c.illegal, buyPrice: b[1], stock: b[2], sellPrice: s[1], demand: s[2], margin });
+    });
+  });
+
+  let best = null;
+  for (const [dest, items] of byDest) {
+    items.sort((a, b) => b.margin - a.margin);
+    let cargoLeft = f.cargo;
+    let budgetLeft = f.useBudget && f.budget > 0 ? f.budget : Infinity;
+    const lines = [];
+    let profit = 0, invest = 0, scu = 0;
+    for (const it of items) {
+      if (cargoLeft <= 0 || budgetLeft <= 0) break;
+      let u = cargoLeft;
+      if (it.stock > 0) u = Math.min(u, it.stock);
+      if (it.demand > 0) u = Math.min(u, it.demand);
+      if (isFinite(budgetLeft)) u = Math.min(u, Math.floor(budgetLeft / it.buyPrice));
+      if (u <= 0) continue;
+      lines.push({ ...it, units: u });
+      cargoLeft -= u; budgetLeft -= u * it.buyPrice; profit += u * it.margin; invest += u * it.buyPrice; scu += u;
+    }
+    if (lines.length && (!best || profit > best.profit)) {
+      const ot = MARKET.terminals[origin], dt = MARKET.terminals[dest];
+      best = { origin: ot, dest: dt, cross: ot.system !== dt.system, lines, profit, invest, scu, cargo: f.cargo };
+    }
+  }
+  return best;
+}
+
+function renderManifest(origin, destSystem, f) {
+  const card = $("manifest");
+  if (enrouteOrigin == null) { card.hidden = true; return; }
+  if (!f.useCargo || !(f.cargo > 0)) {
+    card.hidden = false;
+    card.innerHTML = `<div class="manifest-hint">Active la <b>soute (SCU)</b> pour calculer un manifeste de remplissage.</div>`;
+    return;
+  }
+  const man = bestManifest(origin, destSystem, f);
+  if (!man) {
+    card.hidden = false;
+    card.innerHTML = `<div class="manifest-hint">Aucun chargement rentable depuis ce terminal vers cette destination.</div>`;
+    return;
+  }
+  const minutes = tripMinutes(0, man.cross);
+  const profitHour = (man.profit * 60) / minutes;
+  const empty = man.cargo - man.scu;
+  card.hidden = false;
+  card.innerHTML =
+    `<div class="manifest-head">
+      <span class="manifest-title">◈ Manifeste optimal — ${esc(man.origin.name)}${sysBadge(man.origin.system)} → ${esc(man.dest.name)}${sysBadge(man.dest.system)}${man.cross ? ' <span class="cross">⚡ inter-système</span>' : ""}</span>
+      <span class="manifest-tot">Profit <b class="profit">${fmt(man.profit)}</b> aUEC · <b>${fmt(man.scu)}</b>/${fmt(man.cargo)} SCU${empty > 0 ? ` · ${fmt(empty)} SCU vides` : ""} · invest. ${fmt(man.invest)} · ~${fmt(profitHour)}/h</span>
+    </div>
+    <div class="manifest-lines">` +
+    man.lines.map((l) =>
+      `<div class="mline">${commodityIcon(l.kind)}<span class="mqty">${fmt(l.units)} SCU</span><span class="mname">${esc(l.name)}${illegalTag(l.illegal)}</span><span class="mprice">${fmt(l.buyPrice)} → ${fmt(l.sellPrice)}</span><span class="mprofit profit">+${fmt(l.units * l.margin)}</span></div>`
+    ).join("") +
+    `</div>`;
+}
+
+function renderEnRoute() {
+  if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderEnRoute(); }); return; }
+  if (!enrouteReady) setupEnRoute();
+  const f = readFilters();
+  const emptyMsg = $("empty");
+
+  renderManifest(enrouteOrigin, $("destSystem").value, f);
+
+  if (enrouteOrigin == null) {
+    $("enrouteRows").innerHTML = "";
+    emptyMsg.hidden = false;
+    emptyMsg.textContent = "Choisis un terminal de départ pour voir le fret à emporter.";
+    return;
+  }
+
+  const destSystem = $("destSystem").value;
+  let deals = enRouteDeals(enrouteOrigin, destSystem)
+    .filter((r) => {
+      if (f.legalOnly && r.illegal) return false;
+      if (f.noOutpost && (r.buy.outpost || r.sell.outpost)) return false;
+      if (f.sameOnly && !r.same_system) return false;
+      if (f.maxAge) { const a = pairAge(r.buy.updated, r.sell.updated); if (a == null || a > f.maxAge) return false; }
+      if (f.q && !r.commodity.toLowerCase().includes(f.q)) return false;
+      return true;
+    })
+    .map((r) => evaluate(r, f));
+
+  normalizeScores(deals);
+  deals.sort(bySort(sortKey, sortDir));
+  $("enrouteRows").innerHTML = deals.map(routeRowHTML).join("");
+  emptyMsg.hidden = deals.length > 0;
+  if (!deals.length) emptyMsg.textContent = "Aucun fret rentable depuis ce terminal avec ces filtres.";
+}
+
+// Bascule entre les vues et rafraîchit la bonne table.
 function refresh() {
   if (view === "loops") renderLoops();
+  else if (view === "enroute") renderEnRoute();
   else render();
   saveState();
 }
@@ -331,8 +513,12 @@ function switchView(v) {
   view = v;
   $("viewRoutes").classList.toggle("active", v === "routes");
   $("viewLoops").classList.toggle("active", v === "loops");
+  $("viewEnroute").classList.toggle("active", v === "enroute");
   $("routes").hidden = v !== "routes";
   $("loops").hidden = v !== "loops";
+  $("enroute").hidden = v !== "enroute";
+  $("enrouteControls").hidden = v !== "enroute";
+  if (v !== "enroute") $("manifest").hidden = true;
   refresh();
 }
 
@@ -481,7 +667,7 @@ async function loadShips() {
 // ---------- Persistance & permaliens ----------
 // L'état (filtres, tri, vue, vaisseau) est sauvé dans localStorage ET encodé dans le
 // hash de l'URL, pour reprendre là où on s'est arrêté et partager une vue précise.
-const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship"];
+const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem"];
 const STATE_CHECKS = ["useCargo", "useBudget", "sameSystem", "noOutpost", "legalOnly", "capStock"];
 const safeKey = (k) => typeof k === "string" && /^[a-zA-Z]+$/.test(k); // anti-injection de sélecteur
 
@@ -531,7 +717,7 @@ function applyState(s) {
   STATE_CHECKS.forEach((id) => { if (s[id] != null) $(id).checked = s[id] === "1"; });
   if (safeKey(s.sk)) { sortKey = s.sk; sortDir = Number(s.sd) === 1 ? 1 : -1; }
   if (safeKey(s.lk)) { loopSortKey = s.lk; loopSortDir = Number(s.ld) === 1 ? 1 : -1; }
-  if (s.v === "routes" || s.v === "loops") view = s.v;
+  if (s.v === "routes" || s.v === "loops" || s.v === "enroute") view = s.v;
   applySortIndicators();
   syncToggles();
   restoring = false;
@@ -574,7 +760,11 @@ async function init() {
   );
   $("viewRoutes").addEventListener("click", () => switchView("routes"));
   $("viewLoops").addEventListener("click", () => switchView("loops"));
+  $("viewEnroute").addEventListener("click", () => switchView("enroute"));
   $("share").addEventListener("click", copyShareLink);
+  // Contrôles « En route ».
+  $("origin").addEventListener("input", () => { resolveOrigin(); refresh(); });
+  $("destSystem").addEventListener("input", refresh);
   syncToggles();
 
   // État à restaurer (URL partagée en priorité, sinon dernière session locale).
@@ -590,13 +780,12 @@ async function init() {
     ROUTES = routes;
     LOOPS = loops;
 
-    // Remplit le filtre système (systèmes d'achat ET de vente, pour n'en oublier aucun).
+    // Remplit les filtres système (achat + vente) : #system et la destination « En route ».
     const systems = [...new Set(routes.flatMap((r) => [r.buy.system, r.sell.system]))].sort();
-    const sel = $("system");
+    const sel = $("system"), dest = $("destSystem");
     systems.forEach((s) => {
-      const o = document.createElement("option");
-      o.value = o.textContent = s;
-      sel.appendChild(o);
+      sel.appendChild(new Option(s, s));
+      dest.appendChild(new Option(s, s));
     });
 
     if (meta) {

@@ -145,6 +145,32 @@ function buildBestLegs(byCommodity) {
   return bestLeg;
 }
 
+// Graphe d'échange compact pour les modes interactifs côté client (En route, remplissage).
+// Déduplique les terminaux dans un tableau (l'index sert de référence) et, par commodité,
+// liste les points d'achat/vente en tuples compacts : [idxTerminal, prix, volume, maj, statut].
+function buildMarket(byCommodity, term) {
+  const terminals = [];
+  const index = new Map();
+  const idxOf = (id) => {
+    if (index.has(id)) return index.get(id);
+    const t = term.get(id);
+    const i = terminals.length;
+    terminals.push({ name: t.name, system: t.system, planet: t.planet, outpost: t.outpost });
+    index.set(id, i);
+    return i;
+  };
+  const commodities = [];
+  for (const [, c] of byCommodity) {
+    if (!c.buys.length || !c.sells.length) continue; // uniquement les commodités échangeables
+    commodities.push({
+      name: c.name, kind: c.kind, illegal: c.illegal,
+      buys: c.buys.map((b) => [idxOf(b.id), b.price, b.stock, b.updated, b.status]),
+      sells: c.sells.map((s) => [idxOf(s.id), s.price, s.demand, s.updated, s.status]),
+    });
+  }
+  return { terminals, commodities };
+}
+
 async function main() {
   log("Récupération des terminaux…");
   const terminals = await getJSON("terminals?type=commodity");
@@ -302,16 +328,20 @@ async function main() {
     .map((v) => ({ name: v.name_full || v.name, scu: v.scu, photo: v.url_photo || "" }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
+  // Graphe d'échange complet pour les modes « En route » et « remplissage » (chargé à la demande).
+  const market = buildMarket(byCommodity, term);
+
   await mkdir(OUT_DIR, { recursive: true });
   await writeFile(join(OUT_DIR, "routes.json"), JSON.stringify(top));
   await writeFile(join(OUT_DIR, "loops.json"), JSON.stringify(topLoops));
   await writeFile(join(OUT_DIR, "ships.json"), JSON.stringify(ships));
+  await writeFile(join(OUT_DIR, "market.json"), JSON.stringify(market));
   await writeFile(join(OUT_DIR, "meta.json"), JSON.stringify(meta, null, 2));
-  log(`OK — ${top.length} routes, ${topLoops.length} boucles, ${byCommodity.size} commodités, ${term.size} terminaux, ${ships.length} vaisseaux.`);
+  log(`OK — ${top.length} routes, ${topLoops.length} boucles, ${market.commodities.length} commodités marché, ${term.size} terminaux, ${ships.length} vaisseaux.`);
 }
 
 // Fonctions pures exportées pour les tests (voir build-data.test.mjs).
-export { normalizeKind, routesForCommodity, buildBestLegs };
+export { normalizeKind, routesForCommodity, buildBestLegs, buildMarket };
 
 // N'exécute le pipeline complet (réseau + écriture) que lorsqu'on lance le fichier
 // directement — pas quand il est importé par les tests.

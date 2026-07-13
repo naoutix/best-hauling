@@ -2,7 +2,7 @@
 // Lancer : `node --test` (ou `npm test`).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeKind, routesForCommodity, buildBestLegs } from "./build-data.mjs";
+import { normalizeKind, routesForCommodity, buildBestLegs, buildMarket } from "./build-data.mjs";
 
 test("normalizeKind corrige la casse, les fautes de frappe et les valeurs vides", () => {
   assert.equal(normalizeKind("Minteral"), "mineral");
@@ -92,4 +92,27 @@ test("buildBestLegs ignore les marges nulles ou négatives et les mêmes termina
   // 20->10 : marge 100-100=0 exclue ; 20->20 même id exclu ; 10->10 même id exclu.
   // Seule 20(achat 100)->10(vente 100)=0 et 10(200)->20(150)=-50 : rien de positif.
   assert.equal(legs.size, 0);
+});
+
+test("buildMarket déduplique les terminaux et compacte achats/ventes en tuples", () => {
+  const term = new Map([
+    [10, { name: "A", system: "Stanton", planet: "Hurston", outpost: false }],
+    [20, { name: "B", system: "Pyro", planet: "", outpost: true }],
+  ]);
+  const byCommodity = new Map([
+    [1, {
+      name: "Laranite", kind: "metal", illegal: false,
+      buys: [buy({ id: 10, price: 100, stock: 50, updated: 111, status: 4 })],
+      sells: [buy({ id: 20, price: 250, demand: 80, updated: 222, status: 2 })],
+    }],
+    // Commodité sans vente -> exclue du marché.
+    [2, { name: "X", kind: "gas", illegal: false, buys: [buy({ id: 10, price: 10 })], sells: [] }],
+  ]);
+  const m = buildMarket(byCommodity, term);
+  assert.equal(m.commodities.length, 1); // la commodité sans vente est écartée
+  assert.deepEqual(m.terminals[0], { name: "A", system: "Stanton", planet: "Hurston", outpost: false });
+  const c = m.commodities[0];
+  assert.deepEqual(c.buys[0], [0, 100, 50, 111, 4]);  // [idxTerminal, prix, stock, maj, statut]
+  assert.deepEqual(c.sells[0], [1, 250, 80, 222, 2]); // [idxTerminal, prix, demande, maj, statut]
+  assert.equal(m.terminals[c.sells[0][0]].system, "Pyro");
 });

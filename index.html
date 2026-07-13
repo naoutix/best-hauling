@@ -74,10 +74,25 @@
     <div class="view-switch">
       <button id="viewRoutes" class="vbtn active" data-view="routes">Trajets simples</button>
       <button id="viewLoops" class="vbtn" data-view="loops">Boucles aller-retour ⇄</button>
+      <button id="viewEnroute" class="vbtn" data-view="enroute">En route 🧭</button>
       <button id="share" class="vbtn share-btn" title="Copier un lien vers cette vue filtrée (soute, budget, filtres, tri)">🔗 Partager</button>
     </div>
 
+    <section id="enrouteControls" class="enroute-controls" hidden>
+      <div class="field">
+        <label for="origin">Terminal de départ</label>
+        <input id="origin" list="originList" type="text" placeholder="Tape un terminal (ex : CRU-L1)" autocomplete="off" />
+        <datalist id="originList"></datalist>
+      </div>
+      <div class="field">
+        <label for="destSystem">Destination</label>
+        <select id="destSystem"><option value="">N'importe où</option></select>
+      </div>
+      <p class="enroute-hint">Le fret rentable depuis ton terminal, plus un <b>manifeste optimal</b> qui remplit ta soute avec plusieurs commodités vers une même destination.</p>
+    </section>
+
     <div class="table-wrap">
+      <div id="manifest" class="manifest" hidden></div>
       <table id="routes">
         <thead>
           <tr>
@@ -110,6 +125,24 @@
           </tr>
         </thead>
         <tbody id="loopRows"></tbody>
+      </table>
+
+      <table id="enroute" hidden>
+        <thead>
+          <tr>
+            <th>Commodité</th>
+            <th>Acheter (départ)</th>
+            <th>Vendre</th>
+            <th>Score</th>
+            <th class="num">Marge/SCU</th>
+            <th class="num">ROI</th>
+            <th class="num">Unités à acheter</th>
+            <th class="num">Coût total</th>
+            <th class="num">Profit/voyage</th>
+            <th class="num">Profit/heure</th>
+          </tr>
+        </thead>
+        <tbody id="enrouteRows"></tbody>
       </table>
 
       <p id="empty" class="empty" hidden>Aucune route ne correspond aux filtres.</p>
