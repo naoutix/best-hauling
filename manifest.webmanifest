@@ -1,0 +1,15 @@
+{
+  "name": "Best Hauling — Routes commerciales Star Citizen",
+  "short_name": "Best Hauling",
+  "description": "Meilleures routes d'arbitrage de commodités Star Citizen (données UEX Corp).",
+  "lang": "fr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#05080d",
+  "theme_color": "#05080d",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

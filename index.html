@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Best Hauling — Routes commerciales Star Citizen</title>
   <link rel="stylesheet" href="style.css" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon.svg" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <meta name="theme-color" content="#05080d" />
 </head>
 <body>
   <div class="scanlines" aria-hidden="true"></div>
@@ -37,7 +41,7 @@
       </div>
       <div class="field">
         <label for="search">Commodité</label>
-        <input id="search" type="text" placeholder="ex : Laranite" />
+        <input id="search" type="text" placeholder="ex : Laranite" title="Filtrer par commodité (raccourci : /)" />
       </div>
       <div class="field">
         <label for="system">Système d'achat</label>
@@ -72,9 +76,9 @@
     </aside>
 
     <div class="view-switch">
-      <button id="viewRoutes" class="vbtn active" data-view="routes">Trajets simples</button>
-      <button id="viewLoops" class="vbtn" data-view="loops">Boucles aller-retour ⇄</button>
-      <button id="viewEnroute" class="vbtn" data-view="enroute">En route 🧭</button>
+      <button id="viewRoutes" class="vbtn active" data-view="routes" title="Trajets simples (raccourci : 1)">Trajets simples</button>
+      <button id="viewLoops" class="vbtn" data-view="loops" title="Boucles aller-retour (raccourci : 2)">Boucles aller-retour ⇄</button>
+      <button id="viewEnroute" class="vbtn" data-view="enroute" title="En route (raccourci : 3)">En route 🧭</button>
       <button id="resetOv" class="vbtn reset-ov" title="Effacer tes corrections locales de prix et de stock" hidden>✎ 0 correction</button>
       <button id="share" class="vbtn share-btn" title="Copier un lien vers cette vue filtrée (soute, budget, filtres, tri)">🔗 Partager</button>
     </div>

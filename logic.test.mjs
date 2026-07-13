@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   tripMinutes, loopMinutes, ageDays, pairAge, freshnessFactor, availabilityFactor,
-  normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits,
+  normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits, scuBoxes,
 } from "./logic.mjs";
 
 // ---------- Temps de trajet ----------
@@ -183,6 +183,30 @@ test("fillCargo : chaque ligne mémorise son plafond (cap = units)", () => {
   const { lines } = fillCargo(items, 100, Infinity);
   assert.equal(lines[0].cap, 7);
   assert.equal(lines[0].units, 7);
+});
+
+// ---------- scuBoxes (décomposition en caisses) ----------
+test("scuBoxes : décompose par tailles standard, plus grand d'abord", () => {
+  assert.deepEqual(scuBoxes(32), [{ size: 32, count: 1 }]);
+  assert.deepEqual(scuBoxes(24), [{ size: 24, count: 1 }]);
+  assert.deepEqual(scuBoxes(3), [{ size: 2, count: 1 }, { size: 1, count: 1 }]);
+  // 279 = 8×32 + 1×16 + 1×4 + 1×2 + 1×1  (256+16+4+2+1)
+  assert.deepEqual(scuBoxes(279), [
+    { size: 32, count: 8 }, { size: 16, count: 1 }, { size: 4, count: 1 }, { size: 2, count: 1 }, { size: 1, count: 1 },
+  ]);
+});
+
+test("scuBoxes : la somme des caisses redonne toujours N", () => {
+  for (const n of [0, 1, 7, 40, 96, 123, 1000, 4608]) {
+    const total = scuBoxes(n).reduce((a, b) => a + b.size * b.count, 0);
+    assert.equal(total, n);
+  }
+});
+
+test("scuBoxes : 0 ou négatif -> aucune caisse", () => {
+  assert.deepEqual(scuBoxes(0), []);
+  assert.deepEqual(scuBoxes(-5), []);
+  assert.deepEqual(scuBoxes(null), []);
 });
 
 // ---------- addableUnits (suggestions) ----------
