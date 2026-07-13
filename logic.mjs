@@ -108,6 +108,19 @@ export function fillCargo(items, cargo, budget) {
   return { lines, profit };
 }
 
+// ---------- Décomposition en caisses SCU standard ----------
+// Répartit N SCU en conteneurs standard (plus grand d'abord). Renvoie [{size, count}, ...].
+export const SCU_BOX_SIZES = [32, 24, 16, 8, 4, 2, 1];
+export function scuBoxes(n) {
+  n = Math.max(0, Math.floor(n || 0));
+  const out = [];
+  for (const size of SCU_BOX_SIZES) {
+    const count = Math.floor(n / size);
+    if (count > 0) { out.push({ size, count }); n -= count * size; }
+  }
+  return out;
+}
+
 // ---------- Unités ajoutables d'une commodité candidate (suggestions) ----------
 export function addableUnits(it, rem) {
   let u = rem.cargoLeft;

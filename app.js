@@ -3,8 +3,14 @@
 // Fonctions de calcul pures (testées par logic.test.mjs).
 import {
   tripMinutes, loopMinutes, ageDays, pairAge, freshnessFactor, availabilityFactor,
-  normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits,
+  normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits, scuBoxes,
 } from "./logic.mjs";
+
+// Libellé compact des caisses SCU standard, ex. « 8×32 · 1×16 · 1×4 · 1×2 · 1×1 ».
+function scuBoxesLabel(n) {
+  const boxes = scuBoxes(n);
+  return boxes.length ? boxes.map((b) => `${b.count}×${b.size}`).join(" · ") : "";
+}
 
 // État global
 let ROUTES = [];
@@ -288,7 +294,7 @@ function routeRowHTML(r, i) {
         <td>${scoreCell(r.score)}</td>
         <td class="num">${fmt(r.margin)}</td>
         <td class="num roi-badge">${r.roi}%</td>
-        <td class="num">${fmt(r.units)}</td>
+        <td class="num"${r.units ? ` title="Caisses : ${scuBoxesLabel(r.units)}"` : ""}>${fmt(r.units)}</td>
         <td class="num">${fmt(r.investment)}</td>
         <td class="num profit">${fmt(r.profit)}</td>
         <td class="num profit" title="Estimation ${Math.round(r.minutes)} min/voyage">${fmt(r.profitHour)}</td>
@@ -577,6 +583,7 @@ function paintManifest() {
     `<div class="manifest-head">
       <span class="manifest-title">◈ Manifeste — ${esc(m.origin.name)}${sysBadge(m.origin.system)} → ${esc(m.dest.name)}${sysBadge(m.dest.system)}${m.cross ? ' <span class="cross">⚡ inter-système</span>' : ""}</span>
       <span class="manifest-tot" id="manifestTot">${manifestTotalsHTML(profit, scu, m.cargo, invest, m.cross)}</span>
+      <button id="copyManifest" class="copy-btn" title="Copier le plan de chargement">⧉ Copier</button>
     </div>
     <div class="manifest-lines">` +
     m.lines.map((l, i) =>
@@ -585,7 +592,8 @@ function paintManifest() {
       `<span class="mname">${esc(l.name)}${illegalTag(l.illegal)}</span>` +
       `<span class="mstock">stock ${editv(l.name, m.origin.name, "buy", "vol", l.stock, isOv(l.name, m.origin.name, "buy", "vol"), l.buyUpdated)} · dem. ${editv(l.name, m.dest.name, "sell", "vol", l.demand, isOv(l.name, m.dest.name, "sell", "vol"), l.sellUpdated)}</span>` +
       `<span class="mprice">${editv(l.name, m.origin.name, "buy", "price", l.buyPrice, isOv(l.name, m.origin.name, "buy", "price"), l.buyUpdated)} → ${editv(l.name, m.dest.name, "sell", "price", l.sellPrice, isOv(l.name, m.dest.name, "sell", "price"), l.sellUpdated)}</span>` +
-      `<span class="mprofit profit">+${fmt(l.units * l.margin)}</span></div>`
+      `<span class="mprofit profit">+${fmt(l.units * l.margin)}</span>` +
+      `<span class="mboxes" title="Caisses SCU standard à charger">📦 ${scuBoxesLabel(l.units)}</span></div>`
     ).join("") +
     `</div><div id="manifestSuggest" class="manifest-suggest"></div>`;
   renderSuggestions();
@@ -605,10 +613,35 @@ function updateManifestTotals() {
     profit += u * Number(inp.dataset.margin);
     invest += u * Number(inp.dataset.buy);
     scu += u;
-    inp.closest(".mline").querySelector(".mprofit").textContent = "+" + fmt(u * Number(inp.dataset.margin));
+    const line = inp.closest(".mline");
+    line.querySelector(".mprofit").textContent = "+" + fmt(u * Number(inp.dataset.margin));
+    line.querySelector(".mboxes").textContent = "📦 " + scuBoxesLabel(u);
   });
   $("manifestTot").innerHTML = manifestTotalsHTML(profit, scu, currentManifest.cargo, invest, currentManifest.cross);
   renderSuggestions();
+}
+
+// Copie le plan de chargement en texte (pour un 2e écran / des notes).
+function copyManifest() {
+  const m = currentManifest;
+  if (!m) return;
+  let profit = 0, invest = 0, scu = 0;
+  m.lines.forEach((l) => { profit += l.units * l.margin; invest += l.units * l.buyPrice; scu += l.units; });
+  const rows = m.lines.map(
+    (l) => `${fmt(l.units)} SCU  ${l.name}  @ ${fmt(l.buyPrice)} -> ${fmt(l.sellPrice)}  (+${fmt(l.units * l.margin)} aUEC)  [${scuBoxesLabel(l.units)}]`
+  );
+  const text = [
+    `Manifeste — ${m.origin.name} (${m.origin.system}) -> ${m.dest.name} (${m.dest.system})`,
+    ...rows,
+    `Total : ${fmt(scu)}/${fmt(m.cargo)} SCU · profit ${fmt(profit)} aUEC · investissement ${fmt(invest)} aUEC`,
+  ].join("\n");
+  const btn = $("copyManifest");
+  navigator.clipboard?.writeText(text).then(() => {
+    if (!btn) return;
+    btn.textContent = "✓ Copié";
+    btn.classList.add("copied");
+    setTimeout(() => { btn.textContent = "⧉ Copier"; btn.classList.remove("copied"); }, 1500);
+  }).catch(() => {});
 }
 
 function renderManifest(origin, destSystem, f) {
@@ -975,6 +1008,7 @@ async function init() {
     if (e.target.classList.contains("mqty-input")) updateManifestTotals();
   });
   $("manifest").addEventListener("click", (e) => {
+    if (e.target.closest("#copyManifest")) { copyManifest(); return; }
     const add = e.target.closest(".suggest-add");
     if (add) addSuggestion(add.dataset.name);
   });
@@ -1005,6 +1039,16 @@ async function init() {
     }
   });
   $("resetOv").addEventListener("click", resetAllOverrides);
+  // Raccourcis clavier : / (recherche), 1/2/3 (vues). Ignorés pendant la saisie.
+  document.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const el = document.activeElement;
+    if (el && (el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA" || el.classList.contains("editv"))) return;
+    if (e.key === "/") { e.preventDefault(); $("search").focus(); }
+    else if (e.key === "1") switchView("routes");
+    else if (e.key === "2") switchView("loops");
+    else if (e.key === "3") switchView("enroute");
+  });
   loadOverrides();
   updateOvBadge();
   syncToggles();
@@ -1032,9 +1076,12 @@ async function init() {
 
     if (meta) {
       const d = new Date(meta.generated_at * 1000);
+      const ageH = (Date.now() / 1000 - meta.generated_at) / 3600;
+      const rel = ageH < 1 ? "il y a moins d'1 h" : ageH < 24 ? `il y a ${Math.round(ageH)} h` : `il y a ${Math.round(ageH / 24)} j`;
+      const stale = ageH > 6; // données rafraîchies chaque heure : au-delà de 6 h, pipeline suspect
       $("meta").innerHTML =
         `<b>${meta.routes}</b> routes · <b>${meta.loops ?? LOOPS.length}</b> boucles · <b>${meta.commodities}</b> commodités<br>` +
-        `Mis à jour le ${d.toLocaleString("fr-FR")}`;
+        `<span class="meta-age${stale ? " stale" : ""}" title="Mis à jour le ${d.toLocaleString("fr-FR")}">Données ${rel}${stale ? " ⚠" : ""}</span>`;
     }
     // Applique l'état restauré une fois le menu système peuplé, puis affiche la bonne vue.
     applyState(saved);
@@ -1048,3 +1095,8 @@ async function init() {
 }
 
 init();
+
+// PWA : installable + consultable hors-ligne (ignoré si non supporté / hors contexte sécurisé).
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+}
