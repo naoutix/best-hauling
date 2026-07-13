@@ -438,8 +438,36 @@ function bestManifest(origin, destSystem, f) {
   return best;
 }
 
+let currentManifest = null; // manifeste courant (pour le recalcul interactif)
+
+// Totaux du manifeste (recalculés à la volée quand on ajuste les SCU d'une ligne).
+function manifestTotalsHTML(profit, scu, cargo, invest, cross) {
+  const empty = cargo - scu;
+  const profitHour = (profit * 60) / tripMinutes(0, cross);
+  return `Profit <b class="profit">${fmt(profit)}</b> aUEC · <b>${fmt(scu)}</b>/${fmt(cargo)} SCU${empty > 0 ? ` · ${fmt(empty)} SCU vides` : ""} · invest. ${fmt(invest)} · ~${fmt(profitHour)}/h`;
+}
+
+// Recalcule totaux + profit par ligne d'après les SCU saisis (le stock in-game est
+// parfois inférieur au relevé UEX : l'utilisateur peut réduire chaque quantité).
+function updateManifestTotals() {
+  if (!currentManifest) return;
+  let profit = 0, invest = 0, scu = 0;
+  document.querySelectorAll("#manifest .mqty-input").forEach((inp) => {
+    const cap = Number(inp.dataset.cap);
+    let u = Math.floor(Number(inp.value));
+    if (!Number.isFinite(u) || u < 0) u = 0;
+    if (u > cap) { u = cap; inp.value = String(cap); }
+    profit += u * Number(inp.dataset.margin);
+    invest += u * Number(inp.dataset.buy);
+    scu += u;
+    inp.closest(".mline").querySelector(".mprofit").textContent = "+" + fmt(u * Number(inp.dataset.margin));
+  });
+  $("manifestTot").innerHTML = manifestTotalsHTML(profit, scu, currentManifest.cargo, invest, currentManifest.cross);
+}
+
 function renderManifest(origin, destSystem, f) {
   const card = $("manifest");
+  currentManifest = null;
   if (enrouteOrigin == null) { card.hidden = true; return; }
   if (!f.useCargo || !(f.cargo > 0)) {
     card.hidden = false;
@@ -452,18 +480,21 @@ function renderManifest(origin, destSystem, f) {
     card.innerHTML = `<div class="manifest-hint">Aucun chargement rentable depuis ce terminal vers cette destination.</div>`;
     return;
   }
-  const minutes = tripMinutes(0, man.cross);
-  const profitHour = (man.profit * 60) / minutes;
-  const empty = man.cargo - man.scu;
+  currentManifest = man;
   card.hidden = false;
   card.innerHTML =
     `<div class="manifest-head">
       <span class="manifest-title">◈ Manifeste optimal — ${esc(man.origin.name)}${sysBadge(man.origin.system)} → ${esc(man.dest.name)}${sysBadge(man.dest.system)}${man.cross ? ' <span class="cross">⚡ inter-système</span>' : ""}</span>
-      <span class="manifest-tot">Profit <b class="profit">${fmt(man.profit)}</b> aUEC · <b>${fmt(man.scu)}</b>/${fmt(man.cargo)} SCU${empty > 0 ? ` · ${fmt(empty)} SCU vides` : ""} · invest. ${fmt(man.invest)} · ~${fmt(profitHour)}/h</span>
+      <span class="manifest-tot" id="manifestTot">${manifestTotalsHTML(man.profit, man.scu, man.cargo, man.invest, man.cross)}</span>
     </div>
     <div class="manifest-lines">` +
     man.lines.map((l) =>
-      `<div class="mline">${commodityIcon(l.kind)}<span class="mqty">${fmt(l.units)} SCU</span><span class="mname">${esc(l.name)}${illegalTag(l.illegal)}</span><span class="mprice">${fmt(l.buyPrice)} → ${fmt(l.sellPrice)}</span><span class="mprofit profit">+${fmt(l.units * l.margin)}</span></div>`
+      `<div class="mline">${commodityIcon(l.kind)}` +
+      `<span class="mqtywrap"><input type="number" class="mqty-input" min="0" max="${l.units}" value="${l.units}" data-margin="${l.margin}" data-buy="${l.buyPrice}" data-cap="${l.units}" title="Réduis si le stock in-game est plus bas" aria-label="SCU ${esc(l.name)}"><span class="munit">SCU</span></span>` +
+      `<span class="mname">${esc(l.name)}${illegalTag(l.illegal)}</span>` +
+      `<span class="mstock" title="Relevé UEX : stock à l'achat / demande à la vente">stock ${fmt(l.stock)} · dem. ${fmt(l.demand)}</span>` +
+      `<span class="mprice">${fmt(l.buyPrice)} → ${fmt(l.sellPrice)}</span>` +
+      `<span class="mprofit profit">+${fmt(l.units * l.margin)}</span></div>`
     ).join("") +
     `</div>`;
 }
@@ -765,6 +796,10 @@ async function init() {
   // Contrôles « En route ».
   $("origin").addEventListener("input", () => { resolveOrigin(); refresh(); });
   $("destSystem").addEventListener("input", refresh);
+  // Ajustement interactif des SCU dans le manifeste (recalcul des totaux à la volée).
+  $("manifest").addEventListener("input", (e) => {
+    if (e.target.classList.contains("mqty-input")) updateManifestTotals();
+  });
   syncToggles();
 
   // État à restaurer (URL partagée en priorité, sinon dernière session locale).
