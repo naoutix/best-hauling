@@ -4,10 +4,12 @@
 let ROUTES = [];
 let LOOPS = [];
 let view = "routes"; // "routes" | "loops"
-let sortKey = "profitHour";
+let sortKey = "score";
 let sortDir = -1; // -1 = décroissant, 1 = croissant
-let loopSortKey = "profit";
+let loopSortKey = "score";
 let loopSortDir = -1;
+
+const STATE_KEY = "best-hauling-state";
 
 const $ = (id) => document.getElementById(id);
 const fmt = (n) => (n == null || !isFinite(n) ? "—" : Math.round(n).toLocaleString("fr-FR"));
@@ -130,12 +132,35 @@ function computeUnits(price, stock, demand, f) {
   return units;
 }
 
+// ---------- Score composite (tri « intelligent ») ----------
+// Combine la valeur (profit/heure si borné, sinon marge/SCU) avec la fiabilité :
+// fraîcheur du relevé et disponibilité (stock à l'achat × demande à la vente).
+function freshnessFactor(age) {
+  if (age == null) return 0.5;          // date inconnue : pénalité modérée
+  return Math.max(0.2, 1 - age / 14);   // 1.0 tout frais -> 0.2 au-delà de ~11 j
+}
+function availabilityFactor(stock, demand) {
+  if (!stock && !demand) return 0.65;   // relevé de volume absent : neutre-bas
+  const m = Math.min(stock || 0, demand || 0);
+  return 0.3 + 0.7 * (m / (m + 120));   // saturation : ~0.65 à 120 SCU, ~0.88 à 500
+}
+
+// Normalise les scores bruts d'une liste sur 0-100 (100 = meilleur de la vue courante).
+function normalizeScores(rows) {
+  const max = rows.reduce((m, r) => Math.max(m, r.rawScore || 0), 0);
+  rows.forEach((r) => (r.score = max > 0 ? Math.round((r.rawScore / max) * 100) : 0));
+}
+
 // Calcule les champs dérivés d'une route selon les entrées utilisateur.
 function evaluate(r, f) {
   const units = computeUnits(r.buy.price, r.buy.stock, r.sell.demand, f);
   const bounded = isFinite(units);
   const profit = bounded ? units * r.margin : null;
   const minutes = tripMinutes(r.distance, !r.same_system);
+  const profitHour = profit == null ? null : (profit * 60) / minutes;
+  const base = profit == null ? r.margin : profitHour;
+  const rawScore =
+    base * freshnessFactor(pairAge(r.buy.updated, r.sell.updated)) * availabilityFactor(r.buy.stock, r.sell.demand);
   return {
     ...r,
     buyPrice: r.buy.price,
@@ -144,8 +169,15 @@ function evaluate(r, f) {
     investment: bounded ? units * r.buy.price : null,
     profit,
     minutes,
-    profitHour: profit == null ? null : (profit * 60) / minutes,
+    profitHour,
+    rawScore,
   };
+}
+
+// Cellule visuelle du score : mini-barre + valeur.
+function scoreCell(score) {
+  const tier = score >= 70 ? "s-good" : score >= 40 ? "s-ok" : "s-low";
+  return `<div class="score-cell"><span class="scorebar ${tier}"><i style="width:${score}%"></i></span><b>${score}</b></div>`;
 }
 
 // Lit l'état de tous les contrôles de filtre (partagé par les deux vues).
@@ -182,6 +214,7 @@ function render() {
     return true;
   }).map((r) => evaluate(r, f));
 
+  normalizeScores(rows);
   rows.sort(bySort(sortKey, sortDir));
 
   const tbody = $("rows");
@@ -198,6 +231,7 @@ function render() {
           <div>${esc(r.sell.terminal)}${sysBadge(r.sell.system)}${outpostTag(r.sell.outpost)}</div>
           <div class="loc-sub">${esc(r.sell.planet)} · ${fmt(r.sell.price)} aUEC · ${statusDot(r.sell.status, "sell")}<span class="stock" title="Demande / stock à la vente (relevé UEX)">demande ${fmt(r.sell.demand)} SCU</span> · ${freshChip(r.sell.updated)}${r.same_system ? "" : ' <span class="cross">⚡ saut inter-système</span>'}</div>
         </td>
+        <td>${scoreCell(r.score)}</td>
         <td class="num">${fmt(r.margin)}</td>
         <td class="num roi-badge">${r.roi}%</td>
         <td class="num">${fmt(r.units)}</td>
@@ -219,6 +253,12 @@ function evaluateLoop(l, f) {
   const cross = l.a.system !== l.b.system;
   const minutes = loopMinutes(l.distance, cross);
   const profit = bounded ? uOut * l.out.margin + uBack * l.back.margin : null;
+  const profitHour = profit == null ? null : (profit * 60) / minutes;
+  const base = profit == null ? l.loopMargin : profitHour;
+  const rawScore =
+    base *
+    freshnessFactor(pairAge(l.out.updated, l.back.updated)) *
+    availabilityFactor(Math.min(l.out.stock, l.back.stock), Math.min(l.out.demand, l.back.demand));
   return {
     ...l,
     cross,
@@ -228,7 +268,8 @@ function evaluateLoop(l, f) {
     investment: bounded ? Math.max(uOut * l.out.buyPrice, uBack * l.back.buyPrice) : null,
     profit,
     minutes,
-    profitHour: profit == null ? null : (profit * 60) / minutes,
+    profitHour,
+    rawScore,
   };
 }
 
@@ -249,6 +290,7 @@ function renderLoops() {
     return true;
   }).map((l) => evaluateLoop(l, f));
 
+  normalizeScores(rows);
   rows.sort(bySort(loopSortKey, loopSortDir));
 
   $("loopRows").innerHTML = rows
@@ -267,6 +309,7 @@ function renderLoops() {
           <div class="commodity-cell">${commodityIcon(l.back.kind)}<span>${esc(l.back.commodity)}${illegalTag(l.back.illegal)}</span></div>
           <div class="loc-sub">${fmt(l.back.buyPrice)} → ${fmt(l.back.sellPrice)} · marge ${fmt(l.back.margin)}</div>
         </td>
+        <td>${scoreCell(l.score)}</td>
         <td class="num">${fmt(l.loopMargin)}</td>
         <td class="num">${l.units == null ? "—" : fmt(l.unitsOut) + " + " + fmt(l.unitsBack)}</td>
         <td class="num profit">${fmt(l.profit)}</td>
@@ -282,6 +325,7 @@ function renderLoops() {
 function refresh() {
   if (view === "loops") renderLoops();
   else render();
+  saveState();
 }
 function switchView(v) {
   view = v;
@@ -304,6 +348,7 @@ function setupSort() {
       document.querySelectorAll("#routes th").forEach((h) => h.classList.remove("sorted-asc", "sorted-desc"));
       th.classList.add(sortDir === -1 ? "sorted-desc" : "sorted-asc");
       render();
+      saveState();
     });
   });
 }
@@ -317,6 +362,7 @@ function setupLoopSort() {
       document.querySelectorAll("#loops th").forEach((h) => h.classList.remove("sorted-asc", "sorted-desc"));
       th.classList.add(loopSortDir === -1 ? "sorted-desc" : "sorted-asc");
       renderLoops();
+      saveState();
     });
   });
 }
@@ -432,6 +478,79 @@ async function loadShips() {
   });
 }
 
+// ---------- Persistance & permaliens ----------
+// L'état (filtres, tri, vue, vaisseau) est sauvé dans localStorage ET encodé dans le
+// hash de l'URL, pour reprendre là où on s'est arrêté et partager une vue précise.
+const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship"];
+const STATE_CHECKS = ["useCargo", "useBudget", "sameSystem", "noOutpost", "legalOnly", "capStock"];
+const safeKey = (k) => typeof k === "string" && /^[a-zA-Z]+$/.test(k); // anti-injection de sélecteur
+
+let restoring = false; // évite de resauver pendant qu'on applique un état
+
+function collectState() {
+  const s = { v: view, sk: sortKey, sd: sortDir, lk: loopSortKey, ld: loopSortDir };
+  STATE_FIELDS.forEach((id) => (s[id] = $(id).value));
+  STATE_CHECKS.forEach((id) => (s[id] = $(id).checked ? 1 : 0));
+  return s;
+}
+
+function saveState() {
+  if (restoring) return;
+  const params = new URLSearchParams();
+  Object.entries(collectState()).forEach(([k, v]) => {
+    if (v !== "" && v != null) params.set(k, v);
+  });
+  const str = params.toString();
+  try { localStorage.setItem(STATE_KEY, str); } catch {}
+  history.replaceState(null, "", str ? "#" + str : location.pathname + location.search);
+}
+
+function loadState() {
+  let str = location.hash.replace(/^#/, "");
+  if (!str) { try { str = localStorage.getItem(STATE_KEY) || ""; } catch {} }
+  return str ? Object.fromEntries(new URLSearchParams(str)) : null;
+}
+
+// Positionne l'indicateur ▾/▴ sur la bonne colonne des deux tables.
+function applySortIndicators() {
+  document.querySelectorAll("#routes th, #loops th").forEach((h) => h.classList.remove("sorted-asc", "sorted-desc"));
+  if (safeKey(sortKey)) {
+    const th = document.querySelector(`#routes th[data-sort="${sortKey}"]`);
+    if (th) th.classList.add(sortDir === -1 ? "sorted-desc" : "sorted-asc");
+  }
+  if (safeKey(loopSortKey)) {
+    const th = document.querySelector(`#loops th[data-sort-loop="${loopSortKey}"]`);
+    if (th) th.classList.add(loopSortDir === -1 ? "sorted-desc" : "sorted-asc");
+  }
+}
+
+function applyState(s) {
+  if (!s) return;
+  restoring = true;
+  STATE_FIELDS.forEach((id) => { if (s[id] != null) $(id).value = s[id]; });
+  STATE_CHECKS.forEach((id) => { if (s[id] != null) $(id).checked = s[id] === "1"; });
+  if (safeKey(s.sk)) { sortKey = s.sk; sortDir = Number(s.sd) === 1 ? 1 : -1; }
+  if (safeKey(s.lk)) { loopSortKey = s.lk; loopSortDir = Number(s.ld) === 1 ? 1 : -1; }
+  if (s.v === "routes" || s.v === "loops") view = s.v;
+  applySortIndicators();
+  syncToggles();
+  restoring = false;
+}
+
+async function copyShareLink() {
+  saveState();
+  const btn = $("share");
+  try {
+    await navigator.clipboard.writeText(location.href);
+    const prev = btn.textContent;
+    btn.textContent = "✓ Lien copié";
+    btn.classList.add("copied");
+    setTimeout(() => { btn.textContent = prev; btn.classList.remove("copied"); }, 1500);
+  } catch {
+    // Presse-papiers indisponible (contexte non sécurisé) : on laisse l'URL dans la barre.
+  }
+}
+
 // Grise le champ soute/budget quand sa contrainte est désactivée.
 function syncToggles() {
   const cargoOff = !$("useCargo").checked;
@@ -455,7 +574,11 @@ async function init() {
   );
   $("viewRoutes").addEventListener("click", () => switchView("routes"));
   $("viewLoops").addEventListener("click", () => switchView("loops"));
+  $("share").addEventListener("click", copyShareLink);
   syncToggles();
+
+  // État à restaurer (URL partagée en priorité, sinon dernière session locale).
+  const saved = loadState();
 
   try {
     const [routes, loops, meta] = await Promise.all([
@@ -482,7 +605,9 @@ async function init() {
         `<b>${meta.routes}</b> routes · <b>${meta.loops ?? LOOPS.length}</b> boucles · <b>${meta.commodities}</b> commodités<br>` +
         `Mis à jour le ${d.toLocaleString("fr-FR")}`;
     }
-    refresh();
+    // Applique l'état restauré une fois le menu système peuplé, puis affiche la bonne vue.
+    applyState(saved);
+    switchView(view);
   } catch (e) {
     $("meta").textContent = "Erreur de chargement des données.";
     $("empty").hidden = false;
