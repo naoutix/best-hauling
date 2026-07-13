@@ -1,5 +1,11 @@
 "use strict";
 
+// Fonctions de calcul pures (testées par logic.test.mjs).
+import {
+  tripMinutes, loopMinutes, ageDays, pairAge, freshnessFactor, availabilityFactor,
+  normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits,
+} from "./logic.mjs";
+
 // État global
 let ROUTES = [];
 let LOOPS = [];
@@ -51,28 +57,8 @@ function illegalTag(isIllegal) {
   return isIllegal ? ' <span class="illegal" title="Commodité illégale : contrebande, risque de scan">⛔ illégal</span>' : "";
 }
 
-// Estimation grossière du temps de trajet (minutes) depuis la distance UEX
-// (unité orbite→orbite) : manutention aux terminaux + trajet + saut inter-système.
-// Constantes approximatives — servent surtout à classer les routes entre elles.
-const HANDLING = 3, PER_DIST = 0.06, JUMP = 4;
-function tripMinutes(distance, cross) {
-  return 2 * HANDLING + (distance || 0) * PER_DIST + (cross ? JUMP : 0);
-}
-function loopMinutes(distance, cross) {
-  return 4 * HANDLING + (distance || 0) * PER_DIST + (cross ? 2 * JUMP : 0);
-}
-
 // ---------- Fiabilité : fraîcheur, statut de stock, aberrations ----------
-// Âge d'un relevé en jours (null si date inconnue).
-function ageDays(updated) {
-  if (!updated) return null;
-  return (Date.now() / 1000 - updated) / 86400;
-}
-// Âge d'une route/boucle = le relevé le plus ancien des deux extrémités.
-function pairAge(a, b) {
-  const u = a && b ? Math.min(a, b) : a || b || 0;
-  return ageDays(u);
-}
+// (tripMinutes/loopMinutes/ageDays/pairAge viennent de logic.mjs)
 // Petite pastille colorée « il y a Xj/Xh » selon l'âge.
 function freshChip(updated) {
   const d = ageDays(updated);
@@ -104,52 +90,9 @@ function suspectTag(r) {
   return ` <span class="suspect" title="À vérifier en jeu : ${why}">⚠ à vérifier</span>`;
 }
 
-// Comparateur de tri qui renvoie toujours les valeurs nulles en bas.
-function bySort(key, dir) {
-  return (a, b) => {
-    const av = a[key], bv = b[key];
-    if (av == null && bv == null) return 0;
-    if (av == null) return 1;
-    if (bv == null) return -1;
-    // Tri des chaînes (ex : commodité) sensible à la locale, pour trier les accents correctement.
-    if (typeof av === "string" && typeof bv === "string") return av.localeCompare(bv, "fr") * dir;
-    return av > bv ? dir : av < bv ? -dir : 0;
-  };
-}
-
-// Nombre d'unités achetables selon les contraintes actives. Renvoie Infinity si aucune
-// contrainte de volume n'est active (soute ET budget désactivés) -> on classe alors par marge.
-// f = { cargo, budget, capStock, useCargo, useBudget } (issu de readFilters()).
-function computeUnits(price, stock, demand, f) {
-  const byCargo = f.useCargo ? f.cargo : Infinity;
-  const byBudget = f.useBudget && f.budget > 0 ? Math.floor(f.budget / price) : Infinity;
-  let units = Math.min(byCargo, byBudget);
-  if (f.capStock) {
-    if (stock > 0) units = Math.min(units, stock); // stock dispo à l'achat
-    if (demand > 0) units = Math.min(units, demand); // demande à la vente
-  }
-  if (isFinite(units) && units < 0) units = 0;
-  return units;
-}
-
-// ---------- Score composite (tri « intelligent ») ----------
-// Combine la valeur (profit/heure si borné, sinon marge/SCU) avec la fiabilité :
-// fraîcheur du relevé et disponibilité (stock à l'achat × demande à la vente).
-function freshnessFactor(age) {
-  if (age == null) return 0.5;          // date inconnue : pénalité modérée
-  return Math.max(0.2, 1 - age / 14);   // 1.0 tout frais -> 0.2 au-delà de ~11 j
-}
-function availabilityFactor(stock, demand) {
-  if (!stock && !demand) return 0.65;   // relevé de volume absent : neutre-bas
-  const m = Math.min(stock || 0, demand || 0);
-  return 0.3 + 0.7 * (m / (m + 120));   // saturation : ~0.65 à 120 SCU, ~0.88 à 500
-}
-
-// Normalise les scores bruts d'une liste sur 0-100 (100 = meilleur de la vue courante).
-function normalizeScores(rows) {
-  const max = rows.reduce((m, r) => Math.max(m, r.rawScore || 0), 0);
-  rows.forEach((r) => (r.score = max > 0 ? Math.round((r.rawScore / max) * 100) : 0));
-}
+// Score composite (tri « intelligent ») : combine la valeur (profit/heure si borné,
+// sinon marge) avec la fiabilité — fraîcheur × disponibilité. freshnessFactor /
+// availabilityFactor / normalizeScores viennent de logic.mjs.
 
 // ---------- Corrections locales (prix & stock) ----------
 // L'utilisateur peut corriger un prix ou un volume (stock à l'achat / demande à la vente)
@@ -179,21 +122,9 @@ const ovCount = () => Object.keys(OVERRIDES).length;
 // supprime et on revient à la valeur UEX (comptée pour le flash de notification).
 function effVals(commodity, terminal, side, price, vol, dataUpdated) {
   const k = ovKey(commodity, terminal, side);
-  const o = OVERRIDES[k];
-  if (!o) return { price, vol, oprice: false, ovol: false };
-  const base = o.base != null ? o.base : o.ts != null ? o.ts : Infinity; // legacy : ts, sinon jamais périmé
-  if (dataUpdated && base !== Infinity && dataUpdated > base) {
-    delete OVERRIDES[k];
-    saveOverrides();
-    supersededKeys.add(k);
-    return { price, vol, oprice: false, ovol: false };
-  }
-  return {
-    price: o.price != null ? o.price : price,
-    vol: o.vol != null ? o.vol : vol,
-    oprice: o.price != null,
-    ovol: o.vol != null,
-  };
+  const r = effValue(OVERRIDES[k], price, vol, dataUpdated); // décision pure (logic.mjs)
+  if (r.stale) { delete OVERRIDES[k]; saveOverrides(); supersededKeys.add(k); } // effet de bord ici
+  return r;
 }
 
 // Enregistre (ou efface) une correction. field = "price"|"vol". value null/"" = efface ce champ.
@@ -525,23 +456,11 @@ function bestManifest(origin, destSystem, f) {
     });
   });
 
+  const budget = f.useBudget && f.budget > 0 ? f.budget : Infinity;
   let best = null;
   for (const [dest, items] of byDest) {
     items.sort((a, b) => b.margin - a.margin);
-    let cargoLeft = f.cargo;
-    let budgetLeft = f.useBudget && f.budget > 0 ? f.budget : Infinity;
-    const lines = [];
-    let profit = 0;
-    for (const it of items) {
-      if (cargoLeft <= 0 || budgetLeft <= 0) break;
-      let u = cargoLeft;
-      if (it.stock > 0) u = Math.min(u, it.stock);
-      if (it.demand > 0) u = Math.min(u, it.demand);
-      if (isFinite(budgetLeft)) u = Math.min(u, Math.floor(budgetLeft / it.buyPrice));
-      if (u <= 0) continue;
-      lines.push({ ...it, units: u, cap: u });
-      cargoLeft -= u; budgetLeft -= u * it.buyPrice; profit += u * it.margin;
-    }
+    const { lines, profit } = fillCargo(items, f.cargo, budget); // remplissage glouton (logic.mjs)
     if (lines.length && (!best || profit > best.profit)) {
       const dt = MARKET.terminals[dest];
       best = { origin: ot, dest: dt, destIdx: dest, cross: ot.system !== dt.system, lines, profit, cargo: f.cargo };
@@ -591,14 +510,7 @@ function suggestionsFor() {
   return out.sort((a, b) => b.margin - a.margin);
 }
 
-// Unités ajoutables d'une commodité candidate compte tenu de l'espace/budget restant.
-function addableUnits(it, rem) {
-  let u = rem.cargoLeft;
-  if (it.stock > 0) u = Math.min(u, it.stock);
-  if (it.demand > 0) u = Math.min(u, it.demand);
-  if (isFinite(rem.budgetLeft)) u = Math.min(u, Math.floor(rem.budgetLeft / it.buyPrice));
-  return Math.max(0, u);
-}
+// addableUnits vient de logic.mjs.
 
 function renderSuggestions() {
   const box = $("manifestSuggest");
