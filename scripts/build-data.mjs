@@ -17,18 +17,44 @@ const MAX_ROUTES = 600;
 // Nombre de terminaux de vente candidats par terminal d'achat.
 const TOP_SELLS = 4;
 
-async function getJSON(path) {
-  const res = await fetch(`${API}/${path}`, {
-    headers: { "User-Agent": "best-hauling/1.0 (github pages trade tool)" },
-  });
-  if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}`);
-  const body = await res.json();
-  if (body.status !== "ok") throw new Error(`${path} -> status ${body.status}`);
-  return body.data;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Récupère un endpoint UEX. `retries` = nombre de nouvelles tentatives avec back-off
+// exponentiel (500 ms, 1 s, …) sur erreur transitoire. Les appels dont l'échec est
+// attendu (distances inter-systèmes) passent { retries: 0 } pour ne pas ralentir le build.
+async function getJSON(path, { retries = 2 } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetch(`${API}/${path}`, {
+        headers: { "User-Agent": "best-hauling/1.0 (github pages trade tool)" },
+      });
+      if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}`);
+      const body = await res.json();
+      if (body.status !== "ok") throw new Error(`${path} -> status ${body.status}`);
+      return body.data;
+    } catch (e) {
+      if (attempt >= retries) throw e;
+      const wait = 500 * 2 ** attempt;
+      log(`Nouvelle tentative ${path} (${attempt + 1}/${retries}) dans ${wait} ms — ${e.message}`);
+      await sleep(wait);
+    }
+  }
 }
 
 function log(...a) {
   console.log("[build-data]", ...a);
+}
+
+// Exécute `fn` sur chaque élément avec une concurrence bornée, en préservant l'ordre.
+async function mapPool(items, limit, fn) {
+  let i = 0;
+  async function worker() {
+    while (i < items.length) {
+      const idx = i++;
+      await fn(items[idx], idx);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
 // Normalise la catégorie d'une commodité (corrige casse et fautes de frappe UEX).
@@ -148,28 +174,37 @@ async function main() {
   routes.sort((a, b) => b.margin - a.margin);
   const top = routes.slice(0, MAX_ROUTES);
 
-  // Distance orbite→orbite via l'API UEX, mise en cache par paire d'orbites.
+  // Distance orbite→orbite via l'API UEX. Approximation assumée : on suppose que tous les
+  // terminaux d'une même paire d'orbites sont à distance équivalente, donc on met en cache
+  // par paire d'orbites (et non par paire de terminaux). La valeur retenue est celle du
+  // premier couple de terminaux interrogé pour cette paire — largement suffisant pour un
+  // simple classement relatif des routes, et ça réduit fortement le nombre d'appels API.
+  // On mémorise la *promesse* : sous concurrence, plusieurs appelants d'une même clé
+  // partagent la même requête au lieu de la lancer en double.
   const distCache = new Map();
-  async function getDistance(oId, dId, oOrbit, dOrbit) {
-    if (!oOrbit || !dOrbit || oOrbit === dOrbit) return 0; // même orbite = négligeable
+  function getDistance(oId, dId, oOrbit, dOrbit) {
+    if (!oOrbit || !dOrbit || oOrbit === dOrbit) return Promise.resolve(0); // même orbite = négligeable
     const key = `${oOrbit}-${dOrbit}`;
     if (distCache.has(key)) return distCache.get(key);
-    let val = null;
-    try {
-      const d = await getJSON(`terminals_distances?id_terminal_origin=${oId}&id_terminal_destination=${dId}`);
-      if (d && d.distance != null) val = Number(d.distance);
-    } catch {
-      val = null; // paires inter-systèmes parfois non renvoyées
-    }
-    distCache.set(key, val);
-    return val;
+    const p = (async () => {
+      try {
+        // Échec attendu pour certaines paires inter-systèmes -> pas de retry (retries: 0).
+        const d = await getJSON(`terminals_distances?id_terminal_origin=${oId}&id_terminal_destination=${dId}`, { retries: 0 });
+        if (d && d.distance != null) return Number(d.distance);
+      } catch {
+        /* paires inter-systèmes parfois non renvoyées */
+      }
+      return null;
+    })();
+    distCache.set(key, p);
+    return p;
   }
 
   log(`Calcul des distances (${top.length} routes)…`);
-  for (const r of top) {
+  await mapPool(top, 5, async (r) => {
     r.distance = await getDistance(r._o, r._d, r._oo, r._do);
     delete r._o; delete r._d; delete r._oo; delete r._do;
-  }
+  });
 
   // ---------- Boucles aller-retour (ne pas repartir à vide) ----------
   // Meilleure marge par paire de terminaux orientée (A -> B), toutes commodités confondues.
@@ -227,12 +262,12 @@ async function main() {
   const topLoops = loops.slice(0, 160);
 
   log(`Distances des boucles (${topLoops.length})…`);
-  for (const l of topLoops) {
+  await mapPool(topLoops, 5, async (l) => {
     const d1 = await getDistance(l._a, l._b, l._ao, l._bo);
     const d2 = await getDistance(l._b, l._a, l._bo, l._ao);
     l.distance = (d1 || 0) + (d2 || 0); // aller-retour
     delete l._a; delete l._b; delete l._ao; delete l._bo;
-  }
+  });
 
   const systems = [...new Set(top.flatMap((r) => [r.buy.system, r.sell.system]))].sort();
   const meta = {
