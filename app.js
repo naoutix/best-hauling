@@ -183,7 +183,7 @@ function applyOverrides(commodity, buy, sell) {
 // Calcule les champs dérivés d'une route selon les entrées utilisateur (corrections comprises).
 function evaluate(r, f) {
   const { buy, sell, margin, roi } = applyOverrides(r.commodity, r.buy, r.sell);
-  const units = computeUnits(buy.price, buy.stock, sell.demand, f);
+  const units = computeUnits(buy.price, buy.stock, sell.demand, f, sell.ovVol); // ovVol = demande corrigée = fiable
   const bounded = isFinite(units);
   const profit = bounded ? units * margin : null;
   const minutes = tripMinutes(r.distance, !r.same_system);
@@ -308,15 +308,15 @@ function routeRowHTML(r, i) {
 function effLeg(leg, buyT, sellT) {
   const b = effVals(leg.commodity, buyT, "buy", leg.buyPrice, leg.stock, leg.updated);
   const s = effVals(leg.commodity, sellT, "sell", leg.sellPrice, leg.demand, leg.updated);
-  return { ...leg, buyPrice: b.price, stock: b.vol, sellPrice: s.price, demand: s.vol, margin: s.price - b.price };
+  return { ...leg, buyPrice: b.price, stock: b.vol, sellPrice: s.price, demand: s.vol, demandKnown: s.ovol, margin: s.price - b.price };
 }
 
 function evaluateLoop(l, f) {
   const out = effLeg(l.out, l.a.terminal, l.b.terminal);
   const back = effLeg(l.back, l.b.terminal, l.a.terminal);
   const loopMargin = out.margin + back.margin;
-  const uOut = computeUnits(out.buyPrice, out.stock, out.demand, f);
-  const uBack = computeUnits(back.buyPrice, back.stock, back.demand, f);
+  const uOut = computeUnits(out.buyPrice, out.stock, out.demand, f, out.demandKnown);
+  const uBack = computeUnits(back.buyPrice, back.stock, back.demand, f, back.demandKnown);
   const bounded = isFinite(uOut) && isFinite(uBack);
   const cross = l.a.system !== l.b.system;
   const minutes = loopMinutes(l.distance, cross);
@@ -493,7 +493,7 @@ function bestManifest(origin, destSystem, f) {
       const margin = es.price - eb.price;
       if (margin <= 0) return;
       if (!byDest.has(s[0])) byDest.set(s[0], []);
-      byDest.get(s[0]).push({ name: c.name, kind: c.kind, illegal: c.illegal, buyPrice: eb.price, stock: eb.vol, sellPrice: es.price, demand: es.vol, margin, buyUpdated: b[3], sellUpdated: s[3] });
+      byDest.get(s[0]).push({ name: c.name, kind: c.kind, illegal: c.illegal, buyPrice: eb.price, stock: eb.vol, sellPrice: es.price, demand: es.vol, demandKnown: es.ovol, margin, buyUpdated: b[3], sellUpdated: s[3] });
     });
   });
 
@@ -546,7 +546,7 @@ function suggestionsFor() {
     const es = effVals(c.name, m.dest.name, "sell", s[1], s[2], s[3]);
     const margin = es.price - eb.price;
     if (margin <= 0) return;
-    out.push({ name: c.name, kind: c.kind, illegal: c.illegal, buyPrice: eb.price, stock: eb.vol, sellPrice: es.price, demand: es.vol, margin, buyUpdated: b[3], sellUpdated: s[3] });
+    out.push({ name: c.name, kind: c.kind, illegal: c.illegal, buyPrice: eb.price, stock: eb.vol, sellPrice: es.price, demand: es.vol, demandKnown: es.ovol, margin, buyUpdated: b[3], sellUpdated: s[3] });
   });
   return out.sort((a, b) => b.margin - a.margin);
 }
@@ -741,7 +741,7 @@ function buildChainAdjacency(f) {
         if (!m) { m = new Map(); best.set(b[0], m); }
         const cur = m.get(s[0]);
         if (!cur || margin > cur.margin) {
-          m.set(s[0], { to: s[0], commodity: c.name, kind: c.kind, illegal: c.illegal, margin, buyPrice: eb.price, sellPrice: es.price, stock: eb.vol, demand: es.vol });
+          m.set(s[0], { to: s[0], commodity: c.name, kind: c.kind, illegal: c.illegal, margin, buyPrice: eb.price, sellPrice: es.price, stock: eb.vol, demand: es.vol, demandKnown: es.ovol });
         }
       });
     });

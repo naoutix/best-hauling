@@ -56,15 +56,16 @@ export function bySort(key, dir) {
 
 // ---------- Unités achetables selon les contraintes actives ----------
 // f = { cargo, budget, capStock, useCargo, useBudget }. Infinity si aucune contrainte de volume.
-export function computeUnits(price, stock, demand, f) {
+// demandKnown = true si la demande est fiable (corrigée par l'utilisateur) -> un 0 plafonne à 0.
+export function computeUnits(price, stock, demand, f, demandKnown = false) {
   const byCargo = f.useCargo ? f.cargo : Infinity;
   const byBudget = f.useBudget && f.budget > 0 ? Math.floor(f.budget / price) : Infinity;
   let units = Math.min(byCargo, byBudget);
   if (f.capStock) {
     // Stock à l'achat : 0 = terminal vide (dans les données UEX, stock 0 => statut « Vide ») -> plafonne à 0.
     units = Math.min(units, stock);
-    // Demande à la vente : 0 = quantité non renseignée (statut « forte demande » fréquent) -> on n'y touche pas.
-    if (demand > 0) units = Math.min(units, demand);
+    // Demande à la vente : 0 brut = quantité non renseignée (ignorée) ; 0 corrigé = « pas de demande » (plafonne).
+    if (demand > 0 || demandKnown) units = Math.min(units, demand);
   }
   if (isFinite(units) && units < 0) units = 0;
   return units;
@@ -99,7 +100,7 @@ export function fillCargo(items, cargo, budget) {
     if (cargoLeft <= 0 || budgetLeft <= 0) break;
     let u = cargoLeft;
     u = Math.min(u, it.stock);                          // stock 0 = vide -> ligne exclue (u <= 0)
-    if (it.demand > 0) u = Math.min(u, it.demand);      // demande 0 = quantité inconnue -> ignorée
+    if (it.demand > 0 || it.demandKnown) u = Math.min(u, it.demand); // 0 corrigé = pas de demande
     if (isFinite(budgetLeft)) u = Math.min(u, Math.floor(budgetLeft / it.buyPrice));
     if (u <= 0) continue;
     lines.push({ ...it, units: u, cap: u });
@@ -133,7 +134,7 @@ export function bestChain(adj, start, hops, { cargo = Infinity, beam = 40 } = {}
   const legUnits = (leg) => {
     let u = cargo;
     u = Math.min(u, leg.stock);                     // stock 0 = terminal vide -> saut exclu
-    if (leg.demand > 0) u = Math.min(u, leg.demand); // demande 0 = quantité inconnue -> ignorée
+    if (leg.demand > 0 || leg.demandKnown) u = Math.min(u, leg.demand); // 0 corrigé = pas de demande
     return isFinite(u) ? Math.max(0, u) : 0; // sans borne de volume : rien (chaîne = soute finie)
   };
   let paths = [{ path: [start], visited: new Set([start]), profit: 0, legs: [] }];
@@ -169,7 +170,7 @@ export function bestChain(adj, start, hops, { cargo = Infinity, beam = 40 } = {}
 export function addableUnits(it, rem) {
   let u = rem.cargoLeft;
   u = Math.min(u, it.stock);                          // stock 0 = vide -> non suggéré
-  if (it.demand > 0) u = Math.min(u, it.demand);      // demande 0 = quantité inconnue -> ignorée
+  if (it.demand > 0 || it.demandKnown) u = Math.min(u, it.demand); // 0 corrigé = pas de demande
   if (isFinite(rem.budgetLeft)) u = Math.min(u, Math.floor(rem.budgetLeft / it.buyPrice));
   return Math.max(0, u);
 }
