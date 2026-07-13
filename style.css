@@ -423,6 +423,35 @@ input.editv-input {
 }
 .suggest-add:hover { color: #04222c; background: var(--good); border-color: var(--good); }
 
+/* ---------- Vue « Chaîne » (multi-sauts) ---------- */
+.chain-wrap { margin: 18px 0 6px; }
+.chain {
+  border: 1px solid var(--line-bright);
+  background: linear-gradient(90deg, rgba(167, 139, 250, 0.06), var(--panel));
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+}
+.chain-head {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px 18px;
+  padding: 14px 18px; border-bottom: 1px solid var(--line);
+}
+.chain-path { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.chain-arrow { color: var(--nyx); font-size: 16px; margin: 0 2px; }
+.chain-tot { font-family: var(--mono); font-size: 12px; color: var(--muted); align-self: center; }
+.chain-tot b { color: var(--text); }
+.chain-tot b.profit { color: var(--good); }
+.chain-legs { display: flex; flex-direction: column; }
+.chain-leg {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px;
+  padding: 10px 18px; border-bottom: 1px solid var(--line);
+}
+.chain-leg:last-child { border-bottom: none; }
+.chain-step {
+  width: 24px; height: 24px; flex-shrink: 0; display: grid; place-items: center;
+  font-family: var(--mono); font-weight: 700; font-size: 12px; border-radius: 50%;
+  color: #04101c; background: var(--nyx);
+}
+.chain-leg-profit { font-family: var(--mono); white-space: nowrap; }
+
 /* ---------- Schéma de trajet (ligne dépliable) ---------- */
 .route-toggle {
   flex-shrink: 0; width: 24px; height: 24px; padding: 0;

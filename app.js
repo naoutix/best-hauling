@@ -3,7 +3,7 @@
 // Fonctions de calcul pures (testées par logic.test.mjs).
 import {
   tripMinutes, loopMinutes, ageDays, pairAge, freshnessFactor, availabilityFactor,
-  normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits, scuBoxes,
+  normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits, scuBoxes, bestChain,
 } from "./logic.mjs";
 
 // Libellé compact des caisses SCU standard, ex. « 8×32 · 1×16 · 1×4 · 1×2 · 1×1 ».
@@ -703,10 +703,94 @@ function renderEnRoute() {
   notifySuperseded();
 }
 
-// Bascule entre les vues et rafraîchit la bonne table.
+// ---------- Vue « Chaîne » (multi-sauts A -> B -> C ...) ----------
+let chainOrigin = null; // index du terminal de départ de la chaîne
+
+function resolveChainOrigin() {
+  const v = $("chainOrigin").value.trim();
+  chainOrigin = originMap.has(v) ? originMap.get(v) : null;
+}
+
+// Graphe des meilleurs segments : pour chaque paire (départ -> arrivée), la commodité de
+// marge maximale (corrections comprises). Renvoie Map<terminal, leg[]>.
+function buildChainAdjacency(f) {
+  const best = new Map(); // Map<u, Map<v, leg>>
+  MARKET.commodities.forEach((c) => {
+    if (f.legalOnly && c.illegal) return;
+    c.buys.forEach((b) => {
+      const bt = MARKET.terminals[b[0]];
+      if (f.noOutpost && bt.outpost) return;
+      const eb = effVals(c.name, bt.name, "buy", b[1], b[2], b[3]);
+      c.sells.forEach((s) => {
+        if (s[0] === b[0]) return;
+        const st = MARKET.terminals[s[0]];
+        if (f.noOutpost && st.outpost) return;
+        const es = effVals(c.name, st.name, "sell", s[1], s[2], s[3]);
+        const margin = es.price - eb.price;
+        if (margin <= 0) return;
+        let m = best.get(b[0]);
+        if (!m) { m = new Map(); best.set(b[0], m); }
+        const cur = m.get(s[0]);
+        if (!cur || margin > cur.margin) {
+          m.set(s[0], { to: s[0], commodity: c.name, kind: c.kind, illegal: c.illegal, margin, buyPrice: eb.price, sellPrice: es.price, stock: eb.vol, demand: es.vol });
+        }
+      });
+    });
+  });
+  const adj = new Map();
+  for (const [u, m] of best) adj.set(u, [...m.values()]);
+  return adj;
+}
+
+function chainCardHTML(chain) {
+  const T = (idx) => MARKET.terminals[idx];
+  const invest = chain.legs[0] ? chain.legs[0].units * chain.legs[0].buyPrice : 0;
+  let minutes = 0;
+  for (let i = 0; i < chain.legs.length; i++) {
+    minutes += tripMinutes(0, T(chain.path[i]).system !== T(chain.path[i + 1]).system);
+  }
+  const nodes = chain.path
+    .map((idx) => `<span class="snode term">${esc(T(idx).name)}</span>${sysBadge(T(idx).system)}`)
+    .join('<span class="chain-arrow">→</span>');
+  const legs = chain.legs
+    .map((leg, i) => {
+      const from = T(chain.path[i]).name, to = T(chain.path[i + 1]).name;
+      return `<div class="chain-leg"><span class="chain-step">${i + 1}</span><div class="chain-leg-main">` +
+        `<div class="commodity-cell">${commodityIcon(leg.kind)}<span><b>${esc(leg.commodity)}</b>${illegalTag(leg.illegal)} · ${fmt(leg.units)} SCU</span></div>` +
+        `<div class="loc-sub">${esc(from)} → ${esc(to)} · ${fmt(leg.buyPrice)} → ${fmt(leg.sellPrice)} (marge ${fmt(leg.margin)}/SCU)</div>` +
+        `</div><span class="chain-leg-profit profit">+${fmt(leg.profit)}</span></div>`;
+    })
+    .join("");
+  return `<div class="chain">
+      <div class="chain-head">
+        <span class="chain-path">${nodes}</span>
+        <span class="chain-tot">Profit <b class="profit">${fmt(chain.profit)}</b> aUEC · ${chain.legs.length} saut${chain.legs.length > 1 ? "s" : ""} · capital de départ ${fmt(invest)} · ~${Math.round(minutes)} min</span>
+      </div>
+      <div class="chain-legs">${legs}</div>
+    </div>`;
+}
+
+function renderChain() {
+  if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderChain(); }); return; }
+  if (!enrouteReady) setupEnRoute();
+  resolveChainOrigin();
+  const box = $("chainOut");
+  const f = readFilters();
+  const hint = (msg) => { box.innerHTML = `<div class="manifest-hint">${msg}</div>`; notifySuperseded(); };
+  if (chainOrigin == null) return hint("Choisis un <b>terminal de départ</b> pour calculer une chaîne rentable.");
+  if (!f.useCargo || !(f.cargo > 0)) return hint("Active la <b>soute (SCU)</b> pour dimensionner la chaîne.");
+  const hops = Number($("hops").value) || 3;
+  const chain = bestChain(buildChainAdjacency(f), chainOrigin, hops, { cargo: f.cargo });
+  if (!chain || !chain.legs.length) return hint("Aucune chaîne rentable depuis ce terminal avec ces filtres.");
+  box.innerHTML = chainCardHTML(chain);
+  notifySuperseded();
+}
+
+// Bascule entre les vues et rafraîchit la bonne.
 function refresh() {
   if (view === "loops") renderLoops();
   else if (view === "enroute") renderEnRoute();
+  else if (view === "chain") renderChain();
   else render();
   saveState();
 }
@@ -715,11 +799,15 @@ function switchView(v) {
   $("viewRoutes").classList.toggle("active", v === "routes");
   $("viewLoops").classList.toggle("active", v === "loops");
   $("viewEnroute").classList.toggle("active", v === "enroute");
+  $("viewChain").classList.toggle("active", v === "chain");
   $("routes").hidden = v !== "routes";
   $("loops").hidden = v !== "loops";
   $("enroute").hidden = v !== "enroute";
   $("enrouteControls").hidden = v !== "enroute";
+  $("chainControls").hidden = v !== "chain";
+  $("chainOut").hidden = v !== "chain";
   if (v !== "enroute") $("manifest").hidden = true;
+  if (v === "chain") $("empty").hidden = true; // la vue chaîne n'utilise pas le message des tables
   refresh();
 }
 
@@ -874,7 +962,7 @@ async function loadShips() {
 // ---------- Persistance & permaliens ----------
 // L'état (filtres, tri, vue, vaisseau) est sauvé dans localStorage ET encodé dans le
 // hash de l'URL, pour reprendre là où on s'est arrêté et partager une vue précise.
-const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem"];
+const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem", "chainOrigin", "hops"];
 const STATE_CHECKS = ["useCargo", "useBudget", "sameSystem", "noOutpost", "legalOnly", "capStock"];
 const safeKey = (k) => typeof k === "string" && /^[a-zA-Z]+$/.test(k); // anti-injection de sélecteur
 
@@ -924,7 +1012,7 @@ function applyState(s) {
   STATE_CHECKS.forEach((id) => { if (s[id] != null) $(id).checked = s[id] === "1"; });
   if (safeKey(s.sk)) { sortKey = s.sk; sortDir = Number(s.sd) === 1 ? 1 : -1; }
   if (safeKey(s.lk)) { loopSortKey = s.lk; loopSortDir = Number(s.ld) === 1 ? 1 : -1; }
-  if (s.v === "routes" || s.v === "loops" || s.v === "enroute") view = s.v;
+  if (["routes", "loops", "enroute", "chain"].includes(s.v)) view = s.v;
   applySortIndicators();
   syncToggles();
   restoring = false;
@@ -1007,10 +1095,14 @@ async function init() {
   $("viewRoutes").addEventListener("click", () => switchView("routes"));
   $("viewLoops").addEventListener("click", () => switchView("loops"));
   $("viewEnroute").addEventListener("click", () => switchView("enroute"));
+  $("viewChain").addEventListener("click", () => switchView("chain"));
   $("share").addEventListener("click", copyShareLink);
   // Contrôles « En route ».
   $("origin").addEventListener("input", () => { resolveOrigin(); refresh(); });
   $("destSystem").addEventListener("input", refresh);
+  // Contrôles « Chaîne ».
+  $("chainOrigin").addEventListener("input", () => { resolveChainOrigin(); refresh(); });
+  $("hops").addEventListener("input", refresh);
   // Manifeste : ajustement des SCU (recalcul à la volée) + ajout d'une commodité suggérée.
   $("manifest").addEventListener("input", (e) => {
     if (e.target.classList.contains("mqty-input")) updateManifestTotals();
@@ -1056,6 +1148,7 @@ async function init() {
     else if (e.key === "1") switchView("routes");
     else if (e.key === "2") switchView("loops");
     else if (e.key === "3") switchView("enroute");
+    else if (e.key === "4") switchView("chain");
   });
   loadOverrides();
   updateOvBadge();

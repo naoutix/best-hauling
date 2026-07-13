@@ -79,6 +79,7 @@
       <button id="viewRoutes" class="vbtn active" data-view="routes" title="Trajets simples (raccourci : 1)">Trajets simples</button>
       <button id="viewLoops" class="vbtn" data-view="loops" title="Boucles aller-retour (raccourci : 2)">Boucles aller-retour ⇄</button>
       <button id="viewEnroute" class="vbtn" data-view="enroute" title="En route (raccourci : 3)">En route 🧭</button>
+      <button id="viewChain" class="vbtn" data-view="chain" title="Chaîne multi-sauts (raccourci : 4)">Chaîne ⛓️</button>
       <button id="resetOv" class="vbtn reset-ov" title="Effacer tes corrections locales de prix et de stock" hidden>✎ 0 correction</button>
       <button id="share" class="vbtn share-btn" title="Copier un lien vers cette vue filtrée (soute, budget, filtres, tri)">🔗 Partager</button>
     </div>
@@ -96,8 +97,25 @@
       <p class="enroute-hint">Le fret rentable depuis ton terminal, plus un <b>manifeste optimal</b> qui remplit ta soute avec plusieurs commodités vers une même destination.</p>
     </section>
 
+    <section id="chainControls" class="enroute-controls" hidden>
+      <div class="field">
+        <label for="chainOrigin">Terminal de départ</label>
+        <input id="chainOrigin" list="originList" type="text" placeholder="Tape un terminal (ex : Seraphim)" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="hops">Nombre de sauts</label>
+        <select id="hops">
+          <option value="2">2 sauts</option>
+          <option value="3" selected>3 sauts</option>
+          <option value="4">4 sauts</option>
+        </select>
+      </div>
+      <p class="enroute-hint">Enchaîne plusieurs trajets rentables : achète, vends, <b>rachète sur place</b>, revends plus loin… Le budget se reconstitue à chaque vente ; la soute borne chaque saut.</p>
+    </section>
+
     <div class="table-wrap">
       <div id="manifest" class="manifest" hidden></div>
+      <div id="chainOut" class="chain-wrap" hidden></div>
       <table id="routes">
         <thead>
           <tr>

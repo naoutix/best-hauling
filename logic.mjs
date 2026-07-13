@@ -61,7 +61,9 @@ export function computeUnits(price, stock, demand, f) {
   const byBudget = f.useBudget && f.budget > 0 ? Math.floor(f.budget / price) : Infinity;
   let units = Math.min(byCargo, byBudget);
   if (f.capStock) {
-    if (stock > 0) units = Math.min(units, stock);
+    // Stock à l'achat : 0 = terminal vide (dans les données UEX, stock 0 => statut « Vide ») -> plafonne à 0.
+    units = Math.min(units, stock);
+    // Demande à la vente : 0 = quantité non renseignée (statut « forte demande » fréquent) -> on n'y touche pas.
     if (demand > 0) units = Math.min(units, demand);
   }
   if (isFinite(units) && units < 0) units = 0;
@@ -96,8 +98,8 @@ export function fillCargo(items, cargo, budget) {
   for (const it of items) {
     if (cargoLeft <= 0 || budgetLeft <= 0) break;
     let u = cargoLeft;
-    if (it.stock > 0) u = Math.min(u, it.stock);
-    if (it.demand > 0) u = Math.min(u, it.demand);
+    u = Math.min(u, it.stock);                          // stock 0 = vide -> ligne exclue (u <= 0)
+    if (it.demand > 0) u = Math.min(u, it.demand);      // demande 0 = quantité inconnue -> ignorée
     if (isFinite(budgetLeft)) u = Math.min(u, Math.floor(budgetLeft / it.buyPrice));
     if (u <= 0) continue;
     lines.push({ ...it, units: u, cap: u });
@@ -121,11 +123,53 @@ export function scuBoxes(n) {
   return out;
 }
 
+// ---------- Chaîne multi-sauts (A -> B -> C ...) ----------
+// Meilleure chaîne de `hops` sauts depuis `start`, sans revisiter un terminal.
+// adj : Map<terminal, leg[]> ; leg = { to, margin, stock, demand, buyPrice, ... }.
+// Recherche par faisceau (beam) : approximation robuste et bornée en temps. Chaque saut
+// remplit la soute (`cargo`), plafonnée par stock/demande ; le budget se reconstitue à la
+// vente donc n'est pas une contrainte de chaîne. Renvoie { path, legs, profit } ou null.
+export function bestChain(adj, start, hops, { cargo = Infinity, beam = 40 } = {}) {
+  const legUnits = (leg) => {
+    let u = cargo;
+    u = Math.min(u, leg.stock);                     // stock 0 = terminal vide -> saut exclu
+    if (leg.demand > 0) u = Math.min(u, leg.demand); // demande 0 = quantité inconnue -> ignorée
+    return isFinite(u) ? Math.max(0, u) : 0; // sans borne de volume : rien (chaîne = soute finie)
+  };
+  let paths = [{ path: [start], visited: new Set([start]), profit: 0, legs: [] }];
+  let best = null;
+  for (let h = 0; h < hops; h++) {
+    const next = [];
+    for (const p of paths) {
+      const u = p.path[p.path.length - 1];
+      for (const leg of adj.get(u) || []) {
+        if (leg.margin <= 0 || p.visited.has(leg.to)) continue;
+        const units = legUnits(leg);
+        if (units <= 0) continue;
+        const legProfit = units * leg.margin;
+        const visited = new Set(p.visited);
+        visited.add(leg.to);
+        next.push({
+          path: [...p.path, leg.to],
+          visited,
+          profit: p.profit + legProfit,
+          legs: [...p.legs, { ...leg, units, profit: legProfit }],
+        });
+      }
+    }
+    if (!next.length) break;
+    next.sort((a, b) => b.profit - a.profit);
+    paths = next.slice(0, beam);
+    if (!best || paths[0].profit > best.profit) best = paths[0]; // chaque saut ajoute un profit positif
+  }
+  return best ? { path: best.path, legs: best.legs, profit: best.profit } : null;
+}
+
 // ---------- Unités ajoutables d'une commodité candidate (suggestions) ----------
 export function addableUnits(it, rem) {
   let u = rem.cargoLeft;
-  if (it.stock > 0) u = Math.min(u, it.stock);
-  if (it.demand > 0) u = Math.min(u, it.demand);
+  u = Math.min(u, it.stock);                          // stock 0 = vide -> non suggéré
+  if (it.demand > 0) u = Math.min(u, it.demand);      // demande 0 = quantité inconnue -> ignorée
   if (isFinite(rem.budgetLeft)) u = Math.min(u, Math.floor(rem.budgetLeft / it.buyPrice));
   return Math.max(0, u);
 }
