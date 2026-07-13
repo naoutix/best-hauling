@@ -14,6 +14,8 @@ let sortKey = "score";
 let sortDir = -1; // -1 = décroissant, 1 = croissant
 let loopSortKey = "score";
 let loopSortDir = -1;
+// Lignes actuellement affichées (dans l'ordre du DOM) pour déplier le schéma de trajet.
+let shownRoutes = [], shownEnroute = [], shownLoops = [];
 
 const STATE_KEY = "best-hauling-state";
 
@@ -244,16 +246,37 @@ function render() {
   normalizeScores(rows);
   rows.sort(bySort(sortKey, sortDir));
 
+  shownRoutes = rows;
   $("rows").innerHTML = rows.map(routeRowHTML).join("");
   $("empty").hidden = rows.length > 0;
   notifySuperseded();
 }
 
+// Un « nœud » du schéma (système › planète › terminal), réutilisé départ/arrivée.
+function schemaLeg(label, end) {
+  const nodes = [`<span class="sys ${esc(end.system.toLowerCase())}">${esc(end.system)}</span>`];
+  if (end.planet) nodes.push(`<span class="snode">${esc(end.planet)}</span>`);
+  nodes.push(`<span class="snode term">${esc(end.terminal)}</span>${end.outpost ? outpostTag(true) : ""}`);
+  return `<div class="schema-leg"><span class="schema-label">${label}</span><div class="schema-path">${nodes.join('<span class="sep">›</span>')}</div></div>`;
+}
+
+// Schéma d'un trajet simple : Départ (sys›planète›terminal) ⟶ Arrivée.
+function routeSchemaHTML(r) {
+  const info = `${r.same_system ? "même système" : "⚡ saut inter-système"} · ~${Math.round(r.minutes)} min${r.distance ? ` · ${fmt(r.distance)} u` : ""}`;
+  return `<div class="schema">${schemaLeg("Départ", r.buy)}<div class="schema-arrow"><span class="al">⟶</span><span class="ai">${info}</span></div>${schemaLeg("Arrivée", r.sell)}</div>`;
+}
+
+// Schéma d'une boucle : A ⇄ B.
+function loopSchemaHTML(l) {
+  const info = `${l.cross ? "⚡ inter-système" : "même système"} · ~${Math.round(l.minutes)} min (A/R)`;
+  return `<div class="schema">${schemaLeg("A", l.a)}<div class="schema-arrow"><span class="al">⇄</span><span class="ai">${info}</span></div>${schemaLeg("B", l.b)}</div>`;
+}
+
 // Ligne de tableau pour une route évaluée (partagée par « Trajets simples » et « En route »).
-function routeRowHTML(r) {
+function routeRowHTML(r, i) {
   return `
-      <tr>
-        <td class="loc"><div class="commodity-cell">${commodityIcon(r.kind)}<span>${esc(r.commodity)}${illegalTag(r.illegal)}${suspectTag(r)}</span></div></td>
+      <tr data-row="${i}">
+        <td class="loc"><div class="commodity-cell"><button class="route-toggle" data-row="${i}" title="Voir le trajet" aria-label="Voir le trajet">🗺</button>${commodityIcon(r.kind)}<span>${esc(r.commodity)}${illegalTag(r.illegal)}${suspectTag(r)}</span></div></td>
         <td>
           <div>${esc(r.buy.terminal)}${sysBadge(r.buy.system)}${outpostTag(r.buy.outpost)}</div>
           <div class="loc-sub">${esc(r.buy.planet)} · ${editv(r.commodity, r.buy.terminal, "buy", "price", r.buy.price, r.buy.ovPrice, r.buy.updated)} aUEC · ${statusDot(r.buy.status, "buy")}<span class="stock" title="Stock disponible à l'achat (relevé UEX)">stock ${editv(r.commodity, r.buy.terminal, "buy", "vol", r.buy.stock, r.buy.ovVol, r.buy.updated)} SCU</span> · ${freshChip(r.buy.updated)}</div>
@@ -330,13 +353,14 @@ function renderLoops() {
 
   normalizeScores(rows);
   rows.sort(bySort(loopSortKey, loopSortDir));
+  shownLoops = rows;
 
   $("loopRows").innerHTML = rows
     .map(
-      (l) => `
-      <tr>
+      (l, i) => `
+      <tr data-row="${i}">
         <td class="loc">
-          <div>${esc(l.a.terminal)}${sysBadge(l.a.system)}${outpostTag(l.a.outpost)}</div>
+          <div><button class="route-toggle" data-row="${i}" title="Voir le trajet" aria-label="Voir le trajet">🗺</button>${esc(l.a.terminal)}${sysBadge(l.a.system)}${outpostTag(l.a.outpost)}</div>
           <div class="loc-sub">⇄ ${esc(l.b.terminal)}${sysBadge(l.b.system)}${outpostTag(l.b.outpost)}${l.cross ? ' <span class="cross">⚡ inter-système</span>' : ""} · ${freshChip(l.out.updated && l.back.updated ? Math.min(l.out.updated, l.back.updated) : l.out.updated || l.back.updated || 0)}</div>
         </td>
         <td>
@@ -637,6 +661,7 @@ function renderEnRoute() {
 
   normalizeScores(deals);
   deals.sort(bySort(sortKey, sortDir));
+  shownEnroute = deals;
   $("enrouteRows").innerHTML = deals.map(routeRowHTML).join("");
   emptyMsg.hidden = deals.length > 0;
   if (!deals.length) emptyMsg.textContent = "Aucun fret rentable depuis ce terminal avec ces filtres.";
@@ -952,6 +977,21 @@ async function init() {
   $("manifest").addEventListener("click", (e) => {
     const add = e.target.closest(".suggest-add");
     if (add) addSuggestion(add.dataset.name);
+  });
+  // Schéma de trajet : déplie/replie une ligne détaillée sous la ligne cliquée.
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest(".route-toggle");
+    if (!btn) return;
+    const tr = btn.closest("tr");
+    const next = tr.nextElementSibling;
+    if (next && next.classList.contains("schema-row")) { next.remove(); btn.classList.remove("open"); return; }
+    const tableId = btn.closest("table").id;
+    const arr = tableId === "loops" ? shownLoops : tableId === "enroute" ? shownEnroute : shownRoutes;
+    const item = arr[Number(btn.dataset.row)];
+    if (!item) return;
+    const html = tableId === "loops" ? loopSchemaHTML(item) : routeSchemaHTML(item);
+    tr.insertAdjacentHTML("afterend", `<tr class="schema-row"><td colspan="${tr.children.length}">${html}</td></tr>`);
+    btn.classList.add("open");
   });
   // Corrections locales : clic (ou Entrée/Espace) sur une valeur éditable ; bouton reset.
   document.addEventListener("click", (e) => {
