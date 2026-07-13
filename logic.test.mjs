@@ -107,7 +107,12 @@ test("computeUnits : borné par le budget (arrondi bas)", () => {
 test("computeUnits : plafonné par stock ET demande quand capStock actif", () => {
   const f = F({ useCargo: true, cargo: 1000, capStock: true });
   assert.equal(computeUnits(100, 300, 120, f), 120); // min(1000, 300, 120)
-  assert.equal(computeUnits(100, 0, 120, f), 120);   // stock inconnu (0) ignoré
+});
+
+test("computeUnits : stock d'achat à 0 = terminal vide -> 0 unité (bug Levski)", () => {
+  const f = F({ useCargo: true, cargo: 1000, capStock: true });
+  assert.equal(computeUnits(100, 0, 120, f), 0);   // stock 0 = vide -> rien à acheter
+  assert.equal(computeUnits(100, 300, 0, f), 300); // demande 0 = quantité inconnue -> non plafonnée
 });
 
 test("computeUnits : prend la plus petite contrainte (soute vs budget)", () => {
@@ -153,14 +158,23 @@ test("effValue : compat ascendante — legacy ts, et sans date jamais périmé",
 // ---------- fillCargo (remplissage glouton du manifeste) ----------
 test("fillCargo : remplit par marge décroissante, plafonné par la soute", () => {
   const items = [
-    { name: "A", buyPrice: 100, stock: 0, demand: 0, margin: 50 },
-    { name: "B", buyPrice: 100, stock: 0, demand: 0, margin: 30 },
+    { name: "A", buyPrice: 100, stock: 999, demand: 0, margin: 50 },
+    { name: "B", buyPrice: 100, stock: 999, demand: 0, margin: 30 },
   ];
   const { lines, profit } = fillCargo(items, 60, Infinity);
   assert.equal(lines.length, 1);         // A remplit toute la soute
   assert.equal(lines[0].name, "A");
   assert.equal(lines[0].units, 60);
   assert.equal(profit, 60 * 50);
+});
+
+test("fillCargo : une commodité au stock 0 (vide) est exclue", () => {
+  const items = [
+    { name: "Vide", buyPrice: 100, stock: 0, demand: 999, margin: 99 },  // meilleure marge mais vide
+    { name: "Ok", buyPrice: 100, stock: 999, demand: 999, margin: 10 },
+  ];
+  const { lines } = fillCargo(items, 50, Infinity);
+  assert.deepEqual(lines.map((l) => l.name), ["Ok"]); // « Vide » sautée malgré sa marge
 });
 
 test("fillCargo : diversifie quand le stock limite la 1re commodité", () => {
@@ -220,7 +234,7 @@ test("addableUnits : min(espace, stock, demande, budget/prix)", () => {
 
 // ---------- bestChain (chaîne multi-sauts) ----------
 // Graphe : A->B (marge 10), A->C (marge 5), B->C (marge 20), C->D (marge 30), B->A (marge 3).
-const leg = (to, margin, o = {}) => ({ to, margin, stock: 0, demand: 0, buyPrice: 100, ...o });
+const leg = (to, margin, o = {}) => ({ to, margin, stock: 999, demand: 999, buyPrice: 100, ...o });
 const ADJ = new Map([
   ["A", [leg("B", 10), leg("C", 5)]],
   ["B", [leg("C", 20), leg("A", 3)]],
@@ -264,4 +278,14 @@ test("bestChain : les unités par saut sont plafonnées par stock/demande", () =
 
 test("bestChain : null si aucun saut rentable", () => {
   assert.equal(bestChain(new Map([["A", []]]), "A", 3, { cargo: 50 }), null);
+});
+
+test("bestChain : un saut dont le stock est 0 (vide) est écarté", () => {
+  const adj = new Map([
+    ["A", [leg("B", 99, { stock: 0 }), leg("C", 10)]], // A->B très rentable mais vide
+    ["B", []],
+    ["C", []],
+  ]);
+  const r = bestChain(adj, "A", 1, { cargo: 50 });
+  assert.deepEqual(r.path, ["A", "C"]); // on prend C, pas le B vide
 });

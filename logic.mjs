@@ -61,7 +61,9 @@ export function computeUnits(price, stock, demand, f) {
   const byBudget = f.useBudget && f.budget > 0 ? Math.floor(f.budget / price) : Infinity;
   let units = Math.min(byCargo, byBudget);
   if (f.capStock) {
-    if (stock > 0) units = Math.min(units, stock);
+    // Stock à l'achat : 0 = terminal vide (dans les données UEX, stock 0 => statut « Vide ») -> plafonne à 0.
+    units = Math.min(units, stock);
+    // Demande à la vente : 0 = quantité non renseignée (statut « forte demande » fréquent) -> on n'y touche pas.
     if (demand > 0) units = Math.min(units, demand);
   }
   if (isFinite(units) && units < 0) units = 0;
@@ -96,8 +98,8 @@ export function fillCargo(items, cargo, budget) {
   for (const it of items) {
     if (cargoLeft <= 0 || budgetLeft <= 0) break;
     let u = cargoLeft;
-    if (it.stock > 0) u = Math.min(u, it.stock);
-    if (it.demand > 0) u = Math.min(u, it.demand);
+    u = Math.min(u, it.stock);                          // stock 0 = vide -> ligne exclue (u <= 0)
+    if (it.demand > 0) u = Math.min(u, it.demand);      // demande 0 = quantité inconnue -> ignorée
     if (isFinite(budgetLeft)) u = Math.min(u, Math.floor(budgetLeft / it.buyPrice));
     if (u <= 0) continue;
     lines.push({ ...it, units: u, cap: u });
@@ -130,8 +132,8 @@ export function scuBoxes(n) {
 export function bestChain(adj, start, hops, { cargo = Infinity, beam = 40 } = {}) {
   const legUnits = (leg) => {
     let u = cargo;
-    if (leg.stock > 0) u = Math.min(u, leg.stock);
-    if (leg.demand > 0) u = Math.min(u, leg.demand);
+    u = Math.min(u, leg.stock);                     // stock 0 = terminal vide -> saut exclu
+    if (leg.demand > 0) u = Math.min(u, leg.demand); // demande 0 = quantité inconnue -> ignorée
     return isFinite(u) ? Math.max(0, u) : 0; // sans borne de volume : rien (chaîne = soute finie)
   };
   let paths = [{ path: [start], visited: new Set([start]), profit: 0, legs: [] }];
@@ -166,8 +168,8 @@ export function bestChain(adj, start, hops, { cargo = Infinity, beam = 40 } = {}
 // ---------- Unités ajoutables d'une commodité candidate (suggestions) ----------
 export function addableUnits(it, rem) {
   let u = rem.cargoLeft;
-  if (it.stock > 0) u = Math.min(u, it.stock);
-  if (it.demand > 0) u = Math.min(u, it.demand);
+  u = Math.min(u, it.stock);                          // stock 0 = vide -> non suggéré
+  if (it.demand > 0) u = Math.min(u, it.demand);      // demande 0 = quantité inconnue -> ignorée
   if (isFinite(rem.budgetLeft)) u = Math.min(u, Math.floor(rem.budgetLeft / it.buyPrice));
   return Math.max(0, u);
 }
