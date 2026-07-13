@@ -325,6 +325,8 @@ function setupLoopSort() {
 // fiable sur tous les navigateurs, avec navigation clavier).
 async function loadShips() {
   const ships = await fetch("data/ships.json").then((r) => r.json()).catch(() => []);
+  // Tri par capacité de soute décroissante : les plus gros haulers apparaissent en premier.
+  ships.sort((a, b) => b.scu - a.scu);
   const input = $("ship");
   const list = $("shipList");
   const byName = new Map(ships.map((s) => [s.name.toLowerCase(), s.scu]));
@@ -338,8 +340,10 @@ async function loadShips() {
     input.setAttribute("aria-expanded", "false");
   }
 
+  // q vide -> toute la liste (parcours au focus) ; sinon filtre par sous-chaîne (max 12).
   function show(q) {
-    matches = ships.filter((s) => s.name.toLowerCase().includes(q)).slice(0, 12);
+    const pool = q ? ships.filter((s) => s.name.toLowerCase().includes(q)) : ships;
+    matches = q ? pool.slice(0, 12) : pool;
     if (!matches.length) return hide();
     active = 0;
     list.innerHTML = matches
@@ -385,10 +389,10 @@ async function loadShips() {
     list.children[active]?.scrollIntoView({ block: "nearest" });
   }
 
-  input.addEventListener("input", () => {
-    const q = input.value.trim().toLowerCase();
-    q ? show(q) : hide();
-  });
+  input.addEventListener("input", () => show(input.value.trim().toLowerCase()));
+
+  // Cliquer/placer le curseur dans le champ ouvre la liste sans avoir à taper.
+  input.addEventListener("focus", () => show(input.value.trim().toLowerCase()));
 
   input.addEventListener("keydown", (e) => {
     if (list.hidden) return;
