@@ -21,6 +21,10 @@
 
 * { box-sizing: border-box; }
 
+/* L'attribut [hidden] doit toujours l'emporter, même sur les éléments passés en
+   display:flex/grid par une classe (sinon le panneau reste visible). */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   font-family: var(--font);
@@ -363,14 +367,21 @@ tbody tr:hover td { border-bottom-color: var(--line-bright); }
 .manifest-tot b.profit { color: var(--good); }
 .manifest-lines { display: flex; flex-direction: column; }
 .mline {
-  display: grid; grid-template-columns: auto 82px 1fr auto auto; align-items: center; gap: 12px;
+  display: grid; grid-template-columns: auto auto 1fr auto auto auto; align-items: center; gap: 12px;
   padding: 8px 18px; border-bottom: 1px solid var(--line);
 }
 .mline:last-child { border-bottom: none; }
-.mqty { font-family: var(--mono); font-weight: 700; color: var(--accent); white-space: nowrap; text-align: right; }
+.mqtywrap { display: flex; align-items: center; gap: 5px; }
+input.mqty-input {
+  width: 64px; min-width: 0; padding: 4px 6px; text-align: right;
+  background: var(--panel-2); border: 1px solid var(--line-bright); color: var(--accent);
+  border-radius: 3px; font-family: var(--mono); font-weight: 700; font-size: 13px;
+}
+.munit { font-family: var(--mono); font-size: 11px; color: var(--muted); }
 .mname { font-weight: 600; }
+.mstock { font-family: var(--mono); font-size: 11px; color: #5f7891; white-space: nowrap; }
 .mprice { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
-.mprofit { font-family: var(--mono); white-space: nowrap; }
+.mprofit { font-family: var(--mono); white-space: nowrap; text-align: right; }
 
 .profit { color: var(--good); font-weight: 700; text-shadow: 0 0 10px rgba(74, 222, 128, 0.25); }
 .roi-badge { color: var(--warn); }
