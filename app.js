@@ -12,10 +12,16 @@ let loopSortDir = -1;
 const $ = (id) => document.getElementById(id);
 const fmt = (n) => (n == null || !isFinite(n) ? "—" : Math.round(n).toLocaleString("fr-FR"));
 
+// Échappe toute chaîne insérée dans innerHTML. Les données UEX sont communautaires
+// (nicknames de terminaux, etc. potentiellement soumis par des utilisateurs) : on les
+// traite comme non fiables pour éviter toute injection HTML.
+const esc = (s) =>
+  String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
 // Formatte le nom d'un système en badge coloré.
 function sysBadge(system) {
-  const cls = system.toLowerCase();
-  return `<span class="sys ${cls}">${system}</span>`;
+  const cls = esc(system.toLowerCase());
+  return `<span class="sys ${cls}">${esc(system)}</span>`;
 }
 
 // Marqueur pour les avant-postes (élévateur de fret peu fiable).
@@ -35,7 +41,7 @@ const KIND_ICON = {
 function commodityIcon(kind) {
   const k = kind || "other";
   const emoji = KIND_ICON[k] || KIND_ICON.other;
-  return `<span class="cicon k-${k}" title="${k}">${emoji}</span>`;
+  return `<span class="cicon k-${esc(k)}" title="${esc(k)}">${emoji}</span>`;
 }
 
 // Marqueur pour les commodités illégales (risque de scan / zones de sécurité).
@@ -103,6 +109,8 @@ function bySort(key, dir) {
     if (av == null && bv == null) return 0;
     if (av == null) return 1;
     if (bv == null) return -1;
+    // Tri des chaînes (ex : commodité) sensible à la locale, pour trier les accents correctement.
+    if (typeof av === "string" && typeof bv === "string") return av.localeCompare(bv, "fr") * dir;
     return av > bv ? dir : av < bv ? -dir : 0;
   };
 }
@@ -134,18 +142,25 @@ function evaluate(r, cargo, budget, capStock, useCargo, useBudget) {
   };
 }
 
+// Lit l'état de tous les contrôles de filtre (partagé par les deux vues).
+function readFilters() {
+  return {
+    cargo: Math.max(0, Number($("cargo").value) || 0),
+    budget: Math.max(0, Number($("budget").value) || 0),
+    capStock: $("capStock").checked,
+    useCargo: $("useCargo").checked,
+    useBudget: $("useBudget").checked,
+    sameOnly: $("sameSystem").checked,
+    noOutpost: $("noOutpost").checked,
+    legalOnly: $("legalOnly").checked,
+    sysFilter: $("system").value,
+    maxAge: Number($("freshness").value) || 0,
+    q: $("search").value.trim().toLowerCase(),
+  };
+}
+
 function render() {
-  const cargo = Math.max(0, Number($("cargo").value) || 0);
-  const budget = Math.max(0, Number($("budget").value) || 0);
-  const capStock = $("capStock").checked;
-  const useCargo = $("useCargo").checked;
-  const useBudget = $("useBudget").checked;
-  const sameOnly = $("sameSystem").checked;
-  const noOutpost = $("noOutpost").checked;
-  const legalOnly = $("legalOnly").checked;
-  const sysFilter = $("system").value;
-  const maxAge = Number($("freshness").value) || 0;
-  const q = $("search").value.trim().toLowerCase();
+  const { cargo, budget, capStock, useCargo, useBudget, sameOnly, noOutpost, legalOnly, sysFilter, maxAge, q } = readFilters();
 
   let rows = ROUTES.filter((r) => {
     if (sameOnly && !r.same_system) return false;
@@ -167,14 +182,14 @@ function render() {
     .map(
       (r) => `
       <tr>
-        <td class="loc"><div class="commodity-cell">${commodityIcon(r.kind)}<span>${r.commodity}${illegalTag(r.illegal)}${suspectTag(r)}</span></div></td>
+        <td class="loc"><div class="commodity-cell">${commodityIcon(r.kind)}<span>${esc(r.commodity)}${illegalTag(r.illegal)}${suspectTag(r)}</span></div></td>
         <td>
-          <div>${r.buy.terminal}${sysBadge(r.buy.system)}${outpostTag(r.buy.outpost)}</div>
-          <div class="loc-sub">${r.buy.planet} · ${fmt(r.buy.price)} aUEC · ${statusDot(r.buy.status, "buy")}<span class="stock" title="Stock disponible à l'achat (relevé UEX)">stock ${fmt(r.buy.stock)} SCU</span> · ${freshChip(r.buy.updated)}</div>
+          <div>${esc(r.buy.terminal)}${sysBadge(r.buy.system)}${outpostTag(r.buy.outpost)}</div>
+          <div class="loc-sub">${esc(r.buy.planet)} · ${fmt(r.buy.price)} aUEC · ${statusDot(r.buy.status, "buy")}<span class="stock" title="Stock disponible à l'achat (relevé UEX)">stock ${fmt(r.buy.stock)} SCU</span> · ${freshChip(r.buy.updated)}</div>
         </td>
         <td>
-          <div>${r.sell.terminal}${sysBadge(r.sell.system)}${outpostTag(r.sell.outpost)}</div>
-          <div class="loc-sub">${r.sell.planet} · ${fmt(r.sell.price)} aUEC · ${statusDot(r.sell.status, "sell")}<span class="stock" title="Demande / stock à la vente (relevé UEX)">demande ${fmt(r.sell.demand)} SCU</span> · ${freshChip(r.sell.updated)}${r.same_system ? "" : ' <span class="cross">⚡ saut inter-système</span>'}</div>
+          <div>${esc(r.sell.terminal)}${sysBadge(r.sell.system)}${outpostTag(r.sell.outpost)}</div>
+          <div class="loc-sub">${esc(r.sell.planet)} · ${fmt(r.sell.price)} aUEC · ${statusDot(r.sell.status, "sell")}<span class="stock" title="Demande / stock à la vente (relevé UEX)">demande ${fmt(r.sell.demand)} SCU</span> · ${freshChip(r.sell.updated)}${r.same_system ? "" : ' <span class="cross">⚡ saut inter-système</span>'}</div>
         </td>
         <td class="num">${fmt(r.margin)}</td>
         <td class="num roi-badge">${r.roi}%</td>
@@ -220,17 +235,7 @@ function evaluateLoop(l, cargo, budget, capStock, useCargo, useBudget) {
 }
 
 function renderLoops() {
-  const cargo = Math.max(0, Number($("cargo").value) || 0);
-  const budget = Math.max(0, Number($("budget").value) || 0);
-  const capStock = $("capStock").checked;
-  const useCargo = $("useCargo").checked;
-  const useBudget = $("useBudget").checked;
-  const sameOnly = $("sameSystem").checked;
-  const noOutpost = $("noOutpost").checked;
-  const legalOnly = $("legalOnly").checked;
-  const sysFilter = $("system").value;
-  const maxAge = Number($("freshness").value) || 0;
-  const q = $("search").value.trim().toLowerCase();
+  const { cargo, budget, capStock, useCargo, useBudget, sameOnly, noOutpost, legalOnly, sysFilter, maxAge, q } = readFilters();
 
   let rows = LOOPS.filter((l) => {
     if (sameOnly && l.a.system !== l.b.system) return false;
@@ -252,15 +257,15 @@ function renderLoops() {
       (l) => `
       <tr>
         <td class="loc">
-          <div>${l.a.terminal}${sysBadge(l.a.system)}${outpostTag(l.a.outpost)}</div>
-          <div class="loc-sub">⇄ ${l.b.terminal}${sysBadge(l.b.system)}${outpostTag(l.b.outpost)}${l.cross ? ' <span class="cross">⚡ inter-système</span>' : ""} · ${freshChip(l.out.updated && l.back.updated ? Math.min(l.out.updated, l.back.updated) : l.out.updated || l.back.updated || 0)}</div>
+          <div>${esc(l.a.terminal)}${sysBadge(l.a.system)}${outpostTag(l.a.outpost)}</div>
+          <div class="loc-sub">⇄ ${esc(l.b.terminal)}${sysBadge(l.b.system)}${outpostTag(l.b.outpost)}${l.cross ? ' <span class="cross">⚡ inter-système</span>' : ""} · ${freshChip(l.out.updated && l.back.updated ? Math.min(l.out.updated, l.back.updated) : l.out.updated || l.back.updated || 0)}</div>
         </td>
         <td>
-          <div class="commodity-cell">${commodityIcon(l.out.kind)}<span>${l.out.commodity}${illegalTag(l.out.illegal)}</span></div>
+          <div class="commodity-cell">${commodityIcon(l.out.kind)}<span>${esc(l.out.commodity)}${illegalTag(l.out.illegal)}</span></div>
           <div class="loc-sub">${fmt(l.out.buyPrice)} → ${fmt(l.out.sellPrice)} · marge ${fmt(l.out.margin)}</div>
         </td>
         <td>
-          <div class="commodity-cell">${commodityIcon(l.back.kind)}<span>${l.back.commodity}${illegalTag(l.back.illegal)}</span></div>
+          <div class="commodity-cell">${commodityIcon(l.back.kind)}<span>${esc(l.back.commodity)}${illegalTag(l.back.illegal)}</span></div>
           <div class="loc-sub">${fmt(l.back.buyPrice)} → ${fmt(l.back.sellPrice)} · marge ${fmt(l.back.margin)}</div>
         </td>
         <td class="num">${fmt(l.loopMargin)}</td>
@@ -342,7 +347,7 @@ async function loadShips() {
       .map(
         (s, i) =>
           `<li role="option" data-i="${i}" class="${i === 0 ? "active" : ""}">` +
-          `<span>${s.name}</span><span class="scu">${s.scu.toLocaleString("fr-FR")} SCU</span></li>`
+          `<span>${esc(s.name)}</span><span class="scu">${s.scu.toLocaleString("fr-FR")} SCU</span></li>`
       )
       .join("");
     list.hidden = false;
@@ -353,7 +358,8 @@ async function loadShips() {
     const card = $("shipCard");
     const img = $("shipImg");
     const wrap = img.parentElement;
-    if (s.photo) {
+    // N'accepte que des URL https:// (le flux communautaire pourrait contenir autre chose).
+    if (s.photo && /^https:\/\//i.test(s.photo)) {
       wrap.style.display = "";
       img.onerror = () => (wrap.style.display = "none"); // masque si l'image échoue
       img.alt = s.name;
