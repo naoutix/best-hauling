@@ -414,6 +414,19 @@ input.editv-input {
 }
 .suggest-add:hover { color: #04222c; background: var(--good); border-color: var(--good); }
 
+/* ---------- Flash (corrections périmées par une MAJ UEX) ---------- */
+.toast {
+  position: fixed; right: 20px; bottom: 20px; z-index: 200;
+  max-width: 320px; padding: 12px 16px;
+  font-family: var(--font); font-size: 13px; color: var(--text);
+  background: var(--panel-solid); border: 1px solid var(--warn);
+  border-left: 3px solid var(--warn);
+  border-radius: 4px; box-shadow: 0 12px 34px rgba(0, 0, 0, 0.6);
+  opacity: 0; transform: translateY(8px); pointer-events: none;
+  transition: opacity 0.25s, transform 0.25s;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+
 .profit { color: var(--good); font-weight: 700; text-shadow: 0 0 10px rgba(74, 222, 128, 0.25); }
 .roi-badge { color: var(--warn); }
 

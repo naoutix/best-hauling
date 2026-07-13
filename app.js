@@ -156,9 +156,13 @@ function normalizeScores(rows) {
 // quand le relevé UEX est faux. Stocké UNIQUEMENT en local (localStorage), jamais partagé
 // ni dans l'URL. Clé : « commodité|terminal|side » (side = "buy" | "vol"… non : "buy"/"sell").
 const OV_KEY = "best-hauling-overrides";
-let OVERRIDES = {}; // { "Commodité|Terminal|buy": { price?, vol?, ts }, ... } — ts = date de la correction (s)
+// { "Commodité|Terminal|buy": { price?, vol?, base }, ... }
+// base = date UEX (updated) du point AU MOMENT de la correction : la correction vaut
+// « contre cet export ». Elle n'est périmée que si UEX republie ce point plus récemment.
+let OVERRIDES = {};
+let supersededKeys = new Set(); // corrections périmées pendant le rendu courant (pour le flash)
 
-const nowSec = () => Math.floor(Date.now() / 1000); // même échelle que les dates UEX (updated)
+const nowSec = () => Math.floor(Date.now() / 1000);
 
 function loadOverrides() {
   try { OVERRIDES = JSON.parse(localStorage.getItem(OV_KEY)) || {}; } catch { OVERRIDES = {}; }
@@ -170,17 +174,18 @@ const ovKey = (commodity, terminal, side) => `${commodity}|${terminal}|${side}`;
 const ovCount = () => Object.keys(OVERRIDES).length;
 
 // Renvoie prix/volume effectifs (corrigés si une correction locale existe) + drapeaux.
-// « Intelligent » : si le relevé UEX du point (dataUpdated) est PLUS RÉCENT que la
-// correction, celle-ci est périmée -> on la supprime et on revient à la valeur UEX.
+// « Intelligent » : si le relevé UEX du point (dataUpdated) est PLUS RÉCENT que celui
+// contre lequel la correction a été faite (base), la correction est périmée -> on la
+// supprime et on revient à la valeur UEX (comptée pour le flash de notification).
 function effVals(commodity, terminal, side, price, vol, dataUpdated) {
   const k = ovKey(commodity, terminal, side);
   const o = OVERRIDES[k];
   if (!o) return { price, vol, oprice: false, ovol: false };
-  const ts = o.ts != null ? o.ts : Infinity; // corrections héritées (sans date) : jamais périmées
-  if (dataUpdated && dataUpdated > ts) {
+  const base = o.base != null ? o.base : o.ts != null ? o.ts : Infinity; // legacy : ts, sinon jamais périmé
+  if (dataUpdated && base !== Infinity && dataUpdated > base) {
     delete OVERRIDES[k];
     saveOverrides();
-    updateOvBadge();
+    supersededKeys.add(k);
     return { price, vol, oprice: false, ovol: false };
   }
   return {
@@ -191,18 +196,37 @@ function effVals(commodity, terminal, side, price, vol, dataUpdated) {
   };
 }
 
-// Enregistre (ou efface) une correction. field = "price" | "vol". value null/"" = efface ce champ.
-function setOverride(commodity, terminal, side, field, value) {
+// Enregistre (ou efface) une correction. field = "price"|"vol". value null/"" = efface ce champ.
+// baseUpdated = date UEX du point corrigé (l'état de l'export au moment de la correction).
+function setOverride(commodity, terminal, side, field, value, baseUpdated) {
   const k = ovKey(commodity, terminal, side);
   const o = OVERRIDES[k] || {};
   const n = value == null || value === "" ? NaN : Math.max(0, Math.round(Number(value)));
   if (Number.isFinite(n)) o[field] = n;
   else delete o[field];
-  if (o.price != null || o.vol != null) { o.ts = nowSec(); OVERRIDES[k] = o; }
+  if (o.price != null || o.vol != null) { o.base = Number(baseUpdated) || 0; OVERRIDES[k] = o; }
   else delete OVERRIDES[k];
   saveOverrides();
 }
 function resetOverrides() { OVERRIDES = {}; saveOverrides(); }
+
+// Flash discret quand des corrections ont été périmées par une mise à jour UEX.
+let toastTimer = null;
+function showToast(msg) {
+  let el = $("toast");
+  if (!el) { el = document.createElement("div"); el.id = "toast"; el.className = "toast"; document.body.appendChild(el); }
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 4500);
+}
+function notifySuperseded() {
+  if (!supersededKeys.size) return;
+  const n = supersededKeys.size;
+  supersededKeys = new Set();
+  updateOvBadge();
+  showToast(`✎ ${n} correction${n > 1 ? "s" : ""} périmée${n > 1 ? "s" : ""} par une mise à jour UEX`);
+}
 
 // Applique les corrections à une paire buy/sell et renvoie des copies patchées + marge/roi.
 function applyOverrides(commodity, buy, sell) {
@@ -247,8 +271,9 @@ function scoreCell(score) {
 }
 
 // Valeur éditable (clic pour corriger localement). side = "buy"|"sell", field = "price"|"vol".
-function editv(commodity, terminal, side, field, value, ov) {
-  return `<span class="editv${ov ? " ov" : ""}" data-c="${esc(commodity)}" data-t="${esc(terminal)}" data-s="${side}" data-f="${field}" data-v="${value}" role="button" tabindex="0" title="Clic pour corriger localement ce chiffre">${fmt(value)}${ov ? '<span class="ovmark" title="Corrigé localement">✎</span>' : ""}</span>`;
+// updated = date UEX du point (mémorisée comme base de fraîcheur de la correction).
+function editv(commodity, terminal, side, field, value, ov, updated) {
+  return `<span class="editv${ov ? " ov" : ""}" data-c="${esc(commodity)}" data-t="${esc(terminal)}" data-s="${side}" data-f="${field}" data-v="${value}" data-u="${updated || 0}" role="button" tabindex="0" title="Clic pour corriger localement ce chiffre">${fmt(value)}${ov ? '<span class="ovmark" title="Corrigé localement">✎</span>' : ""}</span>`;
 }
 
 // Lit l'état de tous les contrôles de filtre (partagé par les deux vues).
@@ -290,6 +315,7 @@ function render() {
 
   $("rows").innerHTML = rows.map(routeRowHTML).join("");
   $("empty").hidden = rows.length > 0;
+  notifySuperseded();
 }
 
 // Ligne de tableau pour une route évaluée (partagée par « Trajets simples » et « En route »).
@@ -299,11 +325,11 @@ function routeRowHTML(r) {
         <td class="loc"><div class="commodity-cell">${commodityIcon(r.kind)}<span>${esc(r.commodity)}${illegalTag(r.illegal)}${suspectTag(r)}</span></div></td>
         <td>
           <div>${esc(r.buy.terminal)}${sysBadge(r.buy.system)}${outpostTag(r.buy.outpost)}</div>
-          <div class="loc-sub">${esc(r.buy.planet)} · ${editv(r.commodity, r.buy.terminal, "buy", "price", r.buy.price, r.buy.ovPrice)} aUEC · ${statusDot(r.buy.status, "buy")}<span class="stock" title="Stock disponible à l'achat (relevé UEX)">stock ${editv(r.commodity, r.buy.terminal, "buy", "vol", r.buy.stock, r.buy.ovVol)} SCU</span> · ${freshChip(r.buy.updated)}</div>
+          <div class="loc-sub">${esc(r.buy.planet)} · ${editv(r.commodity, r.buy.terminal, "buy", "price", r.buy.price, r.buy.ovPrice, r.buy.updated)} aUEC · ${statusDot(r.buy.status, "buy")}<span class="stock" title="Stock disponible à l'achat (relevé UEX)">stock ${editv(r.commodity, r.buy.terminal, "buy", "vol", r.buy.stock, r.buy.ovVol, r.buy.updated)} SCU</span> · ${freshChip(r.buy.updated)}</div>
         </td>
         <td>
           <div>${esc(r.sell.terminal)}${sysBadge(r.sell.system)}${outpostTag(r.sell.outpost)}</div>
-          <div class="loc-sub">${esc(r.sell.planet)} · ${editv(r.commodity, r.sell.terminal, "sell", "price", r.sell.price, r.sell.ovPrice)} aUEC · ${statusDot(r.sell.status, "sell")}<span class="stock" title="Demande / stock à la vente (relevé UEX)">demande ${editv(r.commodity, r.sell.terminal, "sell", "vol", r.sell.demand, r.sell.ovVol)} SCU</span> · ${freshChip(r.sell.updated)}${r.same_system ? "" : ' <span class="cross">⚡ saut inter-système</span>'}</div>
+          <div class="loc-sub">${esc(r.sell.planet)} · ${editv(r.commodity, r.sell.terminal, "sell", "price", r.sell.price, r.sell.ovPrice, r.sell.updated)} aUEC · ${statusDot(r.sell.status, "sell")}<span class="stock" title="Demande / stock à la vente (relevé UEX)">demande ${editv(r.commodity, r.sell.terminal, "sell", "vol", r.sell.demand, r.sell.ovVol, r.sell.updated)} SCU</span> · ${freshChip(r.sell.updated)}${r.same_system ? "" : ' <span class="cross">⚡ saut inter-système</span>'}</div>
         </td>
         <td>${scoreCell(r.score)}</td>
         <td class="num">${fmt(r.margin)}</td>
@@ -400,6 +426,7 @@ function renderLoops() {
     .join("");
 
   $("empty").hidden = rows.length > 0;
+  notifySuperseded();
 }
 
 // ---------- Mode « En route » (trajet dirigé) + manifeste multi-commodité ----------
@@ -494,7 +521,7 @@ function bestManifest(origin, destSystem, f) {
       const margin = es.price - eb.price;
       if (margin <= 0) return;
       if (!byDest.has(s[0])) byDest.set(s[0], []);
-      byDest.get(s[0]).push({ name: c.name, kind: c.kind, illegal: c.illegal, buyPrice: eb.price, stock: eb.vol, sellPrice: es.price, demand: es.vol, margin });
+      byDest.get(s[0]).push({ name: c.name, kind: c.kind, illegal: c.illegal, buyPrice: eb.price, stock: eb.vol, sellPrice: es.price, demand: es.vol, margin, buyUpdated: b[3], sellUpdated: s[3] });
     });
   });
 
@@ -559,7 +586,7 @@ function suggestionsFor() {
     const es = effVals(c.name, m.dest.name, "sell", s[1], s[2], s[3]);
     const margin = es.price - eb.price;
     if (margin <= 0) return;
-    out.push({ name: c.name, kind: c.kind, illegal: c.illegal, buyPrice: eb.price, stock: eb.vol, sellPrice: es.price, demand: es.vol, margin });
+    out.push({ name: c.name, kind: c.kind, illegal: c.illegal, buyPrice: eb.price, stock: eb.vol, sellPrice: es.price, demand: es.vol, margin, buyUpdated: b[3], sellUpdated: s[3] });
   });
   return out.sort((a, b) => b.margin - a.margin);
 }
@@ -620,8 +647,8 @@ function paintManifest() {
       `<div class="mline">${commodityIcon(l.kind)}` +
       `<span class="mqtywrap"><input type="number" class="mqty-input" min="0" max="${l.cap}" value="${l.units}" data-i="${i}" data-margin="${l.margin}" data-buy="${l.buyPrice}" data-cap="${l.cap}" title="Réduis si le stock in-game est plus bas" aria-label="SCU ${esc(l.name)}"><span class="munit">SCU</span></span>` +
       `<span class="mname">${esc(l.name)}${illegalTag(l.illegal)}</span>` +
-      `<span class="mstock">stock ${editv(l.name, m.origin.name, "buy", "vol", l.stock, isOv(l.name, m.origin.name, "buy", "vol"))} · dem. ${editv(l.name, m.dest.name, "sell", "vol", l.demand, isOv(l.name, m.dest.name, "sell", "vol"))}</span>` +
-      `<span class="mprice">${editv(l.name, m.origin.name, "buy", "price", l.buyPrice, isOv(l.name, m.origin.name, "buy", "price"))} → ${editv(l.name, m.dest.name, "sell", "price", l.sellPrice, isOv(l.name, m.dest.name, "sell", "price"))}</span>` +
+      `<span class="mstock">stock ${editv(l.name, m.origin.name, "buy", "vol", l.stock, isOv(l.name, m.origin.name, "buy", "vol"), l.buyUpdated)} · dem. ${editv(l.name, m.dest.name, "sell", "vol", l.demand, isOv(l.name, m.dest.name, "sell", "vol"), l.sellUpdated)}</span>` +
+      `<span class="mprice">${editv(l.name, m.origin.name, "buy", "price", l.buyPrice, isOv(l.name, m.origin.name, "buy", "price"), l.buyUpdated)} → ${editv(l.name, m.dest.name, "sell", "price", l.sellPrice, isOv(l.name, m.dest.name, "sell", "price"), l.sellUpdated)}</span>` +
       `<span class="mprofit profit">+${fmt(l.units * l.margin)}</span></div>`
     ).join("") +
     `</div><div id="manifestSuggest" class="manifest-suggest"></div>`;
@@ -701,6 +728,7 @@ function renderEnRoute() {
   $("enrouteRows").innerHTML = deals.map(routeRowHTML).join("");
   emptyMsg.hidden = deals.length > 0;
   if (!deals.length) emptyMsg.textContent = "Aucun fret rentable depuis ce terminal avec ces filtres.";
+  notifySuperseded();
 }
 
 // Bascule entre les vues et rafraîchit la bonne table.
@@ -942,7 +970,7 @@ async function copyShareLink() {
 // Remplace le span par un champ ; à la validation, enregistre la correction et rafraîchit.
 function startEdit(span) {
   if (span.querySelector("input")) return;
-  const { c, t, s, f: field, v } = span.dataset;
+  const { c, t, s, f: field, v, u } = span.dataset;
   const inp = document.createElement("input");
   inp.type = "number"; inp.min = "0"; inp.value = v; inp.className = "editv-input";
   span.replaceChildren(inp);
@@ -950,7 +978,7 @@ function startEdit(span) {
   let done = false;
   const commit = (save) => {
     if (done) return; done = true;
-    if (save) setOverride(c, t, s, field, inp.value === "" ? null : inp.value);
+    if (save) setOverride(c, t, s, field, inp.value === "" ? null : inp.value, Number(u));
     updateOvBadge();
     refresh(); // re-render la vue courante avec la valeur corrigée
   };
