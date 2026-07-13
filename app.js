@@ -395,8 +395,10 @@ function renderLoops() {
 // ---------- Mode « En route » (trajet dirigé) + manifeste multi-commodité ----------
 let MARKET = null;            // graphe d'échange, chargé à la demande
 let enrouteReady = false;     // datalist/destSystem peuplés une seule fois
-let originMap = new Map();    // libellé « Nom — Système » -> index terminal
+let originMap = new Map();    // libellé « Nom — Système » -> index terminal (achat uniquement)
+let stationMap = new Map();   // libellé -> index, TOUS les terminaux (pour la vue Corrections)
 let enrouteOrigin = null;     // index du terminal de départ sélectionné
+let stationSel = null;        // index de la station sélectionnée (vue Corrections)
 
 async function loadMarket() {
   if (!MARKET) {
@@ -421,6 +423,13 @@ function setupEnRoute() {
   }));
   opts.sort((a, b) => a.localeCompare(b, "fr"));
   $("originList").innerHTML = opts.map((l) => `<option value="${esc(l)}"></option>`).join("");
+
+  // Datalist de TOUTES les stations (achat ou vente) pour la vue Corrections.
+  const stations = MARKET.terminals.map((t, i) => ({ label: `${t.name} — ${t.system}`, i }));
+  stations.forEach((s) => stationMap.set(s.label, s.i));
+  stations.sort((a, b) => a.label.localeCompare(b.label, "fr"));
+  $("stationList").innerHTML = stations.map((s) => `<option value="${esc(s.label)}"></option>`).join("");
+
   enrouteReady = true;
   resolveOrigin(); // au cas où une valeur a été restaurée
 }
@@ -791,6 +800,7 @@ function refresh() {
   if (view === "loops") renderLoops();
   else if (view === "enroute") renderEnRoute();
   else if (view === "chain") renderChain();
+  else if (view === "corrections") renderCorrections();
   else render();
   saveState();
 }
@@ -800,14 +810,17 @@ function switchView(v) {
   $("viewLoops").classList.toggle("active", v === "loops");
   $("viewEnroute").classList.toggle("active", v === "enroute");
   $("viewChain").classList.toggle("active", v === "chain");
+  $("viewCorrections").classList.toggle("active", v === "corrections");
   $("routes").hidden = v !== "routes";
   $("loops").hidden = v !== "loops";
   $("enroute").hidden = v !== "enroute";
   $("enrouteControls").hidden = v !== "enroute";
   $("chainControls").hidden = v !== "chain";
   $("chainOut").hidden = v !== "chain";
+  $("correctionsControls").hidden = v !== "corrections";
+  $("corrections").hidden = v !== "corrections";
   if (v !== "enroute") $("manifest").hidden = true;
-  if (v === "chain") $("empty").hidden = true; // la vue chaîne n'utilise pas le message des tables
+  if (v === "chain" || v === "corrections") $("empty").hidden = true;
   refresh();
 }
 
@@ -962,7 +975,7 @@ async function loadShips() {
 // ---------- Persistance & permaliens ----------
 // L'état (filtres, tri, vue, vaisseau) est sauvé dans localStorage ET encodé dans le
 // hash de l'URL, pour reprendre là où on s'est arrêté et partager une vue précise.
-const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem", "chainOrigin", "hops"];
+const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem", "chainOrigin", "hops", "station"];
 const STATE_CHECKS = ["useCargo", "useBudget", "sameSystem", "noOutpost", "legalOnly", "capStock"];
 const safeKey = (k) => typeof k === "string" && /^[a-zA-Z]+$/.test(k); // anti-injection de sélecteur
 
@@ -1012,7 +1025,7 @@ function applyState(s) {
   STATE_CHECKS.forEach((id) => { if (s[id] != null) $(id).checked = s[id] === "1"; });
   if (safeKey(s.sk)) { sortKey = s.sk; sortDir = Number(s.sd) === 1 ? 1 : -1; }
   if (safeKey(s.lk)) { loopSortKey = s.lk; loopSortDir = Number(s.ld) === 1 ? 1 : -1; }
-  if (["routes", "loops", "enroute", "chain"].includes(s.v)) view = s.v;
+  if (["routes", "loops", "enroute", "chain", "corrections"].includes(s.v)) view = s.v;
   applySortIndicators();
   syncToggles();
   restoring = false;
@@ -1055,12 +1068,10 @@ function startEdit(span) {
   inp.addEventListener("blur", () => commit(true));
 }
 
-// Met à jour le bouton « corrections » (compteur / visibilité).
+// Met à jour le libellé du bouton de vue « Corrections » (compteur).
 function updateOvBadge() {
-  const btn = $("resetOv");
   const n = ovCount();
-  btn.hidden = n === 0;
-  btn.textContent = `✎ ${n} correction${n > 1 ? "s" : ""} · réinitialiser`;
+  $("viewCorrections").textContent = n ? `✎ Corrections (${n})` : "✎ Corrections";
 }
 
 function resetAllOverrides() {
@@ -1069,6 +1080,61 @@ function resetAllOverrides() {
   resetOverrides();
   updateOvBadge();
   refresh();
+}
+
+// ---------- Vue « Corrections » : liste + édition par station ----------
+function resolveStation() {
+  const v = $("station").value.trim();
+  stationSel = stationMap.has(v) ? stationMap.get(v) : null;
+}
+
+// Tableau éditable des commodités d'une station (prix/stock à l'achat, prix/demande à la vente).
+function stationTableHTML(S, q) {
+  const t = MARKET.terminals[S];
+  const rows = [];
+  MARKET.commodities.forEach((c) => {
+    if (q && !c.name.toLowerCase().includes(q)) return;
+    const b = c.buys.find((x) => x[0] === S);
+    const s = c.sells.find((x) => x[0] === S);
+    if (!b && !s) return;
+    const buyCell = b
+      ? (() => { const e = effVals(c.name, t.name, "buy", b[1], b[2], b[3]); return `${editv(c.name, t.name, "buy", "price", e.price, e.oprice, b[3])} aUEC · stock ${editv(c.name, t.name, "buy", "vol", e.vol, e.ovol, b[3])}`; })()
+      : '<span class="muted">—</span>';
+    const sellCell = s
+      ? (() => { const e = effVals(c.name, t.name, "sell", s[1], s[2], s[3]); return `${editv(c.name, t.name, "sell", "price", e.price, e.oprice, s[3])} aUEC · dem. ${editv(c.name, t.name, "sell", "vol", e.vol, e.ovol, s[3])}`; })()
+      : '<span class="muted">—</span>';
+    rows.push(`<tr><td class="loc"><div class="commodity-cell">${commodityIcon(c.kind)}<span>${esc(c.name)}${illegalTag(c.illegal)}</span></div></td><td>${buyCell}</td><td>${sellCell}</td></tr>`);
+  });
+  if (!rows.length) return `<p class="empty">Aucune commodité ${q ? "correspondante " : ""}à ${esc(t.name)}.</p>`;
+  return `<div class="station-title">◈ ${esc(t.name)}${sysBadge(t.system)} — clique un chiffre pour le corriger localement</div>
+    <table class="station-table"><thead><tr><th>Commodité</th><th>Achat (prix · stock)</th><th>Vente (prix · demande)</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
+}
+
+// Liste de toutes les corrections locales, avec suppression individuelle.
+function correctionsListHTML() {
+  const keys = Object.keys(OVERRIDES);
+  if (!keys.length) return '<p class="empty">Aucune correction locale pour l\'instant. Cherche une station ci-dessus pour en créer.</p>';
+  const sideLabel = (s) => (s === "buy" ? "achat" : "vente");
+  const items = keys.sort().map((k) => {
+    const o = OVERRIDES[k];
+    const [commodity, terminal, side] = k.split("|");
+    const parts = [];
+    if (o.price != null) parts.push(`prix <b>${fmt(o.price)}</b>`);
+    if (o.vol != null) parts.push(`${side === "buy" ? "stock" : "demande"} <b>${fmt(o.vol)}</b>`);
+    return `<div class="corr-item"><div><b>${esc(commodity)}</b> · ${esc(terminal)} <span class="corr-side">${sideLabel(side)}</span><div class="loc-sub">${parts.join(" · ")}</div></div><button class="corr-del" data-key="${esc(k)}" title="Supprimer cette correction">✕</button></div>`;
+  }).join("");
+  return `<div class="corr-list-head"><span>${keys.length} correction${keys.length > 1 ? "s" : ""}</span><button id="resetAll" class="reset-ov">Tout réinitialiser</button></div>${items}`;
+}
+
+function renderCorrections() {
+  if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderCorrections(); }); return; }
+  if (!enrouteReady) setupEnRoute();
+  resolveStation();
+  const q = $("search").value.trim().toLowerCase();
+  const station = stationSel != null ? stationTableHTML(stationSel, q) : '<p class="manifest-hint">Cherche une station ci-dessus pour voir et corriger ses prix et stocks.</p>';
+  $("correctionsStation").innerHTML = station;
+  $("correctionsList").innerHTML = correctionsListHTML();
+  notifySuperseded();
 }
 
 // Grise le champ soute/budget quand sa contrainte est désactivée.
@@ -1096,6 +1162,7 @@ async function init() {
   $("viewLoops").addEventListener("click", () => switchView("loops"));
   $("viewEnroute").addEventListener("click", () => switchView("enroute"));
   $("viewChain").addEventListener("click", () => switchView("chain"));
+  $("viewCorrections").addEventListener("click", () => switchView("corrections"));
   $("share").addEventListener("click", copyShareLink);
   // Contrôles « En route ».
   $("origin").addEventListener("input", () => { resolveOrigin(); refresh(); });
@@ -1103,6 +1170,13 @@ async function init() {
   // Contrôles « Chaîne ».
   $("chainOrigin").addEventListener("input", () => { resolveChainOrigin(); refresh(); });
   $("hops").addEventListener("input", refresh);
+  // Contrôles « Corrections » : recherche de station + suppression / reset (délégué).
+  $("station").addEventListener("input", () => { resolveStation(); refresh(); });
+  $("corrections").addEventListener("click", (e) => {
+    const del = e.target.closest(".corr-del");
+    if (del) { delete OVERRIDES[del.dataset.key]; saveOverrides(); updateOvBadge(); refresh(); return; }
+    if (e.target.closest("#resetAll")) resetAllOverrides();
+  });
   // Manifeste : ajustement des SCU (recalcul à la volée) + ajout d'une commodité suggérée.
   $("manifest").addEventListener("input", (e) => {
     if (e.target.classList.contains("mqty-input")) updateManifestTotals();
@@ -1138,7 +1212,6 @@ async function init() {
       startEdit(e.target);
     }
   });
-  $("resetOv").addEventListener("click", resetAllOverrides);
   // Raccourcis clavier : / (recherche), 1/2/3 (vues). Ignorés pendant la saisie.
   document.addEventListener("keydown", (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -1149,6 +1222,7 @@ async function init() {
     else if (e.key === "2") switchView("loops");
     else if (e.key === "3") switchView("enroute");
     else if (e.key === "4") switchView("chain");
+    else if (e.key === "5") switchView("corrections");
   });
   loadOverrides();
   updateOvBadge();

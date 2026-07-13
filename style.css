@@ -452,6 +452,38 @@ input.editv-input {
 }
 .chain-leg-profit { font-family: var(--mono); white-space: nowrap; }
 
+/* ---------- Vue « Corrections » ---------- */
+.corrections-wrap { margin: 18px 0 24px; }
+.station-title { padding: 12px 2px; font-weight: 700; color: #eafcff; }
+.station-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 26px; }
+.station-table th {
+  text-align: left; padding: 10px 14px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--accent); background: #0a141e; border-bottom: 2px solid var(--line-bright); white-space: nowrap;
+}
+.station-table td { padding: 9px 14px; border-bottom: 1px solid var(--line); vertical-align: top; font-family: var(--mono); font-size: 13px; }
+.station-table td:first-child { font-family: var(--font); }
+.station-table .muted { color: var(--muted); }
+
+.corr-list-head {
+  display: flex; align-items: center; gap: 12px; margin: 8px 0 10px;
+  font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--accent);
+}
+.corr-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 9px 14px; border: 1px solid var(--line); border-left: 2px solid var(--warn);
+  border-radius: 3px; margin-bottom: 6px; background: var(--panel-2);
+}
+.corr-side {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted);
+  border: 1px solid var(--line-bright); border-radius: 3px; padding: 1px 6px; margin-left: 4px;
+}
+.corr-del {
+  flex-shrink: 0; width: 26px; height: 26px; border-radius: 4px; cursor: pointer;
+  color: #f87171; background: rgba(248, 113, 113, 0.08); border: 1px solid #6b1c1c;
+  font-size: 13px; line-height: 1; transition: color 0.12s, background 0.12s;
+}
+.corr-del:hover { color: #eafcff; background: #6b1c1c; }
+
 /* ---------- Schéma de trajet (ligne dépliable) ---------- */
 .route-toggle {
   flex-shrink: 0; width: 24px; height: 24px; padding: 0;

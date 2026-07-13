@@ -80,7 +80,7 @@
       <button id="viewLoops" class="vbtn" data-view="loops" title="Boucles aller-retour (raccourci : 2)">Boucles aller-retour ⇄</button>
       <button id="viewEnroute" class="vbtn" data-view="enroute" title="En route (raccourci : 3)">En route 🧭</button>
       <button id="viewChain" class="vbtn" data-view="chain" title="Chaîne multi-sauts (raccourci : 4)">Chaîne ⛓️</button>
-      <button id="resetOv" class="vbtn reset-ov" title="Effacer tes corrections locales de prix et de stock" hidden>✎ 0 correction</button>
+      <button id="viewCorrections" class="vbtn" data-view="corrections" title="Voir et gérer mes corrections locales (raccourci : 5)">✎ Corrections</button>
       <button id="share" class="vbtn share-btn" title="Copier un lien vers cette vue filtrée (soute, budget, filtres, tri)">🔗 Partager</button>
     </div>
 
@@ -112,6 +112,20 @@
       </div>
       <p class="enroute-hint">Enchaîne plusieurs trajets rentables : achète, vends, <b>rachète sur place</b>, revends plus loin… Le budget se reconstitue à chaque vente ; la soute borne chaque saut.</p>
     </section>
+
+    <section id="correctionsControls" class="enroute-controls" hidden>
+      <div class="field">
+        <label for="station">Station à corriger</label>
+        <input id="station" list="stationList" type="text" placeholder="Tape une station (ex : Levski)" autocomplete="off" />
+        <datalist id="stationList"></datalist>
+      </div>
+      <p class="enroute-hint">Corrige les <b>prix et stocks</b> d'une station même hors trajet (clique un chiffre). Tes corrections sont <b>locales</b> (jamais partagées) et périment automatiquement dès qu'UEX publie un relevé plus récent. Utilise le champ <b>Commodité</b> pour filtrer la station.</p>
+    </section>
+
+    <div id="corrections" class="corrections-wrap" hidden>
+      <div id="correctionsStation"></div>
+      <div id="correctionsList"></div>
+    </div>
 
     <div class="table-wrap">
       <div id="manifest" class="manifest" hidden></div>
