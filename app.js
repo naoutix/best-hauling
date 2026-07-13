@@ -156,7 +156,9 @@ function normalizeScores(rows) {
 // quand le relevé UEX est faux. Stocké UNIQUEMENT en local (localStorage), jamais partagé
 // ni dans l'URL. Clé : « commodité|terminal|side » (side = "buy" | "vol"… non : "buy"/"sell").
 const OV_KEY = "best-hauling-overrides";
-let OVERRIDES = {}; // { "Commodité|Terminal|buy": { price?, vol? }, ... }
+let OVERRIDES = {}; // { "Commodité|Terminal|buy": { price?, vol?, ts }, ... } — ts = date de la correction (s)
+
+const nowSec = () => Math.floor(Date.now() / 1000); // même échelle que les dates UEX (updated)
 
 function loadOverrides() {
   try { OVERRIDES = JSON.parse(localStorage.getItem(OV_KEY)) || {}; } catch { OVERRIDES = {}; }
@@ -168,13 +170,24 @@ const ovKey = (commodity, terminal, side) => `${commodity}|${terminal}|${side}`;
 const ovCount = () => Object.keys(OVERRIDES).length;
 
 // Renvoie prix/volume effectifs (corrigés si une correction locale existe) + drapeaux.
-function effVals(commodity, terminal, side, price, vol) {
-  const o = OVERRIDES[ovKey(commodity, terminal, side)];
+// « Intelligent » : si le relevé UEX du point (dataUpdated) est PLUS RÉCENT que la
+// correction, celle-ci est périmée -> on la supprime et on revient à la valeur UEX.
+function effVals(commodity, terminal, side, price, vol, dataUpdated) {
+  const k = ovKey(commodity, terminal, side);
+  const o = OVERRIDES[k];
+  if (!o) return { price, vol, oprice: false, ovol: false };
+  const ts = o.ts != null ? o.ts : Infinity; // corrections héritées (sans date) : jamais périmées
+  if (dataUpdated && dataUpdated > ts) {
+    delete OVERRIDES[k];
+    saveOverrides();
+    updateOvBadge();
+    return { price, vol, oprice: false, ovol: false };
+  }
   return {
-    price: o && o.price != null ? o.price : price,
-    vol: o && o.vol != null ? o.vol : vol,
-    oprice: !!(o && o.price != null),
-    ovol: !!(o && o.vol != null),
+    price: o.price != null ? o.price : price,
+    vol: o.vol != null ? o.vol : vol,
+    oprice: o.price != null,
+    ovol: o.vol != null,
   };
 }
 
@@ -185,7 +198,7 @@ function setOverride(commodity, terminal, side, field, value) {
   const n = value == null || value === "" ? NaN : Math.max(0, Math.round(Number(value)));
   if (Number.isFinite(n)) o[field] = n;
   else delete o[field];
-  if (Object.keys(o).length) OVERRIDES[k] = o;
+  if (o.price != null || o.vol != null) { o.ts = nowSec(); OVERRIDES[k] = o; }
   else delete OVERRIDES[k];
   saveOverrides();
 }
@@ -193,8 +206,8 @@ function resetOverrides() { OVERRIDES = {}; saveOverrides(); }
 
 // Applique les corrections à une paire buy/sell et renvoie des copies patchées + marge/roi.
 function applyOverrides(commodity, buy, sell) {
-  const b = effVals(commodity, buy.terminal, "buy", buy.price, buy.stock);
-  const s = effVals(commodity, sell.terminal, "sell", sell.price, sell.demand);
+  const b = effVals(commodity, buy.terminal, "buy", buy.price, buy.stock, buy.updated);
+  const s = effVals(commodity, sell.terminal, "sell", sell.price, sell.demand, sell.updated);
   const nb = { ...buy, price: b.price, stock: b.vol, ovPrice: b.oprice, ovVol: b.ovol };
   const ns = { ...sell, price: s.price, demand: s.vol, ovPrice: s.oprice, ovVol: s.ovol };
   const margin = ns.price - nb.price;
@@ -305,8 +318,8 @@ function routeRowHTML(r) {
 // ---------- Vue "Boucles aller-retour" ----------
 // Corrige un segment de boucle (achat au terminal `buyT`, vente au terminal `sellT`).
 function effLeg(leg, buyT, sellT) {
-  const b = effVals(leg.commodity, buyT, "buy", leg.buyPrice, leg.stock);
-  const s = effVals(leg.commodity, sellT, "sell", leg.sellPrice, leg.demand);
+  const b = effVals(leg.commodity, buyT, "buy", leg.buyPrice, leg.stock, leg.updated);
+  const s = effVals(leg.commodity, sellT, "sell", leg.sellPrice, leg.demand, leg.updated);
   return { ...leg, buyPrice: b.price, stock: b.vol, sellPrice: s.price, demand: s.vol, margin: s.price - b.price };
 }
 
@@ -471,13 +484,13 @@ function bestManifest(origin, destSystem, f) {
     if (f.legalOnly && c.illegal) return;
     const b = c.buys.find((x) => x[0] === origin);
     if (!b) return;
-    const eb = effVals(c.name, ot.name, "buy", b[1], b[2]); // prix/stock corrigés
+    const eb = effVals(c.name, ot.name, "buy", b[1], b[2], b[3]); // prix/stock corrigés
     c.sells.forEach((s) => {
       if (s[0] === origin) return;
       const st = MARKET.terminals[s[0]];
       if (destSystem && st.system !== destSystem) return;
       if (f.noOutpost && st.outpost) return;
-      const es = effVals(c.name, st.name, "sell", s[1], s[2]);
+      const es = effVals(c.name, st.name, "sell", s[1], s[2], s[3]);
       const margin = es.price - eb.price;
       if (margin <= 0) return;
       if (!byDest.has(s[0])) byDest.set(s[0], []);
@@ -542,8 +555,8 @@ function suggestionsFor() {
     const b = c.buys.find((x) => x[0] === m.originIdx);
     const s = c.sells.find((x) => x[0] === m.destIdx);
     if (!b || !s) return;
-    const eb = effVals(c.name, m.origin.name, "buy", b[1], b[2]);
-    const es = effVals(c.name, m.dest.name, "sell", s[1], s[2]);
+    const eb = effVals(c.name, m.origin.name, "buy", b[1], b[2], b[3]);
+    const es = effVals(c.name, m.dest.name, "sell", s[1], s[2], s[3]);
     const margin = es.price - eb.price;
     if (margin <= 0) return;
     out.push({ name: c.name, kind: c.kind, illegal: c.illegal, buyPrice: eb.price, stock: eb.vol, sellPrice: es.price, demand: es.vol, margin });
