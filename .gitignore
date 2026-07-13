@@ -4,6 +4,9 @@ checklist-achat-idris.md
 # Config locale Claude Code
 .claude/
 
+# Artefact de site assemblé en CI (publié via GitHub Pages, jamais commité)
+_site/
+
 # Dépendances / OS
 node_modules/
 .DS_Store

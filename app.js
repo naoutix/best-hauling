@@ -115,19 +115,25 @@ function bySort(key, dir) {
   };
 }
 
-// Calcule les champs dérivés d'une route selon les entrées utilisateur.
-// useCargo / useBudget désactivent la contrainte correspondante (limite = illimitée).
-function evaluate(r, cargo, budget, capStock, useCargo, useBudget) {
-  const byCargo = useCargo ? cargo : Infinity;
-  const byBudget = useBudget && budget > 0 ? Math.floor(budget / r.buy.price) : Infinity;
+// Nombre d'unités achetables selon les contraintes actives. Renvoie Infinity si aucune
+// contrainte de volume n'est active (soute ET budget désactivés) -> on classe alors par marge.
+// f = { cargo, budget, capStock, useCargo, useBudget } (issu de readFilters()).
+function computeUnits(price, stock, demand, f) {
+  const byCargo = f.useCargo ? f.cargo : Infinity;
+  const byBudget = f.useBudget && f.budget > 0 ? Math.floor(f.budget / price) : Infinity;
   let units = Math.min(byCargo, byBudget);
-  if (capStock) {
-    if (r.buy.stock > 0) units = Math.min(units, r.buy.stock); // stock dispo à l'achat
-    if (r.sell.demand > 0) units = Math.min(units, r.sell.demand); // demande à la vente
+  if (f.capStock) {
+    if (stock > 0) units = Math.min(units, stock); // stock dispo à l'achat
+    if (demand > 0) units = Math.min(units, demand); // demande à la vente
   }
-  // Aucune contrainte de volume active -> valeurs par voyage non définies (on classe alors par marge).
+  if (isFinite(units) && units < 0) units = 0;
+  return units;
+}
+
+// Calcule les champs dérivés d'une route selon les entrées utilisateur.
+function evaluate(r, f) {
+  const units = computeUnits(r.buy.price, r.buy.stock, r.sell.demand, f);
   const bounded = isFinite(units);
-  if (bounded && units < 0) units = 0;
   const profit = bounded ? units * r.margin : null;
   const minutes = tripMinutes(r.distance, !r.same_system);
   return {
@@ -160,7 +166,8 @@ function readFilters() {
 }
 
 function render() {
-  const { cargo, budget, capStock, useCargo, useBudget, sameOnly, noOutpost, legalOnly, sysFilter, maxAge, q } = readFilters();
+  const f = readFilters();
+  const { sameOnly, noOutpost, legalOnly, sysFilter, maxAge, q } = f;
 
   let rows = ROUTES.filter((r) => {
     if (sameOnly && !r.same_system) return false;
@@ -173,7 +180,7 @@ function render() {
     }
     if (q && !r.commodity.toLowerCase().includes(q)) return false;
     return true;
-  }).map((r) => evaluate(r, cargo, budget, capStock, useCargo, useBudget));
+  }).map((r) => evaluate(r, f));
 
   rows.sort(bySort(sortKey, sortDir));
 
@@ -205,18 +212,9 @@ function render() {
 }
 
 // ---------- Vue "Boucles aller-retour" ----------
-function evaluateLoop(l, cargo, budget, capStock, useCargo, useBudget) {
-  const legUnits = (leg) => {
-    const byCargo = useCargo ? cargo : Infinity;
-    const byBudget = useBudget && budget > 0 ? Math.floor(budget / leg.buyPrice) : Infinity;
-    let u = Math.min(byCargo, byBudget);
-    if (capStock) {
-      if (leg.stock > 0) u = Math.min(u, leg.stock); // stock dispo à l'achat
-      if (leg.demand > 0) u = Math.min(u, leg.demand); // demande à la destination
-    }
-    return u;
-  };
-  const uOut = legUnits(l.out), uBack = legUnits(l.back);
+function evaluateLoop(l, f) {
+  const uOut = computeUnits(l.out.buyPrice, l.out.stock, l.out.demand, f);
+  const uBack = computeUnits(l.back.buyPrice, l.back.stock, l.back.demand, f);
   const bounded = isFinite(uOut) && isFinite(uBack);
   const cross = l.a.system !== l.b.system;
   const minutes = loopMinutes(l.distance, cross);
@@ -235,7 +233,8 @@ function evaluateLoop(l, cargo, budget, capStock, useCargo, useBudget) {
 }
 
 function renderLoops() {
-  const { cargo, budget, capStock, useCargo, useBudget, sameOnly, noOutpost, legalOnly, sysFilter, maxAge, q } = readFilters();
+  const f = readFilters();
+  const { sameOnly, noOutpost, legalOnly, sysFilter, maxAge, q } = f;
 
   let rows = LOOPS.filter((l) => {
     if (sameOnly && l.a.system !== l.b.system) return false;
@@ -248,7 +247,7 @@ function renderLoops() {
     }
     if (q && !(l.out.commodity.toLowerCase().includes(q) || l.back.commodity.toLowerCase().includes(q))) return false;
     return true;
-  }).map((l) => evaluateLoop(l, cargo, budget, capStock, useCargo, useBudget));
+  }).map((l) => evaluateLoop(l, f));
 
   rows.sort(bySort(loopSortKey, loopSortDir));
 
@@ -464,8 +463,8 @@ async function init() {
     ROUTES = routes;
     LOOPS = loops;
 
-    // Remplit le filtre système.
-    const systems = [...new Set(routes.map((r) => r.buy.system))].sort();
+    // Remplit le filtre système (systèmes d'achat ET de vente, pour n'en oublier aucun).
+    const systems = [...new Set(routes.flatMap((r) => [r.buy.system, r.sell.system]))].sort();
     const sel = $("system");
     systems.forEach((s) => {
       const o = document.createElement("option");

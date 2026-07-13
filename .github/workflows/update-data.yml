@@ -5,38 +5,93 @@ on:
     - cron: "17 * * * *"   # toutes les heures (à HH:17, décalé pour éviter les pics)
   workflow_dispatch:         # bouton manuel dans l'onglet Actions
   push:
-    branches: [ main ]
-    paths:
-      - "scripts/build-data.mjs"
+    branches: [ main ]       # redéploie le site à chaque changement de code
 
+# Le site (données fraîches incluses) est publié via l'artefact GitHub Pages —
+# on ne commite plus les JSON dans le dépôt (l'historique ne gonfle plus).
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
+  issues: write
 
+# Ne pas annuler un déploiement en cours (recommandé pour Pages).
 concurrency:
-  group: update-data
-  cancel-in-progress: true
+  group: pages
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: 20
+
+      - name: Tests
+        run: node --test
 
       - name: Générer les données
         run: node scripts/build-data.mjs
 
-      - name: Commit si changement
+      - name: Assembler le site
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/routes.json data/loops.json data/ships.json data/meta.json
-          if git diff --staged --quiet; then
-            echo "Aucun changement de données."
-          else
-            git commit -m "chore: mise à jour des routes UEX [skip ci]"
-            git push
-          fi
+          mkdir -p _site/data
+          cp index.html app.js style.css _site/
+          cp data/*.json _site/data/
+
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b  # v5
+
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4
+
+  # Ouvre une issue si le build/déploiement échoue, la referme au retour à la normale.
+  notify:
+    needs: [build, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+        with:
+          script: |
+            const failed =
+              ["failure", "cancelled"].includes(process.env.BUILD_RESULT) ||
+              ["failure", "cancelled"].includes(process.env.DEPLOY_RESULT);
+            const { owner, repo } = context.repo;
+            const title = "⚠️ Échec de la mise à jour des données UEX";
+            const open = await github.rest.issues.listForRepo({
+              owner, repo, state: "open", labels: "ci-failure",
+            });
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            if (failed) {
+              const body = `Le workflow a échoué (build: ${process.env.BUILD_RESULT}, deploy: ${process.env.DEPLOY_RESULT}).\n\nRun : ${runUrl}\n\n_Message automatique — cette issue se refermera au prochain succès._`;
+              if (open.data.length) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: open.data[0].number, body });
+              } else {
+                await github.rest.issues.create({ owner, repo, title, body, labels: ["ci-failure"] });
+              }
+            } else {
+              for (const issue of open.data) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issue.number,
+                  body: `✅ Rétabli — le workflow a de nouveau réussi (${runUrl}).`,
+                });
+                await github.rest.issues.update({ owner, repo, issue_number: issue.number, state: "closed" });
+              }
+            }

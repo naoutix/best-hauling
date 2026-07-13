@@ -1,0 +1,20 @@
+{
+  "name": "best-hauling",
+  "version": "1.0.0",
+  "description": "Site statique des meilleures routes d'arbitrage de commodités Star Citizen (données UEX Corp).",
+  "license": "MIT",
+  "author": "naoutix",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build-data.mjs",
+    "test": "node --test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/naoutix/best-hauling.git"
+  }
+}

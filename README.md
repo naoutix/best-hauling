@@ -7,12 +7,15 @@ Les données viennent de l'[API publique UEX Corp](https://uexcorp.space/api/doc
 ## Comment ça marche
 
 ```
-GitHub Actions (cron horaire)
+GitHub Actions (cron horaire / push)
+   ├─ node --test                    (tests des fonctions de calcul)
    └─ node scripts/build-data.mjs
         ├─ GET api.uexcorp.uk/2.0/terminals?type=commodity
         ├─ GET api.uexcorp.uk/2.0/commodities_prices_all
         ├─ calcule les meilleures routes (achat le moins cher → vente la plus chère)
-        └─ écrit data/routes.json + data/meta.json  → commit
+        └─ écrit data/routes.json + data/meta.json
+                                   │
+        assemble _site/ (html+js+css+data) ─→ publie l'artefact GitHub Pages
                                    │
 GitHub Pages (page statique)  ────┘
    └─ index.html + app.js chargent data/routes.json
@@ -47,23 +50,31 @@ Pas de serveur, pas de clé API, pas de coût.
 
 ## Déploiement (une seule fois)
 
-1. Crée un dépôt GitHub et pousse ces fichiers sur la branche `main`.
-2. **Settings → Pages** → Source : `Deploy from a branch`, branche `main`, dossier `/ (root)`.
-3. **Settings → Actions → General → Workflow permissions** → coche
-   *Read and write permissions* (pour que le bot puisse commit les données).
-4. Onglet **Actions** → lance *Mise à jour des routes UEX* manuellement une première fois.
-5. Le site est en ligne sur `https://<ton-pseudo>.github.io/<nom-du-repo>/`.
+Le workflow **construit les données puis publie le site entier** (données fraîches
+comprises) comme artefact GitHub Pages. Les JSON ne sont plus commités dans le dépôt,
+donc l'historique git ne gonfle pas.
 
-Ensuite, les données se mettent à jour toutes les heures automatiquement.
+1. Crée un dépôt GitHub et pousse ces fichiers sur la branche `main`.
+2. **Settings → Pages** → Source : **`GitHub Actions`** (⚠️ *pas* `Deploy from a branch` —
+   le workflow échouera tant que ce réglage n'est pas sur `GitHub Actions`).
+3. Onglet **Actions** → lance *Mise à jour des routes UEX* manuellement une première fois.
+4. Le site est en ligne sur `https://<ton-pseudo>.github.io/<nom-du-repo>/`.
+
+Ensuite, le site se reconstruit et se redéploie toutes les heures (données rafraîchies),
+et à chaque push sur `main`. En cas d'échec, une issue est ouverte automatiquement
+(et refermée au retour à la normale).
 
 ## Lancer en local
 
 ```bash
-node scripts/build-data.mjs      # génère data/routes.json
+npm test                         # tests des fonctions de calcul (node --test)
+npm run build                    # régénère data/*.json (ou: node scripts/build-data.mjs)
 npx serve .                      # ou: python -m http.server
 ```
 
 Ouvre l'URL indiquée (ne pas ouvrir `index.html` en `file://` — `fetch` a besoin d'un serveur).
+Les `data/*.json` versionnés servent d'amorce pour le dev local ; en production, le workflow
+en génère toujours une version fraîche avant de publier.
 
 ## Personnalisation
 

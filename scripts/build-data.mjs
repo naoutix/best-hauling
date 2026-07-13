@@ -6,7 +6,7 @@
 // Sortie : data/routes.json (routes classées) + data/meta.json (métadonnées).
 
 import { writeFile, mkdir } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
 const API = "https://api.uexcorp.uk/2.0";
@@ -14,8 +14,12 @@ const OUT_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "data");
 
 // Nombre max de routes gardées dans le JSON (garde le fichier léger).
 const MAX_ROUTES = 600;
+// Nombre max de boucles aller-retour gardées.
+const MAX_LOOPS = 160;
 // Nombre de terminaux de vente candidats par terminal d'achat.
 const TOP_SELLS = 4;
+// Concurrence des requêtes de distance (orbite→orbite) vers l'API UEX.
+const FETCH_CONCURRENCY = 5;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -69,6 +73,76 @@ function normalizeKind(k) {
     "non-metal": "nonmetal",
   };
   return fix[k] || k || "other";
+}
+
+// Génère les routes d'arbitrage pour une commodité.
+// `c` = { name, kind, illegal, refBuy, refSell, buys[], sells[] } où chaque buy/sell porte
+// { id, orbit, name, system, planet, price, stock|demand, updated, status }.
+// Part du terminal d'achat le moins cher, retient les meilleures ventes + la meilleure vente
+// intra-système. Renvoie un tableau de routes (sans distance, calculée ensuite).
+function routesForCommodity(c, topSells = TOP_SELLS) {
+  if (!c.buys.length || !c.sells.length) return [];
+  c.buys.sort((a, b) => a.price - b.price); // achat le moins cher d'abord
+  c.sells.sort((a, b) => b.price - a.price); // vente la plus chère d'abord
+
+  const buy = c.buys[0];
+  const candidates = c.sells.slice(0, topSells);
+  // Meilleure vente dans le MÊME système (route sans saut inter-système).
+  const sameSys = c.sells.find((s) => s.system === buy.system);
+  if (sameSys) candidates.push(sameSys);
+
+  const seen = new Set();
+  const out = [];
+  for (const sell of candidates) {
+    const key = `${buy.name}->${sell.name}`;
+    if (seen.has(key)) continue;
+    if (sell.name === buy.name) continue;
+    const margin = sell.price - buy.price;
+    if (margin <= 0) continue;
+    seen.add(key);
+    out.push({
+      commodity: c.name,
+      kind: c.kind,
+      illegal: c.illegal,
+      buy: { terminal: buy.name, system: buy.system, planet: buy.planet, price: buy.price, stock: buy.stock, outpost: buy.outpost, updated: buy.updated, status: buy.status },
+      sell: { terminal: sell.name, system: sell.system, planet: sell.planet, price: sell.price, demand: sell.demand, outpost: sell.outpost, updated: sell.updated, status: sell.status },
+      refBuy: c.refBuy,
+      refSell: c.refSell,
+      margin,
+      roi: Math.round((margin / buy.price) * 1000) / 10, // % ROI, 1 décimale
+      same_system: buy.system === sell.system,
+      // Ids/orbites temporaires pour le calcul de distance (retirés avant écriture).
+      _o: buy.id, _d: sell.id, _oo: buy.orbit, _do: sell.orbit,
+    });
+  }
+  return out;
+}
+
+// Meilleure marge par paire de terminaux orientée (A -> B), toutes commodités confondues.
+// Renvoie une Map `${aId}->${bId}` -> meilleur segment.
+function buildBestLegs(byCommodity) {
+  const bestLeg = new Map();
+  for (const [, c] of byCommodity) {
+    for (const b of c.buys) {
+      for (const s of c.sells) {
+        if (b.id === s.id) continue;
+        const margin = s.price - b.price;
+        if (margin <= 0) continue;
+        const key = `${b.id}->${s.id}`;
+        const cur = bestLeg.get(key);
+        if (!cur || margin > cur.margin) {
+          bestLeg.set(key, {
+            aId: b.id, bId: s.id,
+            commodity: c.name, kind: c.kind, illegal: c.illegal,
+            buyPrice: b.price, sellPrice: s.price, margin,
+            stock: b.stock, demand: s.demand,
+            updated: b.updated && s.updated ? Math.min(b.updated, s.updated) : b.updated || s.updated || 0,
+          });
+        }
+      }
+    }
+  }
+  return bestLeg;
 }
 
 async function main() {
@@ -131,45 +205,7 @@ async function main() {
 
   // Génère les routes d'arbitrage.
   const routes = [];
-  for (const [, c] of byCommodity) {
-    if (!c.buys.length || !c.sells.length) continue;
-    c.buys.sort((a, b) => a.price - b.price); // achat le moins cher d'abord
-    c.sells.sort((a, b) => b.price - a.price); // vente la plus chère d'abord
-
-    // On part du terminal d'achat le moins cher (le plus rentable en général).
-    const buy = c.buys[0];
-    const seen = new Set();
-    const candidates = [];
-
-    // Meilleures ventes globales.
-    for (const s of c.sells.slice(0, TOP_SELLS)) candidates.push(s);
-    // Meilleure vente dans le MÊME système (route sans saut inter-système).
-    const sameSys = c.sells.find((s) => s.system === buy.system);
-    if (sameSys) candidates.push(sameSys);
-
-    for (const sell of candidates) {
-      const key = `${buy.name}->${sell.name}`;
-      if (seen.has(key)) continue;
-      if (sell.name === buy.name) continue;
-      const margin = sell.price - buy.price;
-      if (margin <= 0) continue;
-      seen.add(key);
-      routes.push({
-        commodity: c.name,
-        kind: c.kind,
-        illegal: c.illegal,
-        buy: { terminal: buy.name, system: buy.system, planet: buy.planet, price: buy.price, stock: buy.stock, outpost: buy.outpost, updated: buy.updated, status: buy.status },
-        sell: { terminal: sell.name, system: sell.system, planet: sell.planet, price: sell.price, demand: sell.demand, outpost: sell.outpost, updated: sell.updated, status: sell.status },
-        refBuy: c.refBuy,
-        refSell: c.refSell,
-        margin,
-        roi: Math.round((margin / buy.price) * 1000) / 10, // % ROI, 1 décimale
-        same_system: buy.system === sell.system,
-        // Ids/orbites temporaires pour le calcul de distance (retirés avant écriture).
-        _o: buy.id, _d: sell.id, _oo: buy.orbit, _do: sell.orbit,
-      });
-    }
-  }
+  for (const [, c] of byCommodity) routes.push(...routesForCommodity(c));
 
   routes.sort((a, b) => b.margin - a.margin);
   const top = routes.slice(0, MAX_ROUTES);
@@ -201,34 +237,13 @@ async function main() {
   }
 
   log(`Calcul des distances (${top.length} routes)…`);
-  await mapPool(top, 5, async (r) => {
+  await mapPool(top, FETCH_CONCURRENCY, async (r) => {
     r.distance = await getDistance(r._o, r._d, r._oo, r._do);
     delete r._o; delete r._d; delete r._oo; delete r._do;
   });
 
   // ---------- Boucles aller-retour (ne pas repartir à vide) ----------
-  // Meilleure marge par paire de terminaux orientée (A -> B), toutes commodités confondues.
-  const bestLeg = new Map();
-  for (const [, c] of byCommodity) {
-    for (const b of c.buys) {
-      for (const s of c.sells) {
-        if (b.id === s.id) continue;
-        const margin = s.price - b.price;
-        if (margin <= 0) continue;
-        const key = `${b.id}->${s.id}`;
-        const cur = bestLeg.get(key);
-        if (!cur || margin > cur.margin) {
-          bestLeg.set(key, {
-            aId: b.id, bId: s.id,
-            commodity: c.name, kind: c.kind, illegal: c.illegal,
-            buyPrice: b.price, sellPrice: s.price, margin,
-            stock: b.stock, demand: s.demand,
-            updated: b.updated && s.updated ? Math.min(b.updated, s.updated) : b.updated || s.updated || 0,
-          });
-        }
-      }
-    }
-  }
+  const bestLeg = buildBestLegs(byCommodity);
 
   const legInfo = (leg) => ({
     commodity: leg.commodity, kind: leg.kind, illegal: leg.illegal,
@@ -259,10 +274,10 @@ async function main() {
     });
   }
   loops.sort((a, b) => b.loopMargin - a.loopMargin);
-  const topLoops = loops.slice(0, 160);
+  const topLoops = loops.slice(0, MAX_LOOPS);
 
   log(`Distances des boucles (${topLoops.length})…`);
-  await mapPool(topLoops, 5, async (l) => {
+  await mapPool(topLoops, FETCH_CONCURRENCY, async (l) => {
     const d1 = await getDistance(l._a, l._b, l._ao, l._bo);
     const d2 = await getDistance(l._b, l._a, l._bo, l._ao);
     l.distance = (d1 || 0) + (d2 || 0); // aller-retour
@@ -295,7 +310,15 @@ async function main() {
   log(`OK — ${top.length} routes, ${topLoops.length} boucles, ${byCommodity.size} commodités, ${term.size} terminaux, ${ships.length} vaisseaux.`);
 }
 
-main().catch((e) => {
-  console.error("[build-data] ÉCHEC:", e.message);
-  process.exit(1);
-});
+// Fonctions pures exportées pour les tests (voir build-data.test.mjs).
+export { normalizeKind, routesForCommodity, buildBestLegs };
+
+// N'exécute le pipeline complet (réseau + écriture) que lorsqu'on lance le fichier
+// directement — pas quand il est importé par les tests.
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
+  main().catch((e) => {
+    console.error("[build-data] ÉCHEC:", e.message);
+    process.exit(1);
+  });
+}
