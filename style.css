@@ -334,9 +334,24 @@ tbody tr:hover td { border-bottom-color: var(--line-bright); }
   border-color: var(--accent);
   box-shadow: 0 0 14px rgba(34, 211, 238, 0.35);
 }
+.share-btn { margin-left: auto; }
+.share-btn.copied { color: #04222c; background: var(--good); border-color: var(--good); box-shadow: 0 0 14px rgba(74, 222, 128, 0.35); }
 
 .profit { color: var(--good); font-weight: 700; text-shadow: 0 0 10px rgba(74, 222, 128, 0.25); }
 .roi-badge { color: var(--warn); }
+
+/* Score composite : mini-barre + valeur */
+.score-cell { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.score-cell b { font-family: var(--mono); font-variant-numeric: tabular-nums; min-width: 22px; text-align: right; }
+.scorebar {
+  display: inline-block; width: 46px; height: 6px; flex-shrink: 0;
+  border-radius: 3px; background: var(--panel-2);
+  border: 1px solid var(--line); overflow: hidden;
+}
+.scorebar i { display: block; height: 100%; }
+.scorebar.s-good i { background: linear-gradient(90deg, var(--accent-dim), var(--good)); }
+.scorebar.s-ok i   { background: linear-gradient(90deg, var(--accent-dim), var(--warn)); }
+.scorebar.s-low i  { background: #6b4a1c; }
 
 .empty { color: var(--muted); padding: 40px; text-align: center; font-size: 15px; }
 

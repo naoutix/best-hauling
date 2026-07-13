@@ -74,6 +74,7 @@
     <div class="view-switch">
       <button id="viewRoutes" class="vbtn active" data-view="routes">Trajets simples</button>
       <button id="viewLoops" class="vbtn" data-view="loops">Boucles aller-retour ⇄</button>
+      <button id="share" class="vbtn share-btn" title="Copier un lien vers cette vue filtrée (soute, budget, filtres, tri)">🔗 Partager</button>
     </div>
 
     <div class="table-wrap">
@@ -83,12 +84,13 @@
             <th data-sort="commodity">Commodité</th>
             <th data-sort="buyPrice">Acheter</th>
             <th data-sort="sellPrice">Vendre</th>
+            <th data-sort="score" class="sorted-desc" title="Score de fiabilité : rentabilité × fraîcheur du relevé × disponibilité (stock/demande). 100 = meilleur de la liste.">Score</th>
             <th data-sort="margin" class="num">Marge/SCU</th>
             <th data-sort="roi" class="num">ROI</th>
             <th data-sort="units" class="num">Unités à acheter</th>
             <th data-sort="investment" class="num">Coût total</th>
             <th data-sort="profit" class="num">Profit/voyage</th>
-            <th data-sort="profitHour" class="num sorted-desc">Profit/heure</th>
+            <th data-sort="profitHour" class="num">Profit/heure</th>
           </tr>
         </thead>
         <tbody id="rows"></tbody>
@@ -100,9 +102,10 @@
             <th>Boucle&nbsp;⇄</th>
             <th>Aller</th>
             <th>Retour</th>
+            <th data-sort-loop="score" class="sorted-desc" title="Score de fiabilité : rentabilité × fraîcheur × disponibilité. 100 = meilleure de la liste.">Score</th>
             <th data-sort-loop="loopMargin" class="num">Marge boucle/SCU</th>
             <th data-sort-loop="units" class="num">Unités (A+R)</th>
-            <th data-sort-loop="profit" class="num sorted-desc">Profit boucle</th>
+            <th data-sort-loop="profit" class="num">Profit boucle</th>
             <th data-sort-loop="profitHour" class="num">Profit/heure</th>
           </tr>
         </thead>
