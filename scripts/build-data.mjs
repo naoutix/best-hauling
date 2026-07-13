@@ -56,6 +56,9 @@ async function main() {
   const commodities = await getJSON("commodities");
   const kindById = new Map(commodities.map((c) => [c.id, normalizeKind(c.kind)]));
   const illegalById = new Map(commodities.map((c) => [c.id, !!c.is_illegal]));
+  // Prix de référence (moyenne UEX par commodité) — sert à détecter les prix aberrants/périmés.
+  const refBuyById = new Map(commodities.map((c) => [c.id, c.price_buy || 0]));
+  const refSellById = new Map(commodities.map((c) => [c.id, c.price_sell || 0]));
 
   // Index terminal id -> infos de localisation (uniquement terminaux disponibles).
   const term = new Map();
@@ -85,16 +88,18 @@ async function main() {
         name: p.commodity_name,
         kind: kindById.get(p.id_commodity) || "other",
         illegal: illegalById.get(p.id_commodity) || false,
+        refBuy: refBuyById.get(p.id_commodity) || 0,
+        refSell: refSellById.get(p.id_commodity) || 0,
         buys: [],
         sells: [],
       };
       byCommodity.set(p.id_commodity, c);
     }
     if (p.price_buy > 0) {
-      c.buys.push({ ...loc, price: p.price_buy, stock: p.scu_buy || 0 });
+      c.buys.push({ ...loc, price: p.price_buy, stock: p.scu_buy || 0, updated: p.date_modified || 0, status: p.status_buy || 0 });
     }
     if (p.price_sell > 0) {
-      c.sells.push({ ...loc, price: p.price_sell, demand: p.scu_sell_stock || 0 });
+      c.sells.push({ ...loc, price: p.price_sell, demand: p.scu_sell_stock || 0, updated: p.date_modified || 0, status: p.status_sell || 0 });
     }
   }
 
@@ -127,8 +132,10 @@ async function main() {
         commodity: c.name,
         kind: c.kind,
         illegal: c.illegal,
-        buy: { terminal: buy.name, system: buy.system, planet: buy.planet, price: buy.price, stock: buy.stock, outpost: buy.outpost },
-        sell: { terminal: sell.name, system: sell.system, planet: sell.planet, price: sell.price, demand: sell.demand, outpost: sell.outpost },
+        buy: { terminal: buy.name, system: buy.system, planet: buy.planet, price: buy.price, stock: buy.stock, outpost: buy.outpost, updated: buy.updated, status: buy.status },
+        sell: { terminal: sell.name, system: sell.system, planet: sell.planet, price: sell.price, demand: sell.demand, outpost: sell.outpost, updated: sell.updated, status: sell.status },
+        refBuy: c.refBuy,
+        refSell: c.refSell,
         margin,
         roi: Math.round((margin / buy.price) * 1000) / 10, // % ROI, 1 décimale
         same_system: buy.system === sell.system,
@@ -181,6 +188,7 @@ async function main() {
             commodity: c.name, kind: c.kind, illegal: c.illegal,
             buyPrice: b.price, sellPrice: s.price, margin,
             stock: b.stock, demand: s.demand,
+            updated: b.updated && s.updated ? Math.min(b.updated, s.updated) : b.updated || s.updated || 0,
           });
         }
       }
@@ -190,7 +198,7 @@ async function main() {
   const legInfo = (leg) => ({
     commodity: leg.commodity, kind: leg.kind, illegal: leg.illegal,
     buyPrice: leg.buyPrice, sellPrice: leg.sellPrice, margin: leg.margin,
-    stock: leg.stock, demand: leg.demand,
+    stock: leg.stock, demand: leg.demand, updated: leg.updated,
   });
   const termInfo = (id) => {
     const t = term.get(id);

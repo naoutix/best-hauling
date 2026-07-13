@@ -54,6 +54,48 @@ function loopMinutes(distance, cross) {
   return 4 * HANDLING + (distance || 0) * PER_DIST + (cross ? 2 * JUMP : 0);
 }
 
+// ---------- Fiabilité : fraîcheur, statut de stock, aberrations ----------
+// Âge d'un relevé en jours (null si date inconnue).
+function ageDays(updated) {
+  if (!updated) return null;
+  return (Date.now() / 1000 - updated) / 86400;
+}
+// Âge d'une route/boucle = le relevé le plus ancien des deux extrémités.
+function pairAge(a, b) {
+  const u = a && b ? Math.min(a, b) : a || b || 0;
+  return ageDays(u);
+}
+// Petite pastille colorée « il y a Xj/Xh » selon l'âge.
+function freshChip(updated) {
+  const d = ageDays(updated);
+  if (d == null) return '<span class="fresh f-old" title="Date de relevé inconnue">?</span>';
+  let cls = "f-good", label;
+  if (d < 1) { cls = "f-good"; label = d < 1 / 24 ? "<1 h" : Math.round(d * 24) + " h"; }
+  else { label = Math.round(d) + " j"; cls = d < 3 ? "f-good" : d < 7 ? "f-ok" : "f-old"; }
+  return `<span class="fresh ${cls}" title="Relevé UEX il y a ${label}">${label}</span>`;
+}
+
+// Légendes de statut d'inventaire UEX (couleurs officielles).
+const BUY_STATUS = { 1: ["Vide", "red"], 2: ["Très bas", "red"], 3: ["Bas", "orange"], 4: ["Moyen", "blue"], 5: ["Élevé", "blue"], 6: ["Très élevé", "green"], 7: ["Plein", "green"] };
+const SELL_STATUS = { 1: ["Forte demande", "green"], 2: ["Bonne demande", "green"], 3: ["Demande correcte", "blue"], 4: ["Demande moyenne", "blue"], 5: ["Demande faible", "orange"], 6: ["Demande très faible", "red"], 7: ["Saturé (aucune demande)", "red"] };
+function statusDot(code, side) {
+  const legend = side === "buy" ? BUY_STATUS : SELL_STATUS;
+  const s = legend[code];
+  if (!s) return "";
+  return `<span class="sdot s-${s[1]}" title="${side === "buy" ? "Stock à l'achat" : "Demande à la vente"} : ${s[0]}"></span>`;
+}
+
+// Flag « à vérifier » : donnée trop vieille (>10 j) ou prix qui s'écarte fortement
+// de la moyenne UEX (souvent un relevé erroné ou périmé).
+function suspectTag(r) {
+  const d = pairAge(r.buy.updated, r.sell.updated);
+  const stale = d != null && d > 10;
+  const deviant = r.refSell > 0 && r.refBuy > 0 && (r.sell.price > r.refSell * 1.5 || r.buy.price < r.refBuy * 0.67);
+  if (!stale && !deviant) return "";
+  const why = stale ? "relevé de plus de 10 jours" : "prix très éloigné de la moyenne UEX";
+  return ` <span class="suspect" title="À vérifier en jeu : ${why}">⚠ à vérifier</span>`;
+}
+
 // Comparateur de tri qui renvoie toujours les valeurs nulles en bas.
 function bySort(key, dir) {
   return (a, b) => {
@@ -102,6 +144,7 @@ function render() {
   const noOutpost = $("noOutpost").checked;
   const legalOnly = $("legalOnly").checked;
   const sysFilter = $("system").value;
+  const maxAge = Number($("freshness").value) || 0;
   const q = $("search").value.trim().toLowerCase();
 
   let rows = ROUTES.filter((r) => {
@@ -109,6 +152,10 @@ function render() {
     if (noOutpost && (r.buy.outpost || r.sell.outpost)) return false;
     if (legalOnly && r.illegal) return false;
     if (sysFilter && r.buy.system !== sysFilter) return false;
+    if (maxAge) {
+      const a = pairAge(r.buy.updated, r.sell.updated);
+      if (a == null || a > maxAge) return false;
+    }
     if (q && !r.commodity.toLowerCase().includes(q)) return false;
     return true;
   }).map((r) => evaluate(r, cargo, budget, capStock, useCargo, useBudget));
@@ -120,14 +167,14 @@ function render() {
     .map(
       (r) => `
       <tr>
-        <td class="loc"><div class="commodity-cell">${commodityIcon(r.kind)}<span>${r.commodity}${illegalTag(r.illegal)}</span></div></td>
+        <td class="loc"><div class="commodity-cell">${commodityIcon(r.kind)}<span>${r.commodity}${illegalTag(r.illegal)}${suspectTag(r)}</span></div></td>
         <td>
           <div>${r.buy.terminal}${sysBadge(r.buy.system)}${outpostTag(r.buy.outpost)}</div>
-          <div class="loc-sub">${r.buy.planet} · ${fmt(r.buy.price)} aUEC · <span class="stock" title="Stock disponible à l'achat (relevé UEX)">stock ${fmt(r.buy.stock)} SCU</span></div>
+          <div class="loc-sub">${r.buy.planet} · ${fmt(r.buy.price)} aUEC · ${statusDot(r.buy.status, "buy")}<span class="stock" title="Stock disponible à l'achat (relevé UEX)">stock ${fmt(r.buy.stock)} SCU</span> · ${freshChip(r.buy.updated)}</div>
         </td>
         <td>
           <div>${r.sell.terminal}${sysBadge(r.sell.system)}${outpostTag(r.sell.outpost)}</div>
-          <div class="loc-sub">${r.sell.planet} · ${fmt(r.sell.price)} aUEC · <span class="stock" title="Demande / stock à la vente (relevé UEX)">demande ${fmt(r.sell.demand)} SCU</span>${r.same_system ? "" : ' <span class="cross">⚡ saut inter-système</span>'}</div>
+          <div class="loc-sub">${r.sell.planet} · ${fmt(r.sell.price)} aUEC · ${statusDot(r.sell.status, "sell")}<span class="stock" title="Demande / stock à la vente (relevé UEX)">demande ${fmt(r.sell.demand)} SCU</span> · ${freshChip(r.sell.updated)}${r.same_system ? "" : ' <span class="cross">⚡ saut inter-système</span>'}</div>
         </td>
         <td class="num">${fmt(r.margin)}</td>
         <td class="num roi-badge">${r.roi}%</td>
@@ -182,6 +229,7 @@ function renderLoops() {
   const noOutpost = $("noOutpost").checked;
   const legalOnly = $("legalOnly").checked;
   const sysFilter = $("system").value;
+  const maxAge = Number($("freshness").value) || 0;
   const q = $("search").value.trim().toLowerCase();
 
   let rows = LOOPS.filter((l) => {
@@ -189,6 +237,10 @@ function renderLoops() {
     if (noOutpost && (l.a.outpost || l.b.outpost)) return false;
     if (legalOnly && (l.out.illegal || l.back.illegal)) return false;
     if (sysFilter && l.a.system !== sysFilter && l.b.system !== sysFilter) return false;
+    if (maxAge) {
+      const a = pairAge(l.out.updated, l.back.updated);
+      if (a == null || a > maxAge) return false;
+    }
     if (q && !(l.out.commodity.toLowerCase().includes(q) || l.back.commodity.toLowerCase().includes(q))) return false;
     return true;
   }).map((l) => evaluateLoop(l, cargo, budget, capStock, useCargo, useBudget));
@@ -201,7 +253,7 @@ function renderLoops() {
       <tr>
         <td class="loc">
           <div>${l.a.terminal}${sysBadge(l.a.system)}${outpostTag(l.a.outpost)}</div>
-          <div class="loc-sub">⇄ ${l.b.terminal}${sysBadge(l.b.system)}${outpostTag(l.b.outpost)}${l.cross ? ' <span class="cross">⚡ inter-système</span>' : ""}</div>
+          <div class="loc-sub">⇄ ${l.b.terminal}${sysBadge(l.b.system)}${outpostTag(l.b.outpost)}${l.cross ? ' <span class="cross">⚡ inter-système</span>' : ""} · ${freshChip(l.out.updated && l.back.updated ? Math.min(l.out.updated, l.back.updated) : l.out.updated || l.back.updated || 0)}</div>
         </td>
         <td>
           <div class="commodity-cell">${commodityIcon(l.out.kind)}<span>${l.out.commodity}${illegalTag(l.out.illegal)}</span></div>
@@ -383,7 +435,7 @@ function syncToggles() {
 async function init() {
   setupSort();
   setupLoopSort();
-  ["cargo", "budget", "search", "system", "sameSystem", "noOutpost", "legalOnly", "capStock"].forEach((id) =>
+  ["cargo", "budget", "search", "system", "freshness", "sameSystem", "noOutpost", "legalOnly", "capStock"].forEach((id) =>
     $(id).addEventListener("input", refresh)
   );
   ["useCargo", "useBudget"].forEach((id) =>

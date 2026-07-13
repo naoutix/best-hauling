@@ -36,6 +36,9 @@ Pas de serveur, pas de clé API, pas de coût.
 - Vue **Boucles aller-retour** : meilleures boucles A⇄B (une commodité à l'aller, une autre au
   retour) pour ne jamais repartir à vide.
 - Filtre **commodités légales uniquement** (exclut la contrebande / le risque de scan).
+- **Fiabilité des données** : âge de chaque relevé UEX (pastille colorée) + filtre par fraîcheur
+  (< 24 h / < 3 j / < 7 j), point de statut d'inventaire coloré (stock à l'achat / demande à la
+  vente), et tag **« à vérifier »** sur les relevés > 10 jours ou aux prix aberrants vs moyenne UEX.
 - Filtres : commodité, système d'achat, « même système uniquement » (routes sans saut),
   « exclure les avant-postes » (élévateurs de fret peu fiables — garde stations et villes),
   et « limiter au stock & à la demande UEX » (plafonne les unités par le stock dispo à l'achat

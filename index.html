@@ -43,6 +43,15 @@
         <label for="system">Système d'achat</label>
         <select id="system"><option value="">Tous</option></select>
       </div>
+      <div class="field">
+        <label for="freshness">Fraîcheur des données</label>
+        <select id="freshness">
+          <option value="">Toutes</option>
+          <option value="7">Relevé &lt; 7 jours</option>
+          <option value="3">Relevé &lt; 3 jours</option>
+          <option value="1">Relevé &lt; 24 h</option>
+        </select>
+      </div>
       <div class="field checks">
         <label><input id="sameSystem" type="checkbox" /> Même système uniquement</label>
         <label><input id="noOutpost" type="checkbox" /> Exclure les avant-postes</label>

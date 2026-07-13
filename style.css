@@ -287,6 +287,30 @@ tbody tr:hover td { border-bottom-color: var(--line-bright); }
   background: rgba(248, 113, 113, 0.10); border: 1px solid #6b1c1c; color: #f87171;
   margin-left: 6px; white-space: nowrap; vertical-align: middle;
 }
+.suspect {
+  display: inline-block; font-size: 10px; padding: 1px 7px; border-radius: 3px;
+  background: rgba(245, 167, 66, 0.10); border: 1px solid #5a4a1c; color: var(--warn);
+  margin-left: 6px; white-space: nowrap; vertical-align: middle;
+}
+
+/* Pastille de fraîcheur du relevé */
+.fresh {
+  display: inline-block; font-size: 10px; padding: 0 6px; border-radius: 3px;
+  font-family: var(--mono); white-space: nowrap; vertical-align: middle;
+}
+.fresh.f-good { color: var(--good); background: rgba(74, 222, 128, 0.10); }
+.fresh.f-ok { color: var(--warn); background: rgba(245, 167, 66, 0.10); }
+.fresh.f-old { color: #f87171; background: rgba(248, 113, 113, 0.10); }
+
+/* Point de statut d'inventaire (couleurs officielles UEX) */
+.sdot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  margin-right: 4px; vertical-align: middle;
+}
+.sdot.s-red { background: #f87171; box-shadow: 0 0 5px rgba(248, 113, 113, 0.6); }
+.sdot.s-orange { background: var(--warn); box-shadow: 0 0 5px rgba(245, 167, 66, 0.5); }
+.sdot.s-blue { background: #60a5fa; }
+.sdot.s-green { background: var(--good); box-shadow: 0 0 5px rgba(74, 222, 128, 0.5); }
 
 /* Sélecteur de vue (Trajets simples / Boucles) */
 .view-switch { display: flex; gap: 8px; margin: 22px 0 0; }
