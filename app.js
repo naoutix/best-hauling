@@ -16,6 +16,8 @@ let loopSortKey = "score";
 let loopSortDir = -1;
 // Lignes actuellement affichées (dans l'ordre du DOM) pour déplier le schéma de trajet.
 let shownRoutes = [], shownEnroute = [], shownLoops = [];
+// Affiche la carte du vaisseau correspondant au champ (défini par loadShips ; utilisé à la restauration).
+let showShipCard = () => {};
 
 const STATE_KEY = "best-hauling-state";
 
@@ -782,6 +784,12 @@ async function loadShips() {
     refresh();
   }
 
+  // Affiche la carte du vaisseau déjà présent dans le champ (ex. après restauration d'état).
+  showShipCard = () => {
+    const s = ships.find((x) => x.name.toLowerCase() === input.value.trim().toLowerCase());
+    if (s) showCard(s);
+  };
+
   function highlight() {
     [...list.children].forEach((li, i) => li.classList.toggle("active", i === active));
     list.children[active]?.scrollIntoView({ block: "nearest" });
@@ -1038,6 +1046,7 @@ async function init() {
     }
     // Applique l'état restauré une fois le menu système peuplé, puis affiche la bonne vue.
     applyState(saved);
+    showShipCard(); // ré-affiche la carte du vaisseau restauré (image comprise)
     switchView(view);
   } catch (e) {
     $("meta").textContent = "Erreur de chargement des données.";
