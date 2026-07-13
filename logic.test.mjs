@@ -112,7 +112,13 @@ test("computeUnits : plafonné par stock ET demande quand capStock actif", () =>
 test("computeUnits : stock d'achat à 0 = terminal vide -> 0 unité (bug Levski)", () => {
   const f = F({ useCargo: true, cargo: 1000, capStock: true });
   assert.equal(computeUnits(100, 0, 120, f), 0);   // stock 0 = vide -> rien à acheter
-  assert.equal(computeUnits(100, 300, 0, f), 300); // demande 0 = quantité inconnue -> non plafonnée
+  assert.equal(computeUnits(100, 300, 0, f), 300); // demande 0 BRUTE = quantité inconnue -> non plafonnée
+});
+
+test("computeUnits : demande corrigée par l'utilisateur est fiable (0 -> 0)", () => {
+  const f = F({ useCargo: true, cargo: 1000, capStock: true });
+  assert.equal(computeUnits(100, 300, 0, f, true), 0);   // demande 0 CORRIGÉE = pas de demande -> plafonne
+  assert.equal(computeUnits(100, 300, 50, f, true), 50); // demande corrigée à 50 -> plafonne à 50
 });
 
 test("computeUnits : prend la plus petite contrainte (soute vs budget)", () => {
@@ -166,6 +172,15 @@ test("fillCargo : remplit par marge décroissante, plafonné par la soute", () =
   assert.equal(lines[0].name, "A");
   assert.equal(lines[0].units, 60);
   assert.equal(profit, 60 * 50);
+});
+
+test("fillCargo : une demande corrigée à 0 (demandKnown) exclut la ligne", () => {
+  const items = [
+    { name: "PasDeDem", buyPrice: 100, stock: 999, demand: 0, demandKnown: true, margin: 99 }, // demande corrigée à 0
+    { name: "Ok", buyPrice: 100, stock: 999, demand: 999, margin: 10 },
+  ];
+  const { lines } = fillCargo(items, 50, Infinity);
+  assert.deepEqual(lines.map((l) => l.name), ["Ok"]); // « PasDeDem » exclue malgré sa marge
 });
 
 test("fillCargo : une commodité au stock 0 (vide) est exclue", () => {
