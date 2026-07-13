@@ -383,6 +383,37 @@ input.mqty-input {
 .mprice { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
 .mprofit { font-family: var(--mono); white-space: nowrap; text-align: right; }
 
+/* ---------- Corrections locales (valeurs éditables) ---------- */
+.editv {
+  cursor: pointer; border-bottom: 1px dashed var(--line-bright);
+  padding: 0 1px; transition: color 0.1s, border-color 0.1s;
+}
+.editv:hover, .editv:focus { color: var(--accent); border-bottom-color: var(--accent); outline: none; }
+.editv.ov { color: var(--warn); border-bottom-style: solid; border-bottom-color: var(--warn); }
+.ovmark { font-size: 9px; margin-left: 2px; vertical-align: super; }
+input.editv-input {
+  width: 74px; min-width: 0; padding: 1px 4px; font-size: 13px;
+  font-family: var(--mono); text-align: right;
+  background: var(--panel-2); border: 1px solid var(--accent); color: var(--text); border-radius: 3px;
+}
+.reset-ov { margin-left: auto; color: var(--warn); border-color: #5a4a1c; }
+.reset-ov:hover { color: #eafcff; border-color: var(--warn); background: rgba(245, 167, 66, 0.12); }
+
+/* ---------- Suggestions du manifeste ---------- */
+.manifest-suggest:not(:empty) { border-top: 1px dashed var(--line-bright); }
+.suggest-head { padding: 10px 18px 4px; color: var(--accent); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+.sline {
+  display: grid; grid-template-columns: auto 1fr auto auto auto; align-items: center; gap: 12px;
+  padding: 7px 18px; border-top: 1px solid var(--line);
+}
+.suggest-add {
+  font-family: var(--font); font-size: 12px; font-weight: 600; white-space: nowrap;
+  color: var(--good); background: rgba(74, 222, 128, 0.08);
+  border: 1px solid #235a37; border-radius: 3px; padding: 5px 10px; cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.suggest-add:hover { color: #04222c; background: var(--good); border-color: var(--good); }
+
 .profit { color: var(--good); font-weight: 700; text-shadow: 0 0 10px rgba(74, 222, 128, 0.25); }
 .roi-badge { color: var(--warn); }
 
