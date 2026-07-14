@@ -4,195 +4,243 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Best Hauling — Routes commerciales Star Citizen</title>
+  <link rel="stylesheet" href="fonts/fonts.css" />
   <link rel="stylesheet" href="style.css" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icon.svg" />
   <link rel="apple-touch-icon" href="icon.svg" />
-  <meta name="theme-color" content="#05080d" />
+  <meta name="theme-color" content="#05060d" />
 </head>
 <body>
+  <div class="grid-overlay" aria-hidden="true"></div>
   <div class="scanlines" aria-hidden="true"></div>
+  <div class="scanbar" aria-hidden="true"></div>
 
-  <header>
-    <div class="brand">
-      <div class="logo" aria-hidden="true">◈</div>
-      <div class="title">
-        <h1>Best&nbsp;Hauling</h1>
-        <p class="sub">Manifeste de fret · meilleures routes d'arbitrage — Star&nbsp;Citizen</p>
+  <div class="app" id="app">
+
+    <!-- ===================== NAV RAIL ===================== -->
+    <nav class="rail">
+      <div class="brand">
+        <div class="logo" aria-hidden="true"><span class="logo-diamond"></span></div>
+        <div class="brand-text">
+          <div class="brand-name">HAULR</div>
+          <div class="brand-sub">Flight&nbsp;Ops</div>
+        </div>
       </div>
+
+      <button class="rail-toggle" id="railToggle" title="Rétracter / déplier le menu" aria-label="Rétracter le menu">«</button>
+
+      <div class="rail-nav">
+        <button id="viewRoutes" class="vbtn active" data-view="routes" title="Trajets simples (raccourci : 1)"><span class="rn">01</span><span class="rl">Trajets</span></button>
+        <button id="viewLoops" class="vbtn" data-view="loops" title="Boucles aller-retour (raccourci : 2)"><span class="rn">02</span><span class="rl">Boucles</span></button>
+        <button id="viewEnroute" class="vbtn" data-view="enroute" title="En route (raccourci : 3)"><span class="rn">03</span><span class="rl">En&nbsp;route</span></button>
+        <button id="viewChain" class="vbtn" data-view="chain" title="Chaîne multi-sauts (raccourci : 4)"><span class="rn">04</span><span class="rl">Chaîne</span></button>
+        <button id="viewCorrections" class="vbtn" data-view="corrections" title="Corrections locales (raccourci : 5)"><span class="rn">05</span><span class="rl">Corrections</span></button>
+      </div>
+
+      <button id="share" class="share-btn" title="Copier un lien vers cette vue filtrée">⟐ <span class="rl">Partager</span></button>
+
+      <div class="rail-status">
+        <div class="rail-status-head"><span class="live-dot"></span><span class="rl">Flux UEX</span></div>
+      </div>
+    </nav>
+
+    <!-- ===================== MAIN ===================== -->
+    <div class="main">
+      <header>
+        <div class="head-title">
+          <div class="kicker">// Flight&nbsp;plan · Star&nbsp;Citizen</div>
+          <h1>Best&nbsp;Hauling</h1>
+          <p class="sub">Manifeste de fret · meilleures routes d'arbitrage</p>
+        </div>
+        <div class="meta" id="meta">Chargement…</div>
+      </header>
+
+      <main>
+        <section class="controls">
+          <div class="field ship-field">
+            <label for="ship">◈ Vaisseau</label>
+            <input id="ship" type="text" placeholder="Tape un nom (ex : Railen)" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="shipList" />
+            <ul id="shipList" class="autocomplete" role="listbox" hidden></ul>
+          </div>
+          <div class="field">
+            <label class="toggle"><input id="useCargo" type="checkbox" checked /> Soute (SCU)</label>
+            <input id="cargo" type="number" min="1" step="1" value="96" />
+          </div>
+          <div class="field">
+            <label class="toggle"><input id="useBudget" type="checkbox" checked /> Budget (aUEC)</label>
+            <input id="budget" type="number" min="0" step="1000" value="1000000" />
+          </div>
+          <div class="field">
+            <label for="search">Commodité</label>
+            <input id="search" type="text" placeholder="ex : Laranite" title="Filtrer par commodité (raccourci : /)" />
+          </div>
+          <div class="field">
+            <label for="system">Système d'achat</label>
+            <select id="system"><option value="">Tous</option></select>
+          </div>
+          <div class="field">
+            <label for="freshness">Fraîcheur des données</label>
+            <select id="freshness">
+              <option value="">Toutes</option>
+              <option value="7">Relevé &lt; 7 jours</option>
+              <option value="3">Relevé &lt; 3 jours</option>
+              <option value="1">Relevé &lt; 24 h</option>
+            </select>
+          </div>
+          <div class="field checks">
+            <label><input id="sameSystem" type="checkbox" /> Même système uniquement</label>
+            <label><input id="noOutpost" type="checkbox" /> Exclure les avant-postes</label>
+            <label><input id="legalOnly" type="checkbox" /> Commodités légales uniquement</label>
+            <label><input id="capStock" type="checkbox" /> Limiter au stock &amp; à la demande (UEX)</label>
+          </div>
+        </section>
+
+        <aside id="shipCard" class="ship-card" hidden>
+          <div class="ship-img-wrap">
+            <img id="shipImg" class="ship-img" alt="" loading="lazy" referrerpolicy="no-referrer" />
+          </div>
+          <div class="ship-card-info">
+            <span class="ship-card-label">◈ Vaisseau engagé</span>
+            <span id="shipCardName" class="ship-card-name"></span>
+            <span id="shipCardScu" class="ship-card-scu"></span>
+          </div>
+        </aside>
+
+        <section id="enrouteControls" class="enroute-controls" hidden>
+          <div class="field">
+            <label for="origin">Terminal de départ</label>
+            <input id="origin" list="originList" type="text" placeholder="Tape un terminal (ex : CRU-L1)" autocomplete="off" />
+            <datalist id="originList"></datalist>
+          </div>
+          <div class="field">
+            <label for="destSystem">Destination</label>
+            <select id="destSystem"><option value="">N'importe où</option></select>
+          </div>
+          <p class="enroute-hint">Le fret rentable depuis ton terminal, plus un <b>manifeste optimal</b> qui remplit ta soute avec plusieurs commodités vers une même destination.</p>
+        </section>
+
+        <section id="chainControls" class="enroute-controls" hidden>
+          <div class="field">
+            <label for="chainOrigin">Terminal de départ</label>
+            <input id="chainOrigin" list="originList" type="text" placeholder="Tape un terminal (ex : Seraphim)" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="hops">Nombre de sauts</label>
+            <select id="hops">
+              <option value="2">2 sauts</option>
+              <option value="3" selected>3 sauts</option>
+              <option value="4">4 sauts</option>
+            </select>
+          </div>
+          <p class="enroute-hint">Enchaîne plusieurs trajets rentables : achète, vends, <b>rachète sur place</b>, revends plus loin… Le budget se reconstitue à chaque vente ; la soute borne chaque saut.</p>
+        </section>
+
+        <section id="correctionsControls" class="enroute-controls" hidden>
+          <div class="field">
+            <label for="station">Station à corriger</label>
+            <input id="station" list="stationList" type="text" placeholder="Tape une station (ex : Levski)" autocomplete="off" />
+            <datalist id="stationList"></datalist>
+          </div>
+          <p class="enroute-hint">Corrige les <b>prix et stocks</b> d'une station même hors trajet (clique un chiffre). Tes corrections sont <b>locales</b> (jamais partagées) et périment automatiquement dès qu'UEX publie un relevé plus récent. Utilise le champ <b>Commodité</b> pour filtrer la station.</p>
+        </section>
+
+        <div id="corrections" class="corrections-wrap" hidden>
+          <div id="correctionsStation"></div>
+          <div id="correctionsList"></div>
+        </div>
+
+        <div class="table-wrap">
+          <div id="manifest" class="manifest" hidden></div>
+          <div id="chainOut" class="chain-wrap" hidden></div>
+
+          <div class="table-shell">
+            <table id="routes">
+              <thead>
+                <tr>
+                  <th data-sort="commodity">Commodité</th>
+                  <th data-sort="buyPrice">Acheter</th>
+                  <th data-sort="sellPrice">Vendre</th>
+                  <th data-sort="score" class="sorted-desc" title="Score de fiabilité : rentabilité × fraîcheur × disponibilité. 100 = meilleur de la liste.">Score</th>
+                  <th data-sort="margin" class="num">Marge/SCU</th>
+                  <th data-sort="roi" class="num">ROI</th>
+                  <th data-sort="units" class="num">Unités à acheter</th>
+                  <th data-sort="investment" class="num">Coût total</th>
+                  <th data-sort="profit" class="num">Profit/voyage</th>
+                  <th data-sort="profitHour" class="num">Profit/heure</th>
+                </tr>
+              </thead>
+              <tbody id="rows"></tbody>
+            </table>
+
+            <table id="loops" hidden>
+              <thead>
+                <tr>
+                  <th>Boucle&nbsp;⇄</th>
+                  <th>Aller</th>
+                  <th>Retour</th>
+                  <th data-sort-loop="score" class="sorted-desc" title="Score de fiabilité : rentabilité × fraîcheur × disponibilité. 100 = meilleure de la liste.">Score</th>
+                  <th data-sort-loop="loopMargin" class="num">Marge boucle/SCU</th>
+                  <th data-sort-loop="units" class="num">Unités (A+R)</th>
+                  <th data-sort-loop="profit" class="num">Profit boucle</th>
+                  <th data-sort-loop="profitHour" class="num">Profit/heure</th>
+                </tr>
+              </thead>
+              <tbody id="loopRows"></tbody>
+            </table>
+
+            <table id="enroute" hidden>
+              <thead>
+                <tr>
+                  <th>Commodité</th>
+                  <th>Acheter (départ)</th>
+                  <th>Vendre</th>
+                  <th>Score</th>
+                  <th class="num">Marge/SCU</th>
+                  <th class="num">ROI</th>
+                  <th class="num">Unités à acheter</th>
+                  <th class="num">Coût total</th>
+                  <th class="num">Profit/voyage</th>
+                  <th class="num">Profit/heure</th>
+                </tr>
+              </thead>
+              <tbody id="enrouteRows"></tbody>
+            </table>
+
+            <p id="empty" class="empty" hidden>Aucune route ne correspond aux filtres.</p>
+          </div>
+        </div>
+      </main>
+
+      <footer>
+        <p>
+          Données : <a id="src" href="https://uexcorp.space" target="_blank" rel="noopener">UEX Corp</a>.
+          Non affilié à Cloud Imperium Games. Les prix et stocks in-game varient — vérifie avant de voler.
+        </p>
+      </footer>
     </div>
-    <div class="meta" id="meta">Chargement…</div>
-  </header>
-
-  <main>
-    <section class="controls">
-      <div class="field ship-field">
-        <label for="ship">Vaisseau</label>
-        <input id="ship" type="text" placeholder="Tape un nom (ex : Railen)" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="shipList" />
-        <ul id="shipList" class="autocomplete" role="listbox" hidden></ul>
-      </div>
-      <div class="field">
-        <label class="toggle"><input id="useCargo" type="checkbox" checked /> Soute (SCU)</label>
-        <input id="cargo" type="number" min="1" step="1" value="96" />
-      </div>
-      <div class="field">
-        <label class="toggle"><input id="useBudget" type="checkbox" checked /> Budget (aUEC)</label>
-        <input id="budget" type="number" min="0" step="1000" value="1000000" />
-      </div>
-      <div class="field">
-        <label for="search">Commodité</label>
-        <input id="search" type="text" placeholder="ex : Laranite" title="Filtrer par commodité (raccourci : /)" />
-      </div>
-      <div class="field">
-        <label for="system">Système d'achat</label>
-        <select id="system"><option value="">Tous</option></select>
-      </div>
-      <div class="field">
-        <label for="freshness">Fraîcheur des données</label>
-        <select id="freshness">
-          <option value="">Toutes</option>
-          <option value="7">Relevé &lt; 7 jours</option>
-          <option value="3">Relevé &lt; 3 jours</option>
-          <option value="1">Relevé &lt; 24 h</option>
-        </select>
-      </div>
-      <div class="field checks">
-        <label><input id="sameSystem" type="checkbox" /> Même système uniquement</label>
-        <label><input id="noOutpost" type="checkbox" /> Exclure les avant-postes</label>
-        <label><input id="legalOnly" type="checkbox" /> Commodités légales uniquement</label>
-        <label><input id="capStock" type="checkbox" /> Limiter au stock &amp; à la demande (UEX)</label>
-      </div>
-    </section>
-
-    <aside id="shipCard" class="ship-card" hidden>
-      <div class="ship-img-wrap">
-        <img id="shipImg" class="ship-img" alt="" loading="lazy" referrerpolicy="no-referrer" />
-      </div>
-      <div class="ship-card-info">
-        <span class="ship-card-label">◈ Vaisseau sélectionné</span>
-        <span id="shipCardName" class="ship-card-name"></span>
-        <span id="shipCardScu" class="ship-card-scu"></span>
-      </div>
-    </aside>
-
-    <div class="view-switch">
-      <button id="viewRoutes" class="vbtn active" data-view="routes" title="Trajets simples (raccourci : 1)">Trajets simples</button>
-      <button id="viewLoops" class="vbtn" data-view="loops" title="Boucles aller-retour (raccourci : 2)">Boucles aller-retour ⇄</button>
-      <button id="viewEnroute" class="vbtn" data-view="enroute" title="En route (raccourci : 3)">En route 🧭</button>
-      <button id="viewChain" class="vbtn" data-view="chain" title="Chaîne multi-sauts (raccourci : 4)">Chaîne ⛓️</button>
-      <button id="viewCorrections" class="vbtn" data-view="corrections" title="Voir et gérer mes corrections locales (raccourci : 5)">✎ Corrections</button>
-      <button id="share" class="vbtn share-btn" title="Copier un lien vers cette vue filtrée (soute, budget, filtres, tri)">🔗 Partager</button>
-    </div>
-
-    <section id="enrouteControls" class="enroute-controls" hidden>
-      <div class="field">
-        <label for="origin">Terminal de départ</label>
-        <input id="origin" list="originList" type="text" placeholder="Tape un terminal (ex : CRU-L1)" autocomplete="off" />
-        <datalist id="originList"></datalist>
-      </div>
-      <div class="field">
-        <label for="destSystem">Destination</label>
-        <select id="destSystem"><option value="">N'importe où</option></select>
-      </div>
-      <p class="enroute-hint">Le fret rentable depuis ton terminal, plus un <b>manifeste optimal</b> qui remplit ta soute avec plusieurs commodités vers une même destination.</p>
-    </section>
-
-    <section id="chainControls" class="enroute-controls" hidden>
-      <div class="field">
-        <label for="chainOrigin">Terminal de départ</label>
-        <input id="chainOrigin" list="originList" type="text" placeholder="Tape un terminal (ex : Seraphim)" autocomplete="off" />
-      </div>
-      <div class="field">
-        <label for="hops">Nombre de sauts</label>
-        <select id="hops">
-          <option value="2">2 sauts</option>
-          <option value="3" selected>3 sauts</option>
-          <option value="4">4 sauts</option>
-        </select>
-      </div>
-      <p class="enroute-hint">Enchaîne plusieurs trajets rentables : achète, vends, <b>rachète sur place</b>, revends plus loin… Le budget se reconstitue à chaque vente ; la soute borne chaque saut.</p>
-    </section>
-
-    <section id="correctionsControls" class="enroute-controls" hidden>
-      <div class="field">
-        <label for="station">Station à corriger</label>
-        <input id="station" list="stationList" type="text" placeholder="Tape une station (ex : Levski)" autocomplete="off" />
-        <datalist id="stationList"></datalist>
-      </div>
-      <p class="enroute-hint">Corrige les <b>prix et stocks</b> d'une station même hors trajet (clique un chiffre). Tes corrections sont <b>locales</b> (jamais partagées) et périment automatiquement dès qu'UEX publie un relevé plus récent. Utilise le champ <b>Commodité</b> pour filtrer la station.</p>
-    </section>
-
-    <div id="corrections" class="corrections-wrap" hidden>
-      <div id="correctionsStation"></div>
-      <div id="correctionsList"></div>
-    </div>
-
-    <div class="table-wrap">
-      <div id="manifest" class="manifest" hidden></div>
-      <div id="chainOut" class="chain-wrap" hidden></div>
-      <table id="routes">
-        <thead>
-          <tr>
-            <th data-sort="commodity">Commodité</th>
-            <th data-sort="buyPrice">Acheter</th>
-            <th data-sort="sellPrice">Vendre</th>
-            <th data-sort="score" class="sorted-desc" title="Score de fiabilité : rentabilité × fraîcheur du relevé × disponibilité (stock/demande). 100 = meilleur de la liste.">Score</th>
-            <th data-sort="margin" class="num">Marge/SCU</th>
-            <th data-sort="roi" class="num">ROI</th>
-            <th data-sort="units" class="num">Unités à acheter</th>
-            <th data-sort="investment" class="num">Coût total</th>
-            <th data-sort="profit" class="num">Profit/voyage</th>
-            <th data-sort="profitHour" class="num">Profit/heure</th>
-          </tr>
-        </thead>
-        <tbody id="rows"></tbody>
-      </table>
-
-      <table id="loops" hidden>
-        <thead>
-          <tr>
-            <th>Boucle&nbsp;⇄</th>
-            <th>Aller</th>
-            <th>Retour</th>
-            <th data-sort-loop="score" class="sorted-desc" title="Score de fiabilité : rentabilité × fraîcheur × disponibilité. 100 = meilleure de la liste.">Score</th>
-            <th data-sort-loop="loopMargin" class="num">Marge boucle/SCU</th>
-            <th data-sort-loop="units" class="num">Unités (A+R)</th>
-            <th data-sort-loop="profit" class="num">Profit boucle</th>
-            <th data-sort-loop="profitHour" class="num">Profit/heure</th>
-          </tr>
-        </thead>
-        <tbody id="loopRows"></tbody>
-      </table>
-
-      <table id="enroute" hidden>
-        <thead>
-          <tr>
-            <th>Commodité</th>
-            <th>Acheter (départ)</th>
-            <th>Vendre</th>
-            <th>Score</th>
-            <th class="num">Marge/SCU</th>
-            <th class="num">ROI</th>
-            <th class="num">Unités à acheter</th>
-            <th class="num">Coût total</th>
-            <th class="num">Profit/voyage</th>
-            <th class="num">Profit/heure</th>
-          </tr>
-        </thead>
-        <tbody id="enrouteRows"></tbody>
-      </table>
-
-      <p id="empty" class="empty" hidden>Aucune route ne correspond aux filtres.</p>
-    </div>
-  </main>
-
-  <footer>
-    <p>
-      Données : <a id="src" href="https://uexcorp.space" target="_blank" rel="noopener">UEX Corp</a>.
-      Non affilié à Cloud Imperium Games. Les prix et stocks in-game varient — vérifie avant de voler.
-    </p>
-  </footer>
+  </div>
 
   <script type="module" src="app.js"></script>
+  <script>
+    // Barre latérale rétractable (pur vanilla, indépendant de app.js).
+    (function () {
+      var btn = document.getElementById("railToggle");
+      var app = document.getElementById("app");
+      if (!btn || !app) return;
+      var KEY = "best-hauling-rail";
+      try { if (localStorage.getItem(KEY) === "1") app.classList.add("rail-collapsed"); } catch (e) {}
+      var sync = function () {
+        var c = app.classList.contains("rail-collapsed");
+        btn.textContent = c ? "»" : "«";
+      };
+      sync();
+      btn.addEventListener("click", function () {
+        app.classList.toggle("rail-collapsed");
+        try { localStorage.setItem(KEY, app.classList.contains("rail-collapsed") ? "1" : "0"); } catch (e) {}
+        sync();
+      });
+    })();
+  </script>
 </body>
 </html>
