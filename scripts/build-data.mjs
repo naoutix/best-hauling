@@ -5,7 +5,7 @@
 // Source : UEX Corp API 2.0 (lecture publique, sans token) — https://uexcorp.space/api/documentation/
 // Sortie : data/routes.json (routes classées) + data/meta.json (métadonnées).
 
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, appendFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -47,6 +47,25 @@ async function getJSON(path, { retries = 2 } = {}) {
 
 function log(...a) {
   console.log("[build-data]", ...a);
+}
+
+// ---------- Rebuild conditionnel (CI) : ne reconstruire que si les données UEX ont changé ----------
+// Lit la signature de données du site déjà déployé (meta.json en ligne). Null si indispo.
+async function fetchDeployedSignature(url) {
+  if (!url) return null;
+  try {
+    const res = await fetch(url, { headers: { "User-Agent": "best-hauling/1.0 (conditional rebuild)" } });
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body.data_signature || null;
+  } catch {
+    return null;
+  }
+}
+// Écrit une sortie d'étape GitHub Actions (no-op hors CI).
+async function setOutput(key, value) {
+  const out = process.env.GITHUB_OUTPUT;
+  if (out) { try { await appendFile(out, `${key}=${value}\n`); } catch { /* best effort */ } }
 }
 
 // Exécute `fn` sur chaque élément avec une concurrence bornée, en préservant l'ordre.
@@ -163,7 +182,7 @@ function buildMarket(byCommodity, term) {
   for (const [, c] of byCommodity) {
     if (!c.buys.length || !c.sells.length) continue; // uniquement les commodités échangeables
     commodities.push({
-      name: c.name, kind: c.kind, illegal: c.illegal,
+      name: c.name, code: c.code || "", kind: c.kind, illegal: c.illegal,
       buys: c.buys.map((b) => [idxOf(b.id), b.price, b.stock, b.updated, b.status]),
       sells: c.sells.map((s) => [idxOf(s.id), s.price, s.demand, s.updated, s.status]),
     });
@@ -176,12 +195,29 @@ async function main() {
   const terminals = await getJSON("terminals?type=commodity");
   log("Récupération de tous les prix…");
   const prices = await getJSON("commodities_prices_all");
+
+  // Signature de données = nb de relevés + le date_modified le plus récent. Change dès qu'UEX
+  // publie/modifie un prix. Permet de sauter tout le reste (distances + assemblage + déploiement)
+  // quand rien n'a bougé. FORCE=1 (push / lancement manuel) court-circuite ce test.
+  const maxModified = prices.reduce((m, p) => Math.max(m, p.date_modified || 0), 0);
+  const signature = `${prices.length}:${maxModified}`;
+  if (!process.env.FORCE) {
+    const prev = await fetchDeployedSignature(process.env.DEPLOYED_META_URL);
+    if (prev && prev === signature) {
+      log(`Données UEX inchangées (signature ${signature}) — reconstruction ignorée.`);
+      await setOutput("changed", "false");
+      return;
+    }
+    log(`Changement détecté (signature ${prev || "?"} -> ${signature}) — reconstruction.`);
+  }
+
   log("Récupération des vaisseaux…");
   const vehicles = await getJSON("vehicles");
   log("Récupération des commodités…");
   const commodities = await getJSON("commodities");
   const kindById = new Map(commodities.map((c) => [c.id, normalizeKind(c.kind)]));
   const illegalById = new Map(commodities.map((c) => [c.id, !!c.is_illegal]));
+  const codeById = new Map(commodities.map((c) => [c.id, c.code || ""])); // code officiel UEX (AGRI, LARA…)
   // Prix de référence (moyenne UEX par commodité) — sert à détecter les prix aberrants/périmés.
   const refBuyById = new Map(commodities.map((c) => [c.id, c.price_buy || 0]));
   const refSellById = new Map(commodities.map((c) => [c.id, c.price_sell || 0]));
@@ -212,6 +248,7 @@ async function main() {
     if (!c) {
       c = {
         name: p.commodity_name,
+        code: codeById.get(p.id_commodity) || "",
         kind: kindById.get(p.id_commodity) || "other",
         illegal: illegalById.get(p.id_commodity) || false,
         refBuy: refBuyById.get(p.id_commodity) || 0,
@@ -320,6 +357,7 @@ async function main() {
     routes: top.length,
     loops: topLoops.length,
     systems,
+    data_signature: signature, // pour le rebuild conditionnel du prochain run
   };
 
   // Vaisseaux avec soute (>= 1 SCU), hors véhicules terrestres. Pour le filtre "vaisseau".
@@ -337,6 +375,7 @@ async function main() {
   await writeFile(join(OUT_DIR, "ships.json"), JSON.stringify(ships));
   await writeFile(join(OUT_DIR, "market.json"), JSON.stringify(market));
   await writeFile(join(OUT_DIR, "meta.json"), JSON.stringify(meta, null, 2));
+  await setOutput("changed", "true"); // signale à la CI qu'il faut assembler + déployer
   log(`OK — ${top.length} routes, ${topLoops.length} boucles, ${market.commodities.length} commodités marché, ${term.size} terminaux, ${ships.length} vaisseaux.`);
 }
 

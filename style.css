@@ -444,6 +444,8 @@ input.editv-input { width: 80px; min-width: 0; padding: 2px 5px; font-size: 12px
 .mline:last-child { border-bottom: none; }
 .mqtywrap { display: flex; align-items: center; gap: 5px; }
 input.mqty-input { width: 66px; min-width: 0; padding: 4px 6px; text-align: right; background: rgba(8, 11, 20, 0.9); border: 1px solid var(--line2); color: var(--acc); border-radius: 3px; font-family: var(--mono); font-weight: 700; font-size: 13px; }
+/* SCU saisis au-delà du stock UEX dispo : autorisé mais signalé (vol de fret, relevé périmé…). */
+input.mqty-input.over-stock { color: var(--warn); border-color: var(--warn); box-shadow: 0 0 0 1px rgba(245, 167, 66, 0.35); }
 .munit { font-family: var(--mono); font-size: 10px; color: var(--muted); }
 .mname { font-weight: 600; color: #fff; }
 .mstock { font-family: var(--mono); font-size: 11px; color: #5f7891; white-space: nowrap; }
@@ -513,8 +515,45 @@ input.mqty-input { width: 66px; min-width: 0; padding: 4px 6px; text-align: righ
 .k-explosive { --k-bg: rgba(255,93,93,.14); --k-line: #6b1c1c; }
 .k-temporary, .k-other { --k-bg: rgba(125,148,171,.10); --k-line: var(--line2); }
 
+/* ===================== Vue « Commodités » ===================== */
+/* Boutons de mode de tri. */
+.sort-modes { display: flex; gap: 6px; flex-wrap: wrap; }
+.sort-modes button {
+  font-family: var(--font); font-size: 11px; font-weight: 600; letter-spacing: 0.5px;
+  padding: 7px 12px; color: var(--muted); background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line); border-left: 2px solid transparent; cursor: pointer;
+}
+.sort-modes button:hover { color: var(--text); }
+.sort-modes button.active { color: #fff; border: 1px solid var(--line2); border-left: 2px solid var(--acc); background: rgba(255, 176, 32, 0.10); }
+
+.commodities-wrap { margin: 20px 0 0; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.comm-table-shell { overflow: auto; max-height: 70vh; border: 1px solid var(--line); background: rgba(6, 9, 18, 0.55); }
+#commTable { width: 100%; border-collapse: collapse; }
+#commTable thead th { position: sticky; top: 0; z-index: 1; background: var(--panel-solid); cursor: pointer; white-space: nowrap; }
+#commTable th[data-comm-sort]:hover { color: var(--acc); }
+.comm-code { font-family: var(--mono); font-weight: 700; color: var(--acc); letter-spacing: 0.5px; }
+.comm-kind { color: var(--muted); font-size: 11px; text-transform: capitalize; }
+.comm-row { cursor: pointer; }
+.comm-row:hover { background: rgba(255, 176, 32, 0.05); }
+.comm-row.selected { background: rgba(255, 176, 32, 0.12); box-shadow: inset 2px 0 0 var(--acc); }
+
+/* Panneau de détail (points d'achat / vente). */
+.comm-detail { position: sticky; top: 12px; border: 1px solid var(--line); border-left: 2px solid var(--acc); background: var(--panel); padding: 16px 18px; }
+.comm-detail-head { display: flex; align-items: center; gap: 10px; padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
+.comm-detail-title { font-family: var(--display); font-size: 15px; font-weight: 700; color: #fff; }
+.comm-detail-title .comm-code { font-family: var(--mono); font-size: 13px; }
+.comm-cols { display: grid; grid-template-columns: 1fr; gap: 18px; }
+.comm-col h4 { margin: 0 0 8px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--acc); font-weight: 600; }
+.comm-col h4 .muted { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
+.comm-points { width: 100%; border-collapse: collapse; font-size: 12px; }
+.comm-points th { text-align: left; color: var(--muted); font-size: 9.5px; letter-spacing: 1px; text-transform: uppercase; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.comm-points td { padding: 6px 8px; border-bottom: 1px solid rgba(130, 150, 210, 0.08); }
+.comm-points .num { font-family: var(--mono); }
+.comm-detail .muted { color: var(--muted); }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 820px) {
+  .commodities-wrap { grid-template-columns: 1fr; }
   .rail { position: static; height: auto; width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; overflow: visible; }
   .rail-nav { flex-direction: row; flex-wrap: wrap; }
   .rail-status, .rail-toggle { display: none; }

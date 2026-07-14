@@ -404,3 +404,32 @@ export function buildChainAdjacency(market, f, resolve) {
   for (const [u, m] of best) adj.set(u, [...m.values()]);
   return adj;
 }
+
+// ---------- Panneau « Commodités » : résumé global + points d'achat/vente ----------
+// Une ligne de synthèse par commodité (pour le grand tableau triable).
+export function commoditySummaries(market) {
+  return market.commodities.map((c) => {
+    const bestBuy = c.buys.length ? Math.min(...c.buys.map((b) => b[1])) : null;   // achat le moins cher
+    const bestSell = c.sells.length ? Math.max(...c.sells.map((s) => s[1])) : null; // vente la plus chère
+    const margin = bestBuy != null && bestSell != null ? bestSell - bestBuy : null;
+    return {
+      name: c.name, code: c.code || "", kind: c.kind, illegal: c.illegal,
+      nBuy: c.buys.length, nSell: c.sells.length, bestBuy, bestSell, margin,
+    };
+  });
+}
+
+// Tous les points d'ACHAT (les moins chers d'abord) et de VENTE (les plus chers d'abord)
+// d'une commodité, avec la localisation du terminal. Null si commodité inconnue.
+export function commodityPoints(market, name) {
+  const c = market.commodities.find((x) => x.name === name);
+  if (!c) return null;
+  const T = (i) => market.terminals[i];
+  const point = (p, volKey) => ({
+    terminal: T(p[0]).name, system: T(p[0]).system, planet: T(p[0]).planet, outpost: T(p[0]).outpost,
+    price: p[1], [volKey]: p[2], updated: p[3], status: p[4],
+  });
+  const buys = c.buys.map((b) => point(b, "stock")).sort((a, b) => a.price - b.price);
+  const sells = c.sells.map((s) => point(s, "demand")).sort((a, b) => b.price - a.price);
+  return { name: c.name, code: c.code || "", kind: c.kind, illegal: c.illegal, buys, sells };
+}
