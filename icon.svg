@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Best Hauling">
-  <rect width="512" height="512" fill="#05080d"/>
-  <rect x="24" y="24" width="464" height="464" rx="40" fill="#0a1119"/>
-  <polygon points="256,104 408,256 256,408 104,256" fill="none" stroke="#22d3ee" stroke-width="18"/>
-  <polygon points="256,182 330,256 256,330 182,256" fill="#22d3ee"/>
+  <rect width="512" height="512" fill="#05080d"></rect>
+  <rect x="24" y="24" width="464" height="464" rx="40" fill="#0a1119"></rect>
+  <polygon points="256,104 408,256 256,408 104,256" fill="none" stroke="#22d3ee" stroke-width="18"></polygon>
+  <polygon points="256,182 330,256 256,330 182,256" fill="#22d3ee"></polygon>
 </svg>
