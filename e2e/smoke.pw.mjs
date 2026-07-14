@@ -243,3 +243,56 @@ test("Compagnon de voyage : le parcours survit au rechargement (persistance)", a
   await expect(page.locator("#journeyCard")).toBeVisible();             // restauré
   await expect(page.locator("#journeyCard")).toContainText(sellTerminal);
 });
+
+test("Compagnon de voyage : manifeste optimal affiché par jambe", async ({ page }) => {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jleg")).toHaveCount(1);
+  // Le manifeste (cargaison) se calcule (MARKET chargé à la demande).
+  await expect(page.locator("#journeyCard .jleg .jcargo-item").first()).toBeVisible({ timeout: 8000 });
+  await expect(page.locator("#journeyCard .jleg-profit").first()).toContainText("+");
+});
+
+test("Compagnon de voyage : les commodités transportées sont surlignées dans le board", async ({ page }) => {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jcargo-item").first()).toBeVisible({ timeout: 8000 });
+  await page.click("#viewCommodities");
+  await expect(page.locator("#commGrid .comm-tile.carried")).not.toHaveCount(0); // au moins une surlignée
+  await expect(page.locator("#commGrid .comm-tile.carried .tile-carried").first()).toBeVisible();
+});
+
+test("Compagnon de voyage : ajouter un arrêt (suggestion) étend le parcours", async ({ page }) => {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jstop-suggest").first()).toBeVisible({ timeout: 8000 });
+  const stopsBefore = await page.locator("#journeyCard .jstep").count();
+  await page.locator("#journeyCard .jstop-suggest").first().click();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(stopsBefore + 1);
+});
+
+test("Compagnon de voyage : retirer un arrêt du milieu reconnecte le parcours", async ({ page }) => {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jstop-suggest").first()).toBeVisible({ timeout: 8000 });
+  await page.locator("#journeyCard .jstop-suggest").first().click();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(3); // 3 arrêts
+  const first = (await page.locator("#journeyCard .jstep").nth(0).innerText()).trim();
+  const last = (await page.locator("#journeyCard .jstep").nth(2).innerText()).trim();
+  await page.locator("#journeyCard .jstep-del").nth(1).click(); // retire le milieu
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2); // reconnecté A->C
+  expect((await page.locator("#journeyCard .jstep").nth(0).innerText()).trim()).toBe(first);
+  expect((await page.locator("#journeyCard .jstep").nth(1).innerText()).trim()).toBe(last);
+});
+
+test("Compagnon de voyage : éditer le manifeste d'une jambe (SCU) persiste hors lien", async ({ page }) => {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jcargo-item").first()).toBeVisible({ timeout: 8000 });
+  await page.locator("#journeyCard .jleg-head").first().click();          // déplie l'éditeur
+  await expect(page.locator("#journeyCard .jman")).toBeVisible();
+  await page.locator("#journeyCard .jman-qty").first().fill("7");
+  await page.locator("#journeyCard .jman-qty").first().blur();
+  await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(1);  // ✎ = manifeste personnalisé
+  // Les édits sont en localStorage, pas dans l'URL (lien léger).
+  expect(await page.evaluate(() => localStorage.getItem("best-hauling-journey-edits"))).toBeTruthy();
+  expect(page.url()).not.toContain("Aluminum");
+  await page.reload();
+  await expect(page.locator("#journeyCard .jcargo-item").first()).toBeVisible({ timeout: 8000 });
+  await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(1);  // édits restaurés
+});

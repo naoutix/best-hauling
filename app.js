@@ -32,6 +32,7 @@ let shownRoutes = [], shownEnroute = [], shownLoops = [];
 // Vue « Commodités » : mode de tri (margin|code|kind|custom), clé/sens custom, sélection.
 let commMode = "margin", commSortKey = "margin", commSortDir = -1, commSelected = null, shownCommodities = [];
 let commMaxMargin = 0; // marge max de la liste courante (pour colorer la heatmap en relatif)
+let commCarried = new Set(); // commodités transportées au moins 1 fois dans le voyage (highlight board)
 // Compagnon de voyage : parcours sélectionné { legs[], current } ou null.
 let JOURNEY = null;
 // Affiche la carte du vaisseau correspondant au champ (défini par loadShips ; utilisé à la restauration).
@@ -758,19 +759,197 @@ function clearJourney() {
   renderJourney();
   saveState();
 }
+// Ensemble des commodités transportées au moins une fois sur le parcours (union des manifestes).
+function journeyCarriedCommodities() {
+  const set = new Set();
+  if (!JOURNEY || !MARKET) return set;
+  const f = readFilters();
+  JOURNEY.legs.forEach((leg) => legEffectiveLines(leg, f).forEach((l) => set.add(l.name)));
+  return set;
+}
+
+// Manifeste optimal d'une jambe (from -> to) : remplissage multi-commodité, terminal d'arrivée forcé.
+function legManifest(leg, f) {
+  if (!MARKET || !stationMap.size) return null;
+  const fromIdx = stationMap.get(`${leg.from} — ${leg.fromSystem}`);
+  const toIdx = stationMap.get(`${leg.to} — ${leg.toSystem}`);
+  if (fromIdx == null || toIdx == null) return null;
+  return bestManifest(MARKET, fromIdx, "", f, effVals, toIdx); // { lines, profit, … } ou null
+}
+
+// ---------- Édition inline des manifestes de jambe (persistée en localStorage, HORS lien) ----------
+// Clé de jambe = "from|to". Le PARCOURS (arrêts) va dans l'URL ; les édits restent locaux.
+const JOURNEY_EDITS_KEY = "best-hauling-journey-edits";
+let JOURNEY_EDITS = {};
+let journeyExpandedLeg = -1; // index de la jambe dépliée en édition (-1 = aucune)
+function loadJourneyEdits() { try { JOURNEY_EDITS = JSON.parse(localStorage.getItem(JOURNEY_EDITS_KEY)) || {}; } catch { JOURNEY_EDITS = {}; } }
+function saveJourneyEdits() { try { localStorage.setItem(JOURNEY_EDITS_KEY, JSON.stringify(JOURNEY_EDITS)); } catch {} }
+const legKey = (leg) => `${leg.from}|${leg.to}`;
+
+// Manifeste EFFECTIF d'une jambe : version éditée si elle existe, sinon l'optimal calculé.
+function legEffectiveLines(leg, f) {
+  const k = legKey(leg);
+  if (JOURNEY_EDITS[k]) return JOURNEY_EDITS[k];
+  const man = legManifest(leg, f);
+  return man ? man.lines : [];
+}
+// Copie l'optimal dans le store la 1re fois qu'on édite la jambe (puis on édite cette copie).
+function materializeLeg(leg, f) {
+  const k = legKey(leg);
+  if (!JOURNEY_EDITS[k]) JOURNEY_EDITS[k] = (legManifest(leg, f)?.lines || []).map((l) => ({ ...l }));
+  return JOURNEY_EDITS[k];
+}
+const legProfit = (lines) => lines.reduce((a, l) => a + l.units * (l.margin || 0), 0);
+
+// Actions d'édition d'une jambe (i = index de jambe).
+function toggleLegEditor(i) { journeyExpandedLeg = journeyExpandedLeg === i ? -1 : i; renderJourney(); }
+function editLegQty(i, li, val) {
+  const lines = materializeLeg(JOURNEY.legs[i], readFilters());
+  if (lines[li]) { let u = Math.floor(Number(val)); lines[li].units = Number.isFinite(u) && u > 0 ? u : 0; }
+  saveJourneyEdits(); renderJourney();
+}
+function delLegLine(i, name) {
+  const leg = JOURNEY.legs[i];
+  JOURNEY_EDITS[legKey(leg)] = materializeLeg(leg, readFilters()).filter((l) => l.name !== name);
+  saveJourneyEdits(); renderJourney();
+}
+function resetLeg(i) { delete JOURNEY_EDITS[legKey(JOURNEY.legs[i])]; saveJourneyEdits(); renderJourney(); }
+// Ajout LIBRE d'une commodité à une jambe (même non vendable à l'arrivée -> ligne « carry-only »).
+function addLegLine(i, name) {
+  const leg = JOURNEY.legs[i];
+  const q = (name || "").trim().toLowerCase();
+  const c = MARKET.commodities.find((x) => x.name.toLowerCase() === q || (x.code && x.code.toLowerCase() === q));
+  if (!c) return;
+  const lines = materializeLeg(leg, readFilters());
+  if (lines.some((l) => l.name === c.name)) return;
+  const fromIdx = stationMap.get(`${leg.from} — ${leg.fromSystem}`), toIdx = stationMap.get(`${leg.to} — ${leg.toSystem}`);
+  const b = c.buys.find((x) => x[0] === fromIdx), s = c.sells.find((x) => x[0] === toIdx);
+  const eb = b ? effVals(c.name, leg.from, "buy", b[1], b[2], b[3]) : null;
+  const es = s ? effVals(c.name, leg.to, "sell", s[1], s[2], s[3]) : null;
+  const buyPrice = eb ? eb.price : 0, stock = eb ? eb.vol : Infinity;
+  lines.push({
+    name: c.name, kind: c.kind, illegal: c.illegal, buyPrice, stock,
+    sellPrice: es ? es.price : null, demand: es ? es.vol : null,
+    margin: es ? es.price - buyPrice : 0, buyUpdated: b ? b[3] : 0, sellUpdated: s ? s[3] : 0,
+    units: isFinite(stock) ? Math.max(1, Math.min(stock, 1)) : 1, cap: isFinite(stock) ? stock : 1, carry: !es,
+  });
+  saveJourneyEdits(); renderJourney();
+}
+
+// Index du terminal de FIN de parcours (point d'extension), ou null.
+function journeyEndIndex() {
+  const end = journeyEnd(JOURNEY);
+  return end && stationMap.size ? stationMap.get(`${end.name} — ${end.system}`) : null;
+}
+// Meilleure jambe (commodité de marge max) entre deux terminaux, ou null si aucun fret rentable.
+function bestLegTo(fromIdx, toIdx) {
+  if (fromIdx == null || toIdx == null) return null;
+  const deals = enRouteDeals(MARKET, fromIdx, "", toIdx); // meilleure vente vers toIdx par commodité
+  if (!deals.length) return null;
+  return legFromRoute(deals.reduce((a, b) => (b.margin > a.margin ? b : a)));
+}
+// Suggestions d'arrêts : meilleures destinations rentables depuis la fin du parcours (top 4).
+function journeyStopSuggestions() {
+  const fromIdx = journeyEndIndex();
+  if (fromIdx == null) return [];
+  const byDest = new Map();
+  enRouteDeals(MARKET, fromIdx, "").forEach((d) => {
+    const label = `${d.sell.terminal} — ${d.sell.system}`;
+    const cur = byDest.get(label);
+    if (!cur || d.margin > cur.margin) byDest.set(label, { label, terminal: d.sell.terminal, commodity: d.commodity, margin: d.margin });
+  });
+  return [...byDest.values()].sort((a, b) => b.margin - a.margin).slice(0, 4);
+}
+// Ajoute un arrêt (terminal) : nouvelle jambe optimale depuis la fin du parcours -> étend.
+function addStopByTerminal(label) {
+  const toIdx = stationMap.get((label || "").trim());
+  const leg = bestLegTo(journeyEndIndex(), toIdx);
+  if (leg) pickJourney([leg]);
+}
+
+// Retire un arrêt (index de station) et RECONNECTE les voisins (recalcule la jambe A->C).
+function removeJourneyStop(stopIndex) {
+  if (!JOURNEY) return;
+  const legs = JOURNEY.legs;
+  let newLegs;
+  if (stopIndex <= 0) newLegs = legs.slice(1);                 // 1er arrêt -> retire la 1re jambe
+  else if (stopIndex >= legs.length) newLegs = legs.slice(0, -1); // dernier arrêt -> retire la dernière jambe
+  else {
+    // arrêt du milieu : reconnecte stops[i-1] -> stops[i+1].
+    const prev = legs[stopIndex - 1], next = legs[stopIndex];
+    const fromIdx = stationMap.get(`${prev.from} — ${prev.fromSystem}`);
+    const toIdx = stationMap.get(`${next.to} — ${next.toSystem}`);
+    const bridge = bestLegTo(fromIdx, toIdx) || // si aucun fret rentable A->C, jambe « à vide » (contiguïté préservée)
+      { from: prev.from, fromSystem: prev.fromSystem, to: next.to, toSystem: next.toSystem, commodity: "", buyPrice: 0, sellPrice: 0, margin: 0 };
+    newLegs = [...legs.slice(0, stopIndex - 1), bridge, ...legs.slice(stopIndex + 1)];
+  }
+  if (!newLegs.length) { clearJourney(); return; }
+  JOURNEY = { legs: newLegs, current: Math.min(JOURNEY.current, newLegs.length) };
+  syncViewsToJourney();
+  renderJourney();
+  refresh();
+}
+
 function renderJourney() {
   const card = $("journeyCard");
   if (!card) return;
   if (!JOURNEY || !JOURNEY.legs.length) { card.hidden = true; card.innerHTML = ""; return; }
+  card.hidden = false;
+  // MARKET nécessaire pour les manifestes par jambe -> charge à la demande puis re-render.
+  if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderJourney(); }); }
+  else if (!enrouteReady) setupEnRoute();
+
   const stations = journeyStations(JOURNEY);
   const path = stations
-    .map((s, i) => `<button class="jstep${i === JOURNEY.current ? " here" : ""}" data-i="${i}" title="Je suis ici"><span class="sys ${esc(s.system.toLowerCase())}">${esc(s.name)}</span></button>`)
+    .map((s, i) => `<span class="jstep-wrap"><button class="jstep${i === JOURNEY.current ? " here" : ""}" data-i="${i}" title="Je suis ici"><span class="sys ${esc(s.system.toLowerCase())}">${esc(s.name)}</span></button><button class="jstep-del" data-i="${i}" title="Retirer cet arrêt" aria-label="Retirer">✕</button></span>`)
     .join('<span class="jsep">→</span>');
   const n = JOURNEY.legs.length;
-  card.hidden = false;
+  const f = readFilters();
+  // Manifeste (cargaison) de chaque jambe — optimal ou édité ; jambe dépliable pour l'éditer.
+  const legsHtml = JOURNEY.legs.map((leg, i) => {
+    const lines = MARKET ? legEffectiveLines(leg, f) : null;
+    const edited = MARKET && !!JOURNEY_EDITS[legKey(leg)];
+    const expanded = i === journeyExpandedLeg;
+    let cargo, total;
+    if (!MARKET) { cargo = '<span class="muted">calcul…</span>'; total = "—"; }
+    else if (!lines.length) { cargo = '<span class="muted">aucun fret rentable</span>'; total = "0"; }
+    else {
+      cargo = lines.map((l) => `<span class="jcargo-item">${commodityIcon(l.kind)}<span>${esc(l.name)}${illegalTag(l.illegal)}</span> <b>${fmt(l.units)} SCU</b></span>`).join("");
+      total = fmt(legProfit(lines));
+    }
+    let editor = "";
+    if (expanded && MARKET) {
+      const rows = lines.map((l, li) =>
+        `<div class="jman-line">${commodityIcon(l.kind)}` +
+        `<span class="mqtywrap"><input type="number" class="jman-qty" min="0" value="${l.units}" data-leg="${i}" data-i="${li}" aria-label="SCU ${esc(l.name)}"><span class="munit">SCU</span></span>` +
+        `<span class="jman-name">${esc(l.name)}${illegalTag(l.illegal)}${l.sellPrice == null ? ' <span class="carry-tag">vend ailleurs</span>' : ""}</span>` +
+        `<span class="jman-profit profit">${l.sellPrice == null ? "—" : "+" + fmt(l.units * (l.margin || 0))}</span>` +
+        `<button class="jman-del" data-leg="${i}" data-name="${esc(l.name)}" title="Retirer">✕</button></div>`
+      ).join("") || '<div class="muted jman-empty">Aucune commodité.</div>';
+      editor = `<div class="jman">${rows}
+        <div class="jman-add"><input class="jman-add-input" list="commodityList" data-leg="${i}" placeholder="+ commodité (même non vendable)…" autocomplete="off"><button class="jman-add-btn" data-leg="${i}">+</button>${edited ? `<button class="jman-reset" data-leg="${i}" title="Revenir au manifeste optimal">↺ optimal</button>` : ""}</div>
+      </div>`;
+    }
+    return `<div class="jleg${i === JOURNEY.current ? " current" : ""}${expanded ? " expanded" : ""}">
+        <div class="jleg-head" data-leg="${i}" role="button" tabindex="0" title="Éditer le manifeste de cette jambe"><span class="jleg-n">${i + 1}</span><span class="jleg-route">${esc(leg.from)} → ${esc(leg.to)}</span>${edited ? '<span class="jleg-edited" title="Manifeste personnalisé">✎</span>' : ""}<span class="jleg-profit profit">+${total}</span><span class="jleg-caret">${expanded ? "▾" : "▸"}</span></div>
+        <div class="jleg-cargo">${cargo}</div>
+        ${editor}
+      </div>`;
+  }).join("");
+
+  // Ajout d'arrêt : champ libre (tous terminaux) + suggestions rentables depuis la fin.
+  const suggestions = MARKET
+    ? journeyStopSuggestions().map((s) => `<button class="jstop-suggest" data-label="${esc(s.label)}" title="Ajouter ${esc(s.terminal)} — via ${esc(s.commodity)}, +${fmt(s.margin)} marge/SCU">+ ${esc(s.terminal)} <span class="muted">+${fmt(s.margin)}</span></button>`).join("")
+    : "";
   card.innerHTML =
     `<div class="journey-head"><span class="journey-title">◈ Voyage en cours</span><button id="journeyClear" class="journey-clear" title="Effacer le parcours" aria-label="Effacer">✕</button></div>
      <div class="journey-path">${path}</div>
+     <div class="journey-legs">${legsHtml}</div>
+     <div class="journey-add">
+       <input id="journeyAddStop" list="stationList" placeholder="+ Ajouter un arrêt (terminal)…" autocomplete="off" aria-label="Ajouter un arrêt" />
+       <button id="journeyAddBtn" type="button" class="chain-pick">+ Arrêt</button>
+     </div>
+     ${suggestions ? `<div class="journey-suggest">${suggestions}</div>` : ""}
      <div class="journey-meta">${n} saut${n > 1 ? "s" : ""} · marge cumulée <b class="profit">${fmt(journeyMargin(JOURNEY))}</b> aUEC/SCU</div>`;
 }
 
@@ -1154,14 +1333,16 @@ function marginTier(m) {
 
 // Une tuile du board : code UEX + marge max compacte (K/M), colorée par palier.
 function commodityTileHTML(c) {
+  const carried = commCarried.has(c.name);
   const cls = [
     "comm-tile", marginTier(c.margin),
     c.name === commSelected ? "selected" : "",
     c.illegal ? "illegal" : "",
+    carried ? "carried" : "",
   ].filter(Boolean).join(" ");
-  const title = `${c.name}${c.illegal ? " (illégal)" : ""} — marge max ${fmt(c.margin)} aUEC/SCU · ${c.nBuy} achat(s) / ${c.nSell} vente(s)`;
+  const title = `${c.name}${c.illegal ? " (illégal)" : ""}${carried ? " — transportée dans ton voyage" : ""} — marge max ${fmt(c.margin)} aUEC/SCU · ${c.nBuy} achat(s) / ${c.nSell} vente(s)`;
   return `<button class="${cls}" data-name="${esc(c.name)}" title="${esc(title)}">
-      <span class="tile-code">${esc(c.code || c.name.slice(0, 4).toUpperCase())}</span>
+      <span class="tile-code">${carried ? '<span class="tile-carried" title="Dans ton voyage">◆</span>' : ""}${esc(c.code || c.name.slice(0, 4).toUpperCase())}</span>
       <span class="tile-val">${c.margin == null ? "—" : compactValue(c.margin)}</span>
     </button>`;
 }
@@ -1196,6 +1377,7 @@ function renderCommodities() {
   sortCommodities(rows);
   shownCommodities = rows;
   commMaxMargin = rows.reduce((mx, c) => Math.max(mx, c.margin || 0), 0); // pour la heatmap relative
+  commCarried = journeyCarriedCommodities(); // commodités du voyage à surligner
   // Sélection : garde la commodité choisie si toujours visible, sinon prend la 1re.
   if (commSelected && !rows.some((r) => r.name === commSelected)) commSelected = null;
   if (!commSelected && rows.length) commSelected = rows[0].name;
@@ -1300,6 +1482,21 @@ async function init() {
     }
     if (e.target.closest("#chainToJourney") && shownChain) { pickJourney(legsFromChain(shownChain, MARKET.terminals)); return; }
     if (e.target.closest("#journeyClear")) { clearJourney(); return; }
+    // Ajout d'arrêt : bouton « + Arrêt » ou une suggestion.
+    if (e.target.closest("#journeyAddBtn")) { addStopByTerminal($("journeyAddStop").value); return; }
+    const sug = e.target.closest(".jstop-suggest");
+    if (sug) { addStopByTerminal(sug.dataset.label); return; }
+    // Retirer un arrêt (✕ sur une étape) -> reconnexion des voisins.
+    const del = e.target.closest(".jstep-del");
+    if (del) { removeJourneyStop(Number(del.dataset.i)); return; }
+    // Édition du manifeste d'une jambe : déplier / retirer / ajouter / réinitialiser.
+    const legDel = e.target.closest(".jman-del");
+    if (legDel) { delLegLine(Number(legDel.dataset.leg), legDel.dataset.name); return; }
+    if (e.target.closest(".jman-reset")) { resetLeg(Number(e.target.closest(".jman-reset").dataset.leg)); return; }
+    const addBtn = e.target.closest(".jman-add-btn");
+    if (addBtn) { addLegLine(Number(addBtn.dataset.leg), addBtn.closest(".jman-add").querySelector(".jman-add-input").value); return; }
+    const head = e.target.closest(".jleg-head");
+    if (head) { toggleLegEditor(Number(head.dataset.leg)); return; }
     // Parcours interactif : clic sur une étape (⦿) = « je suis ici » -> recale les vues.
     const step = e.target.closest(".jstep");
     if (step && JOURNEY) {
@@ -1308,6 +1505,15 @@ async function init() {
       renderJourney();
       refresh();
     }
+  });
+  // Ajout d'arrêt / de commodité à la touche Entrée.
+  document.addEventListener("keydown", (e) => {
+    if (e.target.id === "journeyAddStop" && e.key === "Enter") { e.preventDefault(); addStopByTerminal(e.target.value); }
+    else if (e.target.classList && e.target.classList.contains("jman-add-input") && e.key === "Enter") { e.preventDefault(); addLegLine(Number(e.target.dataset.leg), e.target.value); }
+  });
+  // Édition des SCU d'une ligne de manifeste de jambe (validation au blur/Entrée).
+  document.addEventListener("change", (e) => {
+    if (e.target.classList && e.target.classList.contains("jman-qty")) editLegQty(Number(e.target.dataset.leg), Number(e.target.dataset.i), e.target.value);
   });
   // Corrections locales : clic (ou Entrée/Espace) sur une valeur éditable ; bouton reset.
   document.addEventListener("click", (e) => {
@@ -1334,6 +1540,7 @@ async function init() {
     else if (e.key === "6") switchView("commodities");
   });
   loadOverrides();
+  loadJourneyEdits();
   updateOvBadge();
   syncToggles();
 

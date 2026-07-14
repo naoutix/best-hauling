@@ -256,10 +256,18 @@ input::placeholder { color: #4d5670; }
 .ship-card-scu b { color: var(--good); }
 
 /* ---------- Compagnon de voyage : résumé du parcours + bouton ▶ ---------- */
-.journey-pick { background: transparent; border: none; color: var(--acc); cursor: pointer; font-size: 12px; padding: 0 3px; line-height: 1; opacity: 0.65; }
-.journey-pick:hover { opacity: 1; transform: scale(1.15); }
+/* ▶ encadré pour bien lire « bouton » (sélectionne / ajoute au voyage). */
+.journey-pick {
+  display: inline-grid; place-items: center; flex-shrink: 0; width: 20px; height: 20px; padding: 0;
+  color: var(--acc); background: rgba(255, 176, 32, 0.08); border: 1px solid var(--line2); border-radius: 3px;
+  cursor: pointer; font-size: 9px; line-height: 1;
+}
+.journey-pick:hover { background: rgba(255, 176, 32, 0.22); color: #fff; }
+/* Vaisseau + Voyage côte à côte (le résumé du voyage à droite du vaisseau). */
+.ship-journey-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: stretch; margin: 16px 0 0; }
+.ship-journey-row .ship-card { margin: 0; }
 .journey-card {
-  position: relative; margin: 12px 0 0; max-width: 640px; padding: 12px 16px;
+  position: relative; margin: 0; flex: 1 1 300px; min-width: 0; max-width: 640px; padding: 12px 16px;
   border: 1px solid var(--acc-2); border-left: 2px solid var(--acc-2);
   background: linear-gradient(90deg, rgba(169, 112, 255, 0.08), rgba(11, 15, 28, 0.75));
 }
@@ -273,7 +281,48 @@ input::placeholder { color: #4d5670; }
 .jstep.here { border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc), 0 0 10px rgba(255, 176, 32, 0.25); }
 .jstep.here::after { content: " ⦿"; color: var(--acc); font-size: 10px; }
 .jsep { color: var(--acc-2); font-size: 13px; }
+.jstep-wrap { display: inline-flex; align-items: center; gap: 2px; }
+.jstep-del { background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 9px; padding: 0 2px; opacity: 0.5; }
+.jstep-del:hover { color: var(--bad); opacity: 1; }
 .journey-meta { margin-top: 9px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+/* Manifeste optimal par jambe (cargaison entre 2 arrêts). */
+.journey-legs { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.jleg { border: 1px solid var(--line); border-left: 2px solid transparent; padding: 7px 10px; background: rgba(255, 255, 255, 0.015); }
+.jleg.current { border-left-color: var(--acc); background: rgba(255, 176, 32, 0.06); }
+.jleg-head { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
+.jleg-n { display: inline-grid; place-items: center; flex-shrink: 0; width: 16px; height: 16px; font-family: var(--mono); font-size: 9px; color: var(--acc-2); border: 1px solid var(--acc-2); border-radius: 50%; }
+.jleg-route { font-weight: 600; color: #fff; }
+.jleg-profit { margin-left: auto; font-family: var(--mono); }
+.jleg-cargo { margin-top: 5px; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 10.5px; color: var(--muted); }
+.jcargo-item { display: inline-flex; align-items: center; gap: 5px; }
+.jcargo-item .cicon { width: 18px; height: 18px; font-size: 10px; }
+.jcargo-item b { color: var(--text); font-family: var(--mono); }
+/* Ajout d'arrêt : champ libre + suggestions rentables. */
+.journey-add { display: flex; gap: 6px; margin-top: 10px; }
+#journeyAddStop { flex: 1; min-width: 0; padding: 6px 9px; background: rgba(8, 11, 20, 0.9); border: 1px solid var(--line2); color: var(--text); border-radius: 3px; font-family: var(--font); font-size: 11px; }
+.journey-suggest { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.jstop-suggest { font-family: var(--font); font-size: 10.5px; color: var(--acc-2); background: rgba(169, 112, 255, 0.08); border: 1px solid rgba(169, 112, 255, 0.35); border-radius: 3px; padding: 4px 9px; cursor: pointer; }
+.jstop-suggest:hover { color: #fff; background: rgba(169, 112, 255, 0.22); }
+.jstop-suggest .muted { color: var(--muted); }
+/* Jambe dépliable + éditeur de manifeste inline. */
+.jleg-head { cursor: pointer; }
+.jleg-caret { color: var(--acc-2); font-size: 9px; margin-left: 4px; }
+.jleg-edited { color: var(--acc); font-size: 10px; margin-left: 4px; }
+.jleg.expanded { border-left-color: var(--acc-2); }
+.jman { margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 8px; display: flex; flex-direction: column; gap: 5px; }
+.jman-line { display: grid; grid-template-columns: auto auto 1fr auto auto; align-items: center; gap: 6px 10px; font-size: 11px; }
+input.jman-qty { width: 56px; min-width: 0; padding: 3px 5px; text-align: right; background: rgba(8, 11, 20, 0.9); border: 1px solid var(--line2); color: var(--acc); border-radius: 3px; font-family: var(--mono); font-weight: 700; font-size: 12px; }
+.jman-name { color: #fff; }
+.jman-profit { font-family: var(--mono); text-align: right; color: var(--good); }
+.jman-del { background: transparent; border: 1px solid var(--line); color: var(--muted); border-radius: 3px; cursor: pointer; padding: 0 5px; font-size: 10px; }
+.jman-del:hover { color: var(--bad); border-color: var(--bad); }
+.jman-empty { padding: 4px 0; }
+.jman-add { display: flex; gap: 6px; margin-top: 3px; align-items: center; }
+.jman-add-input { flex: 1; min-width: 0; padding: 5px 8px; background: rgba(8, 11, 20, 0.9); border: 1px solid var(--line2); color: var(--text); border-radius: 3px; font-family: var(--font); font-size: 11px; }
+.jman-add-btn { padding: 4px 12px; color: var(--acc-2); background: rgba(169, 112, 255, 0.1); border: 1px solid rgba(169, 112, 255, 0.4); border-radius: 3px; cursor: pointer; font-weight: 700; }
+.jman-add-btn:hover { color: #fff; background: rgba(169, 112, 255, 0.25); }
+.jman-reset { font-size: 10px; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 3px; cursor: pointer; padding: 4px 8px; }
+.jman-reset:hover { color: var(--acc); border-color: var(--acc); }
 /* Boucles pertinentes pour le parcours (partent de l'arrivée courante) : remontées + surlignées. */
 #loops tr.from-here td { background: rgba(169, 112, 255, 0.07); }
 #loops tr.from-here td.loop-cell { box-shadow: inset 2px 0 0 var(--acc-2); }
@@ -580,6 +629,8 @@ input.mqty-input.over-stock { color: var(--warn); border-color: var(--warn); box
 .comm-tile:hover { background: rgba(255, 176, 32, 0.08); border-color: var(--line2); }
 .comm-tile.selected { border: 1px solid var(--acc); border-left: 2px solid var(--acc); background: rgba(255, 176, 32, 0.14); box-shadow: inset 0 0 12px rgba(255, 176, 32, 0.12); }
 .comm-tile.illegal { border-left: 2px solid var(--bad); } /* liseré rouge = commodité illégale */
+.comm-tile.carried { border-color: var(--acc-2); box-shadow: inset 0 0 0 1px var(--acc-2), 0 0 10px rgba(169, 112, 255, 0.15); } /* transportée dans le voyage */
+.tile-carried { color: var(--acc-2); font-size: 8px; margin-right: 3px; vertical-align: middle; }
 .tile-code { color: var(--muted); font-weight: 700; letter-spacing: 0.5px; overflow: hidden; text-overflow: ellipsis; }
 .comm-tile.selected .tile-code { color: #fff; }
 .tile-val { flex-shrink: 0; font-weight: 700; }
