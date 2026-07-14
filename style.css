@@ -304,6 +304,25 @@ input::placeholder { color: #4d5670; }
 .jstop-suggest { font-family: var(--font); font-size: 10.5px; color: var(--acc-2); background: rgba(169, 112, 255, 0.08); border: 1px solid rgba(169, 112, 255, 0.35); border-radius: 3px; padding: 4px 9px; cursor: pointer; }
 .jstop-suggest:hover { color: #fff; background: rgba(169, 112, 255, 0.22); }
 .jstop-suggest .muted { color: var(--muted); }
+/* Jambe dépliable + éditeur de manifeste inline. */
+.jleg-head { cursor: pointer; }
+.jleg-caret { color: var(--acc-2); font-size: 9px; margin-left: 4px; }
+.jleg-edited { color: var(--acc); font-size: 10px; margin-left: 4px; }
+.jleg.expanded { border-left-color: var(--acc-2); }
+.jman { margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 8px; display: flex; flex-direction: column; gap: 5px; }
+.jman-line { display: grid; grid-template-columns: auto auto 1fr auto auto; align-items: center; gap: 6px 10px; font-size: 11px; }
+input.jman-qty { width: 56px; min-width: 0; padding: 3px 5px; text-align: right; background: rgba(8, 11, 20, 0.9); border: 1px solid var(--line2); color: var(--acc); border-radius: 3px; font-family: var(--mono); font-weight: 700; font-size: 12px; }
+.jman-name { color: #fff; }
+.jman-profit { font-family: var(--mono); text-align: right; color: var(--good); }
+.jman-del { background: transparent; border: 1px solid var(--line); color: var(--muted); border-radius: 3px; cursor: pointer; padding: 0 5px; font-size: 10px; }
+.jman-del:hover { color: var(--bad); border-color: var(--bad); }
+.jman-empty { padding: 4px 0; }
+.jman-add { display: flex; gap: 6px; margin-top: 3px; align-items: center; }
+.jman-add-input { flex: 1; min-width: 0; padding: 5px 8px; background: rgba(8, 11, 20, 0.9); border: 1px solid var(--line2); color: var(--text); border-radius: 3px; font-family: var(--font); font-size: 11px; }
+.jman-add-btn { padding: 4px 12px; color: var(--acc-2); background: rgba(169, 112, 255, 0.1); border: 1px solid rgba(169, 112, 255, 0.4); border-radius: 3px; cursor: pointer; font-weight: 700; }
+.jman-add-btn:hover { color: #fff; background: rgba(169, 112, 255, 0.25); }
+.jman-reset { font-size: 10px; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 3px; cursor: pointer; padding: 4px 8px; }
+.jman-reset:hover { color: var(--acc); border-color: var(--acc); }
 /* Boucles pertinentes pour le parcours (partent de l'arrivée courante) : remontées + surlignées. */
 #loops tr.from-here td { background: rgba(169, 112, 255, 0.07); }
 #loops tr.from-here td.loop-cell { box-shadow: inset 2px 0 0 var(--acc-2); }

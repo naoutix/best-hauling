@@ -280,3 +280,19 @@ test("Compagnon de voyage : retirer un arrêt du milieu reconnecte le parcours",
   expect((await page.locator("#journeyCard .jstep").nth(0).innerText()).trim()).toBe(first);
   expect((await page.locator("#journeyCard .jstep").nth(1).innerText()).trim()).toBe(last);
 });
+
+test("Compagnon de voyage : éditer le manifeste d'une jambe (SCU) persiste hors lien", async ({ page }) => {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jcargo-item").first()).toBeVisible({ timeout: 8000 });
+  await page.locator("#journeyCard .jleg-head").first().click();          // déplie l'éditeur
+  await expect(page.locator("#journeyCard .jman")).toBeVisible();
+  await page.locator("#journeyCard .jman-qty").first().fill("7");
+  await page.locator("#journeyCard .jman-qty").first().blur();
+  await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(1);  // ✎ = manifeste personnalisé
+  // Les édits sont en localStorage, pas dans l'URL (lien léger).
+  expect(await page.evaluate(() => localStorage.getItem("best-hauling-journey-edits"))).toBeTruthy();
+  expect(page.url()).not.toContain("Aluminum");
+  await page.reload();
+  await expect(page.locator("#journeyCard .jcargo-item").first()).toBeVisible({ timeout: 8000 });
+  await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(1);  // édits restaurés
+});

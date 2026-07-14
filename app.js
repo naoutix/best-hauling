@@ -764,10 +764,7 @@ function journeyCarriedCommodities() {
   const set = new Set();
   if (!JOURNEY || !MARKET) return set;
   const f = readFilters();
-  JOURNEY.legs.forEach((leg) => {
-    const man = legManifest(leg, f);
-    if (man) man.lines.forEach((l) => set.add(l.name));
-  });
+  JOURNEY.legs.forEach((leg) => legEffectiveLines(leg, f).forEach((l) => set.add(l.name)));
   return set;
 }
 
@@ -778,6 +775,65 @@ function legManifest(leg, f) {
   const toIdx = stationMap.get(`${leg.to} — ${leg.toSystem}`);
   if (fromIdx == null || toIdx == null) return null;
   return bestManifest(MARKET, fromIdx, "", f, effVals, toIdx); // { lines, profit, … } ou null
+}
+
+// ---------- Édition inline des manifestes de jambe (persistée en localStorage, HORS lien) ----------
+// Clé de jambe = "from|to". Le PARCOURS (arrêts) va dans l'URL ; les édits restent locaux.
+const JOURNEY_EDITS_KEY = "best-hauling-journey-edits";
+let JOURNEY_EDITS = {};
+let journeyExpandedLeg = -1; // index de la jambe dépliée en édition (-1 = aucune)
+function loadJourneyEdits() { try { JOURNEY_EDITS = JSON.parse(localStorage.getItem(JOURNEY_EDITS_KEY)) || {}; } catch { JOURNEY_EDITS = {}; } }
+function saveJourneyEdits() { try { localStorage.setItem(JOURNEY_EDITS_KEY, JSON.stringify(JOURNEY_EDITS)); } catch {} }
+const legKey = (leg) => `${leg.from}|${leg.to}`;
+
+// Manifeste EFFECTIF d'une jambe : version éditée si elle existe, sinon l'optimal calculé.
+function legEffectiveLines(leg, f) {
+  const k = legKey(leg);
+  if (JOURNEY_EDITS[k]) return JOURNEY_EDITS[k];
+  const man = legManifest(leg, f);
+  return man ? man.lines : [];
+}
+// Copie l'optimal dans le store la 1re fois qu'on édite la jambe (puis on édite cette copie).
+function materializeLeg(leg, f) {
+  const k = legKey(leg);
+  if (!JOURNEY_EDITS[k]) JOURNEY_EDITS[k] = (legManifest(leg, f)?.lines || []).map((l) => ({ ...l }));
+  return JOURNEY_EDITS[k];
+}
+const legProfit = (lines) => lines.reduce((a, l) => a + l.units * (l.margin || 0), 0);
+
+// Actions d'édition d'une jambe (i = index de jambe).
+function toggleLegEditor(i) { journeyExpandedLeg = journeyExpandedLeg === i ? -1 : i; renderJourney(); }
+function editLegQty(i, li, val) {
+  const lines = materializeLeg(JOURNEY.legs[i], readFilters());
+  if (lines[li]) { let u = Math.floor(Number(val)); lines[li].units = Number.isFinite(u) && u > 0 ? u : 0; }
+  saveJourneyEdits(); renderJourney();
+}
+function delLegLine(i, name) {
+  const leg = JOURNEY.legs[i];
+  JOURNEY_EDITS[legKey(leg)] = materializeLeg(leg, readFilters()).filter((l) => l.name !== name);
+  saveJourneyEdits(); renderJourney();
+}
+function resetLeg(i) { delete JOURNEY_EDITS[legKey(JOURNEY.legs[i])]; saveJourneyEdits(); renderJourney(); }
+// Ajout LIBRE d'une commodité à une jambe (même non vendable à l'arrivée -> ligne « carry-only »).
+function addLegLine(i, name) {
+  const leg = JOURNEY.legs[i];
+  const q = (name || "").trim().toLowerCase();
+  const c = MARKET.commodities.find((x) => x.name.toLowerCase() === q || (x.code && x.code.toLowerCase() === q));
+  if (!c) return;
+  const lines = materializeLeg(leg, readFilters());
+  if (lines.some((l) => l.name === c.name)) return;
+  const fromIdx = stationMap.get(`${leg.from} — ${leg.fromSystem}`), toIdx = stationMap.get(`${leg.to} — ${leg.toSystem}`);
+  const b = c.buys.find((x) => x[0] === fromIdx), s = c.sells.find((x) => x[0] === toIdx);
+  const eb = b ? effVals(c.name, leg.from, "buy", b[1], b[2], b[3]) : null;
+  const es = s ? effVals(c.name, leg.to, "sell", s[1], s[2], s[3]) : null;
+  const buyPrice = eb ? eb.price : 0, stock = eb ? eb.vol : Infinity;
+  lines.push({
+    name: c.name, kind: c.kind, illegal: c.illegal, buyPrice, stock,
+    sellPrice: es ? es.price : null, demand: es ? es.vol : null,
+    margin: es ? es.price - buyPrice : 0, buyUpdated: b ? b[3] : 0, sellUpdated: s ? s[3] : 0,
+    units: isFinite(stock) ? Math.max(1, Math.min(stock, 1)) : 1, cap: isFinite(stock) ? stock : 1, carry: !es,
+  });
+  saveJourneyEdits(); renderJourney();
 }
 
 // Index du terminal de FIN de parcours (point d'extension), ou null.
@@ -849,19 +905,35 @@ function renderJourney() {
     .join('<span class="jsep">→</span>');
   const n = JOURNEY.legs.length;
   const f = readFilters();
-  // Manifeste optimal (cargaison) de chaque jambe.
+  // Manifeste (cargaison) de chaque jambe — optimal ou édité ; jambe dépliable pour l'éditer.
   const legsHtml = JOURNEY.legs.map((leg, i) => {
-    const man = legManifest(leg, f);
+    const lines = MARKET ? legEffectiveLines(leg, f) : null;
+    const edited = MARKET && !!JOURNEY_EDITS[legKey(leg)];
+    const expanded = i === journeyExpandedLeg;
     let cargo, total;
     if (!MARKET) { cargo = '<span class="muted">calcul…</span>'; total = "—"; }
-    else if (!man || !man.lines.length) { cargo = '<span class="muted">aucun fret rentable</span>'; total = "0"; }
+    else if (!lines.length) { cargo = '<span class="muted">aucun fret rentable</span>'; total = "0"; }
     else {
-      cargo = man.lines.map((l) => `<span class="jcargo-item">${commodityIcon(l.kind)}<span>${esc(l.name)}${illegalTag(l.illegal)}</span> <b>${fmt(l.units)} SCU</b></span>`).join("");
-      total = fmt(man.profit);
+      cargo = lines.map((l) => `<span class="jcargo-item">${commodityIcon(l.kind)}<span>${esc(l.name)}${illegalTag(l.illegal)}</span> <b>${fmt(l.units)} SCU</b></span>`).join("");
+      total = fmt(legProfit(lines));
     }
-    return `<div class="jleg${i === JOURNEY.current ? " current" : ""}">
-        <div class="jleg-head"><span class="jleg-n">${i + 1}</span><span class="jleg-route">${esc(leg.from)} → ${esc(leg.to)}</span><span class="jleg-profit profit">+${total}</span></div>
+    let editor = "";
+    if (expanded && MARKET) {
+      const rows = lines.map((l, li) =>
+        `<div class="jman-line">${commodityIcon(l.kind)}` +
+        `<span class="mqtywrap"><input type="number" class="jman-qty" min="0" value="${l.units}" data-leg="${i}" data-i="${li}" aria-label="SCU ${esc(l.name)}"><span class="munit">SCU</span></span>` +
+        `<span class="jman-name">${esc(l.name)}${illegalTag(l.illegal)}${l.sellPrice == null ? ' <span class="carry-tag">vend ailleurs</span>' : ""}</span>` +
+        `<span class="jman-profit profit">${l.sellPrice == null ? "—" : "+" + fmt(l.units * (l.margin || 0))}</span>` +
+        `<button class="jman-del" data-leg="${i}" data-name="${esc(l.name)}" title="Retirer">✕</button></div>`
+      ).join("") || '<div class="muted jman-empty">Aucune commodité.</div>';
+      editor = `<div class="jman">${rows}
+        <div class="jman-add"><input class="jman-add-input" list="commodityList" data-leg="${i}" placeholder="+ commodité (même non vendable)…" autocomplete="off"><button class="jman-add-btn" data-leg="${i}">+</button>${edited ? `<button class="jman-reset" data-leg="${i}" title="Revenir au manifeste optimal">↺ optimal</button>` : ""}</div>
+      </div>`;
+    }
+    return `<div class="jleg${i === JOURNEY.current ? " current" : ""}${expanded ? " expanded" : ""}">
+        <div class="jleg-head" data-leg="${i}" role="button" tabindex="0" title="Éditer le manifeste de cette jambe"><span class="jleg-n">${i + 1}</span><span class="jleg-route">${esc(leg.from)} → ${esc(leg.to)}</span>${edited ? '<span class="jleg-edited" title="Manifeste personnalisé">✎</span>' : ""}<span class="jleg-profit profit">+${total}</span><span class="jleg-caret">${expanded ? "▾" : "▸"}</span></div>
         <div class="jleg-cargo">${cargo}</div>
+        ${editor}
       </div>`;
   }).join("");
 
@@ -1417,6 +1489,14 @@ async function init() {
     // Retirer un arrêt (✕ sur une étape) -> reconnexion des voisins.
     const del = e.target.closest(".jstep-del");
     if (del) { removeJourneyStop(Number(del.dataset.i)); return; }
+    // Édition du manifeste d'une jambe : déplier / retirer / ajouter / réinitialiser.
+    const legDel = e.target.closest(".jman-del");
+    if (legDel) { delLegLine(Number(legDel.dataset.leg), legDel.dataset.name); return; }
+    if (e.target.closest(".jman-reset")) { resetLeg(Number(e.target.closest(".jman-reset").dataset.leg)); return; }
+    const addBtn = e.target.closest(".jman-add-btn");
+    if (addBtn) { addLegLine(Number(addBtn.dataset.leg), addBtn.closest(".jman-add").querySelector(".jman-add-input").value); return; }
+    const head = e.target.closest(".jleg-head");
+    if (head) { toggleLegEditor(Number(head.dataset.leg)); return; }
     // Parcours interactif : clic sur une étape (⦿) = « je suis ici » -> recale les vues.
     const step = e.target.closest(".jstep");
     if (step && JOURNEY) {
@@ -1426,9 +1506,14 @@ async function init() {
       refresh();
     }
   });
-  // Ajout d'arrêt à la touche Entrée dans le champ.
+  // Ajout d'arrêt / de commodité à la touche Entrée.
   document.addEventListener("keydown", (e) => {
     if (e.target.id === "journeyAddStop" && e.key === "Enter") { e.preventDefault(); addStopByTerminal(e.target.value); }
+    else if (e.target.classList && e.target.classList.contains("jman-add-input") && e.key === "Enter") { e.preventDefault(); addLegLine(Number(e.target.dataset.leg), e.target.value); }
+  });
+  // Édition des SCU d'une ligne de manifeste de jambe (validation au blur/Entrée).
+  document.addEventListener("change", (e) => {
+    if (e.target.classList && e.target.classList.contains("jman-qty")) editLegQty(Number(e.target.dataset.leg), Number(e.target.dataset.i), e.target.value);
   });
   // Corrections locales : clic (ou Entrée/Espace) sur une valeur éditable ; bouton reset.
   document.addEventListener("click", (e) => {
@@ -1455,6 +1540,7 @@ async function init() {
     else if (e.key === "6") switchView("commodities");
   });
   loadOverrides();
+  loadJourneyEdits();
   updateOvBadge();
   syncToggles();
 
