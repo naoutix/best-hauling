@@ -91,6 +91,19 @@ function freshChip(updated) {
   else { label = Math.round(d) + " j"; cls = d < 3 ? "f-good" : d < 7 ? "f-ok" : "f-old"; }
   return `<span class="fresh ${cls}" title="Relevé UEX il y a ${label}">${label}</span>`;
 }
+// Version compacte (pastille seule) : indicateur de fraîcheur par matériau dans le compagnon.
+function freshDot(updated) {
+  const d = ageDays(updated);
+  if (d == null) return '<span class="fresh-dot f-old" title="Fraîcheur des données inconnue"></span>';
+  const label = d < 1 ? (d < 1 / 24 ? "moins d'1 h" : Math.round(d * 24) + " h") : Math.round(d) + " j";
+  const cls = d < 3 ? "f-good" : d < 7 ? "f-ok" : "f-old";
+  return `<span class="fresh-dot ${cls}" title="Relevé UEX il y a ${label}"></span>`;
+}
+// Fraîcheur d'une ligne de manifeste = le plus ancien des relevés achat/vente (ou l'un des deux).
+function lineFreshUpdated(l) {
+  const b = l.buyUpdated || 0, s = l.sellUpdated || 0;
+  return b && s ? Math.min(b, s) : b || s || 0;
+}
 
 // Légendes de statut d'inventaire UEX (couleurs officielles).
 const BUY_STATUS = { 1: ["Vide", "red"], 2: ["Très bas", "red"], 3: ["Bas", "orange"], 4: ["Moyen", "blue"], 5: ["Élevé", "blue"], 6: ["Très élevé", "green"], 7: ["Plein", "green"] };
@@ -957,7 +970,7 @@ function renderJourney() {
     if (!MARKET) { cargo = '<span class="muted">calcul…</span>'; total = "—"; }
     else if (!lines.length) { cargo = '<span class="muted">aucun fret rentable</span>'; total = "0"; }
     else {
-      cargo = lines.map((l) => `<span class="jcargo-item">${commodityIcon(l.kind)}<span>${esc(l.name)}${illegalTag(l.illegal)}</span> <b>${fmt(l.units)} SCU</b></span>`).join("");
+      cargo = lines.map((l) => `<span class="jcargo-item">${freshDot(lineFreshUpdated(l))}${commodityIcon(l.kind)}<span>${esc(l.name)}${illegalTag(l.illegal)}</span> <b>${fmt(l.units)} SCU</b></span>`).join("");
       total = fmt(legProfit(lines));
     }
     let editor = "";
@@ -965,7 +978,7 @@ function renderJourney() {
       const rows = lines.map((l, li) =>
         `<div class="jman-line">${commodityIcon(l.kind)}` +
         `<span class="mqtywrap"><input type="number" class="jman-qty" min="0" value="${l.units}" data-leg="${i}" data-i="${li}" aria-label="SCU ${esc(l.name)}"><span class="munit">SCU</span></span>` +
-        `<span class="jman-name">${esc(l.name)}${illegalTag(l.illegal)}${l.sellPrice == null ? ' <span class="carry-tag">vend ailleurs</span>' : ""}</span>` +
+        `<span class="jman-name">${freshDot(lineFreshUpdated(l))}${esc(l.name)}${illegalTag(l.illegal)}${l.sellPrice == null ? ' <span class="carry-tag">vend ailleurs</span>' : ""}</span>` +
         `<span class="jman-profit profit">${l.sellPrice == null ? "—" : "+" + fmt(l.units * (l.margin || 0))}</span>` +
         `<button class="jman-del" data-leg="${i}" data-name="${esc(l.name)}" title="Retirer">✕</button></div>`
       ).join("") || '<div class="muted jman-empty">Aucune commodité.</div>';
