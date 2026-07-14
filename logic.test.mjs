@@ -671,6 +671,8 @@ test("commoditySummaries : meilleur achat/vente + marge par commodité", () => {
   assert.equal(gold.margin, 210);
   assert.equal(gold.nBuy, 2);
   assert.equal(gold.nSell, 2);
+  assert.equal(gold.buyStatus, 4);   // statut au point d'achat le moins cher
+  assert.equal(gold.sellStatus, 2);  // statut au point de vente le mieux payé
 });
 
 test("commoditySummaries : marge/vente null si aucun point de vente", () => {

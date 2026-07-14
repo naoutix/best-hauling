@@ -409,12 +409,15 @@ export function buildChainAdjacency(market, f, resolve) {
 // Une ligne de synthèse par commodité (pour le grand tableau triable).
 export function commoditySummaries(market) {
   return market.commodities.map((c) => {
-    const bestBuy = c.buys.length ? Math.min(...c.buys.map((b) => b[1])) : null;   // achat le moins cher
-    const bestSell = c.sells.length ? Math.max(...c.sells.map((s) => s[1])) : null; // vente la plus chère
+    // Achat le moins cher / vente la plus chère + le statut d'inventaire à ce point.
+    let bestBuy = null, buyStatus = 0;
+    for (const b of c.buys) if (bestBuy == null || b[1] < bestBuy) { bestBuy = b[1]; buyStatus = b[4] || 0; }
+    let bestSell = null, sellStatus = 0;
+    for (const s of c.sells) if (bestSell == null || s[1] > bestSell) { bestSell = s[1]; sellStatus = s[4] || 0; }
     const margin = bestBuy != null && bestSell != null ? bestSell - bestBuy : null;
     return {
       name: c.name, code: c.code || "", kind: c.kind, illegal: c.illegal,
-      nBuy: c.buys.length, nSell: c.sells.length, bestBuy, bestSell, margin,
+      nBuy: c.buys.length, nSell: c.sells.length, bestBuy, bestSell, buyStatus, sellStatus, margin,
     };
   });
 }

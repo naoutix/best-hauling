@@ -1015,15 +1015,17 @@ function setCommSort(key) {
 }
 
 function commodityRowHTML(c) {
+  const mCls = c.margin == null ? "" : c.margin > 0 ? " up" : " down";
+  const mTxt = c.margin == null ? "—" : (c.margin > 0 ? "+" : "") + fmt(c.margin);
   return `<tr class="comm-row${c.name === commSelected ? " selected" : ""}" data-name="${esc(c.name)}">
       <td class="comm-code">${esc(c.code || "—")}</td>
-      <td class="loc"><div class="commodity-cell">${commodityIcon(c.kind)}<span class="cname">${esc(c.name)}${illegalTag(c.illegal)}</span></div></td>
-      <td class="comm-kind">${esc(c.kind)}</td>
-      <td class="num">${c.nBuy}</td>
-      <td class="num">${c.nSell}</td>
-      <td class="num">${fmt(c.bestBuy)}</td>
-      <td class="num">${fmt(c.bestSell)}</td>
-      <td class="num profit">${fmt(c.margin)}</td>
+      <td class="comm-name">${commodityIcon(c.kind)}<span class="cname">${esc(c.name)}${illegalTag(c.illegal)}</span></td>
+      <td class="num comm-buy">${fmt(c.bestBuy)}</td>
+      <td class="num comm-sell">${fmt(c.bestSell)}</td>
+      <td class="num comm-margin${mCls}">${mTxt}</td>
+      <td class="cell-status">${statusDot(c.buyStatus, "buy") || "—"}</td>
+      <td class="cell-status">${statusDot(c.sellStatus, "sell") || "—"}</td>
+      <td class="num comm-pts">${c.nBuy}<span class="pts-sep">/</span>${c.nSell}</td>
     </tr>`;
 }
 
