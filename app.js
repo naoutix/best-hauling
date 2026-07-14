@@ -7,7 +7,7 @@ import {
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
   routePasses, loopPasses,
   routeMetrics, loopMetrics, enRouteDeals, bestManifest, buildChainAdjacency,
-  commoditySummaries, commodityPoints,
+  commoditySummaries, commodityPoints, compactValue,
 } from "./logic.mjs";
 
 // Libellé compact des caisses SCU standard, ex. « 8×32 · 1×16 · 1×4 · 1×2 · 1×1 ».
@@ -28,6 +28,7 @@ let loopSortDir = -1;
 let shownRoutes = [], shownEnroute = [], shownLoops = [];
 // Vue « Commodités » : mode de tri (margin|code|kind|custom), clé/sens custom, sélection.
 let commMode = "margin", commSortKey = "margin", commSortDir = -1, commSelected = null, shownCommodities = [];
+let commMaxMargin = 0; // marge max de la liste courante (pour colorer la heatmap en relatif)
 // Affiche la carte du vaisseau correspondant au champ (défini par loadShips ; utilisé à la restauration).
 let showShipCard = () => {};
 
@@ -1014,19 +1015,29 @@ function setCommSort(key) {
   saveState();
 }
 
-function commodityRowHTML(c) {
-  const mCls = c.margin == null ? "" : c.margin > 0 ? " up" : " down";
-  const mTxt = c.margin == null ? "—" : (c.margin > 0 ? "+" : "") + fmt(c.margin);
-  return `<tr class="comm-row${c.name === commSelected ? " selected" : ""}" data-name="${esc(c.name)}">
-      <td class="comm-code">${esc(c.code || "—")}</td>
-      <td class="comm-name">${commodityIcon(c.kind)}<span class="cname">${esc(c.name)}${illegalTag(c.illegal)}</span></td>
-      <td class="num comm-buy">${fmt(c.bestBuy)}</td>
-      <td class="num comm-sell">${fmt(c.bestSell)}</td>
-      <td class="num comm-margin${mCls}">${mTxt}</td>
-      <td class="cell-status">${statusDot(c.buyStatus, "buy") || "—"}</td>
-      <td class="cell-status">${statusDot(c.sellStatus, "sell") || "—"}</td>
-      <td class="num comm-pts">${c.nBuy}<span class="pts-sep">/</span>${c.nSell}</td>
-    </tr>`;
+// Palier de couleur d'une tuile, RELATIF à la meilleure marge de la liste (heatmap :
+// rouge = tête de peloton → bleu correct → gris atone → sans marge). S'adapte aux données.
+function marginTier(m) {
+  if (m == null || m <= 0) return "t-none";
+  const r = commMaxMargin > 0 ? m / commMaxMargin : 0;
+  if (r >= 0.66) return "t-hot";
+  if (r >= 0.40) return "t-warm";
+  if (r >= 0.18) return "t-mid";
+  return "t-low";
+}
+
+// Une tuile du board : code UEX + marge max compacte (K/M), colorée par palier.
+function commodityTileHTML(c) {
+  const cls = [
+    "comm-tile", marginTier(c.margin),
+    c.name === commSelected ? "selected" : "",
+    c.illegal ? "illegal" : "",
+  ].filter(Boolean).join(" ");
+  const title = `${c.name}${c.illegal ? " (illégal)" : ""} — marge max ${fmt(c.margin)} aUEC/SCU · ${c.nBuy} achat(s) / ${c.nSell} vente(s)`;
+  return `<button class="${cls}" data-name="${esc(c.name)}" title="${esc(title)}">
+      <span class="tile-code">${esc(c.code || c.name.slice(0, 4).toUpperCase())}</span>
+      <span class="tile-val">${c.margin == null ? "—" : compactValue(c.margin)}</span>
+    </button>`;
 }
 
 // Détail d'une commodité : tous ses points d'achat (moins cher d'abord) et de vente (mieux payé d'abord).
@@ -1058,17 +1069,13 @@ function renderCommodities() {
   );
   sortCommodities(rows);
   shownCommodities = rows;
+  commMaxMargin = rows.reduce((mx, c) => Math.max(mx, c.margin || 0), 0); // pour la heatmap relative
   // Sélection : garde la commodité choisie si toujours visible, sinon prend la 1re.
   if (commSelected && !rows.some((r) => r.name === commSelected)) commSelected = null;
   if (!commSelected && rows.length) commSelected = rows[0].name;
-  $("commRows").innerHTML = rows.map(commodityRowHTML).join("");
-  // Indicateurs de tri : boutons de mode + colonne active.
-  document.querySelectorAll("#commSortModes button").forEach((b) => b.classList.toggle("active", commMode !== "custom" && b.dataset.sort === commMode));
-  document.querySelectorAll("#commTable th[data-comm-sort]").forEach((th) => {
-    const active = commMode === "custom" ? th.dataset.commSort === commSortKey : th.dataset.commSort === commMode;
-    th.classList.toggle("sorted-asc", active && (commMode === "custom" ? commSortDir === 1 : commMode === "code"));
-    th.classList.toggle("sorted-desc", active && (commMode === "custom" ? commSortDir === -1 : commMode !== "code"));
-  });
+  $("commGrid").innerHTML = rows.map(commodityTileHTML).join("");
+  // Bouton de mode de tri actif.
+  document.querySelectorAll("#commSortModes button").forEach((b) => b.classList.toggle("active", b.dataset.sort === commMode));
   paintCommodityDetail();
   notifySuperseded();
 }
@@ -1101,14 +1108,13 @@ async function init() {
   $("viewCorrections").addEventListener("click", () => switchView("corrections"));
   $("viewCommodities").addEventListener("click", () => switchView("commodities"));
   $("share").addEventListener("click", copyShareLink);
-  // Contrôles « Commodités » : modes de tri, tri par colonne, sélection d'une ligne.
+  // Contrôles « Commodités » : modes de tri + sélection d'une tuile.
   $("commSortModes").addEventListener("click", (e) => { const b = e.target.closest("button[data-sort]"); if (b) setCommSort(b.dataset.sort); });
-  document.querySelectorAll("#commTable th[data-comm-sort]").forEach((th) => th.addEventListener("click", () => setCommSort(th.dataset.commSort)));
-  $("commRows").addEventListener("click", (e) => {
-    const tr = e.target.closest(".comm-row");
-    if (!tr) return;
-    commSelected = tr.dataset.name;
-    document.querySelectorAll("#commRows .comm-row").forEach((r) => r.classList.toggle("selected", r.dataset.name === commSelected));
+  $("commGrid").addEventListener("click", (e) => {
+    const tile = e.target.closest(".comm-tile");
+    if (!tile) return;
+    commSelected = tile.dataset.name;
+    document.querySelectorAll("#commGrid .comm-tile").forEach((t) => t.classList.toggle("selected", t.dataset.name === commSelected));
     paintCommodityDetail();
     saveState();
   });

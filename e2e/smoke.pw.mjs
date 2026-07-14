@@ -110,10 +110,10 @@ test("les filtres s'appliquent aux bonnes vues — légales uniquement (régress
 
   // Commodités : LE bug d'origine — « légales uniquement » doit masquer les commodités illégales.
   await page.click("#viewCommodities");
-  await expect(page.locator("#commRows tr").first()).toBeVisible();
-  const commAll = await page.locator("#commRows tr").count();
+  await expect(page.locator("#commGrid .comm-tile").first()).toBeVisible();
+  const commAll = await page.locator("#commGrid .comm-tile").count();
   await page.check("#legalOnly");
-  const commLegal = await page.locator("#commRows tr").count();
+  const commLegal = await page.locator("#commGrid .comm-tile").count();
   expect(commLegal).toBeLessThan(commAll);
   await page.uncheck("#legalOnly");
 });

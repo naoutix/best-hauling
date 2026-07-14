@@ -154,34 +154,18 @@
 
         <section id="commoditiesControls" class="enroute-controls" hidden>
           <div class="field">
-            <label>Tri du tableau</label>
+            <label>Trier le board par</label>
             <div class="sort-modes" id="commSortModes">
               <button type="button" data-sort="margin" class="active">Marge</button>
               <button type="button" data-sort="code">Code A→Z</button>
               <button type="button" data-sort="kind">Catégorie</button>
             </div>
           </div>
-          <p class="enroute-hint">Toutes les commodités et <b>tous leurs points d'achat / vente</b>. Clique une ligne — ou cherche via le champ <b>Commodité</b> — pour voir où l'acheter au meilleur prix et surtout <b>où l'écouler</b> quand une station n'a plus de demande.</p>
+          <p class="enroute-hint">Le <b>board de marché</b> : chaque tuile = une commodité (code UEX) et sa <b>marge max</b>, colorée selon son intérêt. Clique une tuile — ou cherche via le champ <b>Commodité</b> — pour voir <b>tous ses points d'achat / vente</b> (stock, demande, prix) et surtout <b>où l'écouler</b> quand une station est saturée.</p>
         </section>
 
         <div id="commodities" class="commodities-wrap" hidden>
-          <div class="comm-table-shell">
-            <table id="commTable">
-              <thead>
-                <tr>
-                  <th data-comm-sort="code">Code</th>
-                  <th data-comm-sort="name">Commodité</th>
-                  <th class="num" data-comm-sort="bestBuy">Achat</th>
-                  <th class="num" data-comm-sort="bestSell">Vente</th>
-                  <th class="num" data-comm-sort="margin">Marge</th>
-                  <th data-comm-sort="buyStatus">Stock</th>
-                  <th data-comm-sort="sellStatus">Dem.</th>
-                  <th class="num" data-comm-sort="nSell">Pts</th>
-                </tr>
-              </thead>
-              <tbody id="commRows"></tbody>
-            </table>
-          </div>
+          <div id="commGrid" class="comm-grid"></div>
           <div id="commDetail" class="comm-detail"></div>
         </div>
 
