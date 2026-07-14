@@ -174,14 +174,25 @@ header::after {
 h1 { margin: 0; font-family: var(--display); font-weight: 700; font-size: 26px; letter-spacing: 3px; color: #fff; text-shadow: 0 0 22px rgba(255, 176, 32, 0.28); }
 .sub { margin: 5px 0 0; font-size: 12.5px; letter-spacing: 0.5px; color: var(--muted); }
 
-.meta {
-  align-self: center;
+/* Haut-droite : indicateur de fraîcheur des données (compact, couleur par âge). */
+.meta { align-self: center; }
+.freshness-ind {
+  display: inline-flex; align-items: center; gap: 8px;
   font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: 0.5px;
-  color: var(--muted); text-align: right;
-  padding: 8px 14px; border: 1px solid var(--line); border-radius: 2px; background: rgba(0, 0, 0, 0.25);
+  padding: 7px 13px; border-radius: 2px; border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.25); color: var(--text); white-space: nowrap;
 }
-.meta b { color: var(--acc); }
-.meta-age.stale { color: var(--warn); }
+.freshness-ind .fi-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: currentColor; box-shadow: 0 0 8px currentColor; }
+.freshness-ind.f-good { color: var(--good); border-color: rgba(70, 229, 160, 0.35); }
+.freshness-ind.f-ok   { color: var(--warn); border-color: #5a4a1c; }
+.freshness-ind.f-old  { color: var(--bad);  border-color: rgba(255, 93, 93, 0.4); }
+
+/* Bas du rail : dernière mise à jour + compteurs (sous « Flux UEX »). */
+.rail-status-body { margin-top: 9px; display: flex; flex-direction: column; gap: 8px; font-family: var(--mono); }
+.rs-updated { font-size: 9.5px; color: var(--muted); line-height: 1.5; }
+.rs-updated b { color: var(--text); font-size: 11px; }
+.rs-counts { font-size: 10px; color: var(--muted); line-height: 1.65; }
+.rs-counts b { color: var(--acc); }
 
 main { padding: 22px 30px 40px; }
 
@@ -315,6 +326,22 @@ tbody tr:hover td { border-bottom-color: var(--line2); }
 /* Icône de catégorie (emoji) */
 .commodity-cell { display: flex; align-items: center; gap: 10px; }
 .commodity-cell > span { font-family: var(--font); }
+
+/* Badges alignés SOUS le titre (système, avant-poste, illégal, à vérifier, saut inter-système). */
+.loc-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 5px; }
+.loc-badges:empty { display: none; }
+.cname { font-family: var(--font); font-weight: 600; color: #fff; }
+.term-name { font-weight: 600; color: #fff; }
+/* Pastille de fraîcheur : dernière ligne, en bas de la cellule. */
+.loc-fresh { margin-top: 6px; }
+/* Boucles : Départ / ⇄ inter-système / Arrivée empilés sur 3 lignes, mêmes styles pour les
+   deux noms (via .term-name). Le bouton 🗺 est le 1er enfant du td -> la règle générique
+   « .loc > div:first-child » ne cible pas .loop-ends (aucun div n'est premier enfant). */
+.loop-arrow { color: var(--acc); font-weight: 700; font-size: 13px; }
+.loop-cell { display: flex; align-items: flex-start; gap: 8px; }
+.loop-ends { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.loop-end { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.loop-mid { display: flex; align-items: center; gap: 8px; }
 .cicon {
   flex-shrink: 0; width: 30px; height: 30px; display: grid; place-items: center; font-size: 15px;
   border-radius: 4px; border: 1px solid var(--k-line, var(--line2)); background: var(--k-bg, rgba(255,255,255,.04));
@@ -367,14 +394,15 @@ input.editv-input { width: 80px; min-width: 0; padding: 2px 5px; font-size: 12px
 .route-toggle.open { color: #04120a; background: var(--acc); border-color: var(--acc); }
 
 .schema-row > td { background: rgba(255, 176, 32, 0.03); padding: 0; }
-.schema { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 30px; padding: 18px 22px; border-left: 2px solid var(--acc); }
-.schema-leg { display: flex; flex-direction: column; gap: 7px; }
+/* Départ / Arrivée (ou A / B) sur des lignes DISTINCTES, libellés de MÊME largeur. */
+.schema { display: grid; grid-template-columns: 1fr; gap: 12px; padding: 18px 22px; border-left: 2px solid var(--acc); }
+.schema-leg { display: grid; grid-template-columns: 74px 1fr; align-items: baseline; gap: 14px; }
 .schema-label { font-size: 9.5px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--acc); font-weight: 600; }
 .schema-path { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .schema-path .sep { color: var(--line2); font-size: 14px; }
 .snode { padding: 4px 10px; border-radius: 3px; font-size: 13px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--line); color: var(--muted); }
 .snode.term { color: #fff; border-color: var(--line2); font-weight: 600; }
-.schema-arrow { display: flex; flex-direction: column; align-items: center; gap: 2px; color: var(--muted); }
+.schema-arrow { display: flex; flex-direction: row; align-items: center; gap: 10px; padding-left: 88px; color: var(--muted); }
 .schema-arrow .al { font-size: 22px; color: var(--acc); line-height: 1; }
 .schema-arrow .ai { font-size: 10px; font-family: var(--mono); white-space: nowrap; }
 

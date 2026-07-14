@@ -254,16 +254,24 @@ function loopSchemaHTML(l) {
 
 // Ligne de tableau pour une route évaluée (partagée par « Trajets simples » et « En route »).
 function routeRowHTML(r, i) {
+  const cross = r.same_system ? "" : '<span class="cross">⚡ saut inter-système</span>';
   return `
       <tr data-row="${i}">
-        <td class="loc"><div class="commodity-cell"><button class="route-toggle" data-row="${i}" title="Voir le trajet" aria-label="Voir le trajet">🗺</button>${commodityIcon(r.kind)}<span>${esc(r.commodity)}${illegalTag(r.illegal)}${suspectTag(r)}</span></div></td>
-        <td>
-          <div>${esc(r.buy.terminal)}${sysBadge(r.buy.system)}${outpostTag(r.buy.outpost)}</div>
-          <div class="loc-sub">${esc(r.buy.planet)} · ${editv(r.commodity, r.buy.terminal, "buy", "price", r.buy.price, r.buy.ovPrice, r.buy.updated)} aUEC · ${statusDot(r.buy.status, "buy")}<span class="stock" title="Stock disponible à l'achat (relevé UEX)">stock ${editv(r.commodity, r.buy.terminal, "buy", "vol", r.buy.stock, r.buy.ovVol, r.buy.updated)} SCU</span> · ${freshChip(r.buy.updated)}</div>
+        <td class="loc">
+          <div class="commodity-cell"><button class="route-toggle" data-row="${i}" title="Voir le trajet" aria-label="Voir le trajet">🗺</button>${commodityIcon(r.kind)}<span class="cname">${esc(r.commodity)}</span></div>
+          <div class="loc-badges">${illegalTag(r.illegal)}${suspectTag(r)}${cross}</div>
         </td>
-        <td>
-          <div>${esc(r.sell.terminal)}${sysBadge(r.sell.system)}${outpostTag(r.sell.outpost)}</div>
-          <div class="loc-sub">${esc(r.sell.planet)} · ${editv(r.commodity, r.sell.terminal, "sell", "price", r.sell.price, r.sell.ovPrice, r.sell.updated)} aUEC · ${statusDot(r.sell.status, "sell")}<span class="stock" title="Demande / stock à la vente (relevé UEX)">demande ${editv(r.commodity, r.sell.terminal, "sell", "vol", r.sell.demand, r.sell.ovVol, r.sell.updated)} SCU</span> · ${freshChip(r.sell.updated)}${r.same_system ? "" : ' <span class="cross">⚡ saut inter-système</span>'}</div>
+        <td class="loc">
+          <div class="term-name">${esc(r.buy.terminal)}</div>
+          <div class="loc-badges">${sysBadge(r.buy.system)}${outpostTag(r.buy.outpost)}</div>
+          <div class="loc-sub">${esc(r.buy.planet)} · ${editv(r.commodity, r.buy.terminal, "buy", "price", r.buy.price, r.buy.ovPrice, r.buy.updated)} aUEC · ${statusDot(r.buy.status, "buy")}<span class="stock" title="Stock disponible à l'achat (relevé UEX)">stock ${editv(r.commodity, r.buy.terminal, "buy", "vol", r.buy.stock, r.buy.ovVol, r.buy.updated)} SCU</span></div>
+          <div class="loc-fresh">${freshChip(r.buy.updated)}</div>
+        </td>
+        <td class="loc">
+          <div class="term-name">${esc(r.sell.terminal)}</div>
+          <div class="loc-badges">${sysBadge(r.sell.system)}${outpostTag(r.sell.outpost)}</div>
+          <div class="loc-sub">${esc(r.sell.planet)} · ${editv(r.commodity, r.sell.terminal, "sell", "price", r.sell.price, r.sell.ovPrice, r.sell.updated)} aUEC · ${statusDot(r.sell.status, "sell")}<span class="stock" title="Demande / stock à la vente (relevé UEX)">demande ${editv(r.commodity, r.sell.terminal, "sell", "vol", r.sell.demand, r.sell.ovVol, r.sell.updated)} SCU</span></div>
+          <div class="loc-fresh">${freshChip(r.sell.updated)}</div>
         </td>
         <td>${scoreCell(r.score)}</td>
         <td class="num">${fmt(r.margin)}</td>
@@ -304,9 +312,14 @@ function renderLoops() {
     .map(
       (l, i) => `
       <tr data-row="${i}">
-        <td class="loc">
-          <div><button class="route-toggle" data-row="${i}" title="Voir le trajet" aria-label="Voir le trajet">🗺</button>${esc(l.a.terminal)}${sysBadge(l.a.system)}${outpostTag(l.a.outpost)}</div>
-          <div class="loc-sub">⇄ ${esc(l.b.terminal)}${sysBadge(l.b.system)}${outpostTag(l.b.outpost)}${l.cross ? ' <span class="cross">⚡ inter-système</span>' : ""} · ${freshChip(l.out.updated && l.back.updated ? Math.min(l.out.updated, l.back.updated) : l.out.updated || l.back.updated || 0)}</div>
+        <td class="loc loop-cell">
+          <button class="route-toggle" data-row="${i}" title="Voir le trajet" aria-label="Voir le trajet">🗺</button>
+          <div class="loop-ends">
+            <div class="loop-end"><span class="term-name">${esc(l.a.terminal)}</span>${sysBadge(l.a.system)}${outpostTag(l.a.outpost)}</div>
+            <div class="loop-mid"><span class="loop-arrow">⇄</span>${l.cross ? '<span class="cross">⚡ inter-système</span>' : ""}</div>
+            <div class="loop-end"><span class="term-name">${esc(l.b.terminal)}</span>${sysBadge(l.b.system)}${outpostTag(l.b.outpost)}</div>
+            <div class="loc-fresh">${freshChip(l.out.updated && l.back.updated ? Math.min(l.out.updated, l.back.updated) : l.out.updated || l.back.updated || 0)}</div>
+          </div>
         </td>
         <td>
           <div class="commodity-cell">${commodityIcon(l.out.kind)}<span>${esc(l.out.commodity)}${illegalTag(l.out.illegal)}</span></div>
@@ -1086,9 +1099,16 @@ async function init() {
       const ageH = (Date.now() / 1000 - meta.generated_at) / 3600;
       const rel = ageH < 1 ? "il y a moins d'1 h" : ageH < 24 ? `il y a ${Math.round(ageH)} h` : `il y a ${Math.round(ageH / 24)} j`;
       const stale = ageH > 6; // données rafraîchies chaque heure : au-delà de 6 h, pipeline suspect
+      const tier = stale ? "f-old" : ageH < 3 ? "f-good" : "f-ok"; // couleurs de fraîcheur partagées
+      const exact = d.toLocaleString("fr-FR");
+      // Haut-droite : indicateur de fraîcheur uniquement.
       $("meta").innerHTML =
-        `<b>${meta.routes}</b> routes · <b>${meta.loops ?? LOOPS.length}</b> boucles · <b>${meta.commodities}</b> commodités<br>` +
-        `<span class="meta-age${stale ? " stale" : ""}" title="Mis à jour le ${d.toLocaleString("fr-FR")}">Données ${rel}${stale ? " ⚠" : ""}</span>`;
+        `<span class="freshness-ind ${tier}" title="Données UEX du ${exact}"><span class="fi-dot"></span>Données ${rel}${stale ? " ⚠" : ""}</span>`;
+      // Bas du rail (« Flux UEX ») : dernière mise à jour + compteurs.
+      const rs = $("railStatus");
+      if (rs) rs.innerHTML =
+        `<div class="rs-updated">Dernière MàJ<br><b>${exact}</b></div>` +
+        `<div class="rs-counts"><b>${meta.routes}</b> routes · <b>${meta.loops ?? LOOPS.length}</b> boucles · <b>${meta.commodities}</b> commodités</div>`;
     }
     // Applique l'état restauré une fois le menu système peuplé, puis affiche la bonne vue.
     applyState(saved);
