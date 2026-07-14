@@ -758,19 +758,50 @@ function clearJourney() {
   renderJourney();
   saveState();
 }
+// Manifeste optimal d'une jambe (from -> to) : remplissage multi-commodité, terminal d'arrivée forcé.
+function legManifest(leg, f) {
+  if (!MARKET || !stationMap.size) return null;
+  const fromIdx = stationMap.get(`${leg.from} — ${leg.fromSystem}`);
+  const toIdx = stationMap.get(`${leg.to} — ${leg.toSystem}`);
+  if (fromIdx == null || toIdx == null) return null;
+  return bestManifest(MARKET, fromIdx, "", f, effVals, toIdx); // { lines, profit, … } ou null
+}
+
 function renderJourney() {
   const card = $("journeyCard");
   if (!card) return;
   if (!JOURNEY || !JOURNEY.legs.length) { card.hidden = true; card.innerHTML = ""; return; }
+  card.hidden = false;
+  // MARKET nécessaire pour les manifestes par jambe -> charge à la demande puis re-render.
+  if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderJourney(); }); }
+  else if (!enrouteReady) setupEnRoute();
+
   const stations = journeyStations(JOURNEY);
   const path = stations
     .map((s, i) => `<button class="jstep${i === JOURNEY.current ? " here" : ""}" data-i="${i}" title="Je suis ici"><span class="sys ${esc(s.system.toLowerCase())}">${esc(s.name)}</span></button>`)
     .join('<span class="jsep">→</span>');
   const n = JOURNEY.legs.length;
-  card.hidden = false;
+  const f = readFilters();
+  // Manifeste optimal (cargaison) de chaque jambe.
+  const legsHtml = JOURNEY.legs.map((leg, i) => {
+    const man = legManifest(leg, f);
+    let cargo, total;
+    if (!MARKET) { cargo = '<span class="muted">calcul…</span>'; total = "—"; }
+    else if (!man || !man.lines.length) { cargo = '<span class="muted">aucun fret rentable</span>'; total = "0"; }
+    else {
+      cargo = man.lines.map((l) => `<span class="jcargo-item">${commodityIcon(l.kind)}<span>${esc(l.name)}${illegalTag(l.illegal)}</span> <b>${fmt(l.units)} SCU</b></span>`).join("");
+      total = fmt(man.profit);
+    }
+    return `<div class="jleg${i === JOURNEY.current ? " current" : ""}">
+        <div class="jleg-head"><span class="jleg-n">${i + 1}</span><span class="jleg-route">${esc(leg.from)} → ${esc(leg.to)}</span><span class="jleg-profit profit">+${total}</span></div>
+        <div class="jleg-cargo">${cargo}</div>
+      </div>`;
+  }).join("");
+
   card.innerHTML =
     `<div class="journey-head"><span class="journey-title">◈ Voyage en cours</span><button id="journeyClear" class="journey-clear" title="Effacer le parcours" aria-label="Effacer">✕</button></div>
      <div class="journey-path">${path}</div>
+     <div class="journey-legs">${legsHtml}</div>
      <div class="journey-meta">${n} saut${n > 1 ? "s" : ""} · marge cumulée <b class="profit">${fmt(journeyMargin(JOURNEY))}</b> aUEC/SCU</div>`;
 }
 

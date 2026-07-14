@@ -243,3 +243,11 @@ test("Compagnon de voyage : le parcours survit au rechargement (persistance)", a
   await expect(page.locator("#journeyCard")).toBeVisible();             // restauré
   await expect(page.locator("#journeyCard")).toContainText(sellTerminal);
 });
+
+test("Compagnon de voyage : manifeste optimal affiché par jambe", async ({ page }) => {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jleg")).toHaveCount(1);
+  // Le manifeste (cargaison) se calcule (MARKET chargé à la demande).
+  await expect(page.locator("#journeyCard .jleg .jcargo-item").first()).toBeVisible({ timeout: 8000 });
+  await expect(page.locator("#journeyCard .jleg-profit").first()).toContainText("+");
+});
