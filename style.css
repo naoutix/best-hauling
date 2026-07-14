@@ -78,6 +78,13 @@ a:hover { color: #ffcf6b; text-decoration: underline; }
 @keyframes hb-flick { 0%,100% { opacity: 1; } 48% { opacity: 1; } 50% { opacity: 0.72; } 52% { opacity: 1; } }
 @keyframes hb-pulse { 0%,100% { opacity: 0.55; } 50% { opacity: 1; } }
 
+/* Accessibilité : coupe les animations décoratives continues (grille, scanbar, flicker,
+   pulsation) pour qui préfère moins de mouvement — le décor reste, il ne bouge plus. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+  .scanbar { display: none; }
+}
+
 /* ---------- Coquille : rail + contenu ---------- */
 .app { display: flex; position: relative; z-index: 2; min-height: 100vh; }
 
@@ -489,4 +496,17 @@ input.mqty-input { width: 66px; min-width: 0; padding: 4px 6px; text-align: righ
   h1 { font-size: 22px; }
   input[type="number"], input[type="text"], select { min-width: 130px; }
   thead th { position: static; }
+}
+
+/* Téléphones étroits : champs en pleine largeur (cibles tactiles), décor allégé.
+   Les tables restent scrollables horizontalement (.table-shell { overflow-x: auto }). */
+@media (max-width: 520px) {
+  main { padding: 12px 10px; }
+  header { padding: 12px 10px; }
+  h1 { font-size: 19px; }
+  .controls { padding: 14px; gap: 12px; }
+  .field { flex: 1 1 100%; }
+  .field input[type="number"], .field input[type="text"], .field select { width: 100%; min-width: 0; }
+  .rail-nav .vbtn { flex: 1 1 auto; }
+  .grid-overlay, .scanbar { display: none; } /* décor coûteux masqué sur petit écran */
 }

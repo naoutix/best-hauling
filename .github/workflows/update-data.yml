@@ -38,8 +38,9 @@ jobs:
 
       - name: Assembler le site
         run: |
-          mkdir -p _site/data
+          mkdir -p _site/data _site/fonts
           cp index.html app.js logic.mjs style.css manifest.webmanifest sw.js icon.svg _site/
+          cp fonts/* _site/fonts/
           cp data/*.json _site/data/
 
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b  # v5

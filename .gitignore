@@ -4,6 +4,9 @@ checklist-achat-idris.md
 # Config locale Claude Code
 .claude/
 
+# Maquettes / export de l'outil de design (les fichiers retenus sont dans le repo)
+Refonte design du site/
+
 # Artefact de site assemblé en CI (publié via GitHub Pages, jamais commité)
 _site/
 
