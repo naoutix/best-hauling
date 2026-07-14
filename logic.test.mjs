@@ -9,7 +9,7 @@ import {
   profitPerHour, rawScoreOf, routePasses, loopPasses,
   routeMetrics, loopMetrics, dealFrom, enRouteDeals, bestManifest, buildChainAdjacency,
   commoditySummaries, commodityPoints, compactValue,
-  legFromRoute, legsFromLoop, legsFromChain, startJourney, journeyStations, journeyEnd,
+  legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   encodeJourney, decodeJourney,
 } from "./logic.mjs";
@@ -846,7 +846,33 @@ test("encodeJourney / decodeJourney : aller-retour + robustesse", () => {
   assert.equal(round.current, j.current);
   assert.equal(round.legs[0].margin, 50);
   assert.equal(encodeJourney(null), "");          // vide
-  assert.equal(encodeJourney({ legs: [] }), "");   // pas de jambe
+  assert.equal(encodeJourney({ legs: [] }), "");   // pas de jambe ni départ
   assert.equal(decodeJourney(""), null);           // vide
   assert.equal(decodeJourney("pas du json"), null); // malformé -> null (pas d'exception)
+});
+
+test("startJourneyAt : voyage « de zéro » = un point de départ, aucune jambe", () => {
+  const j = startJourneyAt({ name: "A", system: "Stanton" });
+  assert.deepEqual(j.legs, []);
+  assert.equal(j.current, 0);
+  assert.deepEqual(journeyStations(j).map((s) => s.name), ["A"]); // une seule station
+  assert.equal(journeyEnd(j).name, "A");                          // la fin = le départ
+  assert.equal(startJourneyAt(null), null);                       // robustesse
+  assert.equal(startJourneyAt({ system: "S" }), null);            // sans nom -> null
+});
+
+test("addToJourney depuis un voyage « de zéro » : la 1re jambe partant du départ ÉTEND", () => {
+  const j = startJourneyAt({ name: "A", system: "Stanton" }); // départ A, 0 jambe
+  const ext = addToJourney(j, [legFromRoute(ROUTE_AB)]);      // A->B part de A -> enchaîne
+  assert.deepEqual(journeyStations(ext).map((s) => s.name), ["A", "B"]);
+  assert.equal(ext.legs.length, 1);
+});
+
+test("encodeJourney / decodeJourney : aller-retour d'un voyage « de zéro »", () => {
+  const j = startJourneyAt({ name: "A", system: "Stanton" });
+  const round = decodeJourney(encodeJourney(j));
+  assert.deepEqual(round.legs, []);
+  assert.equal(round.start.name, "A");
+  assert.equal(round.start.system, "Stanton");
+  assert.deepEqual(journeyStations(round).map((s) => s.name), ["A"]);
 });

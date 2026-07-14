@@ -493,9 +493,17 @@ export function legsFromChain(chain, terminals) {
 export function startJourney(legs) {
   return { legs: legs.slice(), current: 0 };
 }
+// Démarre un parcours « de zéro » : juste un point de départ, sans jambe encore.
+// On construit ensuite le parcours en ajoutant des arrêts (addToJourney).
+export function startJourneyAt(station) {
+  if (!station || !station.name) return null;
+  return { legs: [], current: 0, start: { name: station.name, system: station.system } };
+}
 // Stations ordonnées du parcours : [{ name, system }, …] (legs.length + 1 entrées).
+// Cas « de zéro » : pas de jambe mais un point de départ -> une seule station.
 export function journeyStations(journey) {
-  if (!journey || !journey.legs.length) return [];
+  if (!journey) return [];
+  if (!journey.legs.length) return journey.start ? [{ name: journey.start.name, system: journey.start.system }] : [];
   const st = [{ name: journey.legs[0].from, system: journey.legs[0].fromSystem }];
   for (const leg of journey.legs) st.push({ name: leg.to, system: leg.toSystem });
   return st;
@@ -531,7 +539,9 @@ export function journeyMargin(journey) {
 // Encode un parcours en chaîne compacte auto-suffisante (pour localStorage / URL partageable).
 // Chaque jambe -> tuple [from, fromSystem, to, toSystem, commodity, buyPrice, sellPrice, margin].
 export function encodeJourney(journey) {
-  if (!journey || !journey.legs.length) return "";
+  if (!journey) return "";
+  // Parcours « de zéro » : encode juste le point de départ.
+  if (!journey.legs.length) return journey.start ? JSON.stringify({ c: 0, s: [journey.start.name, journey.start.system] }) : "";
   return JSON.stringify({
     c: journey.current,
     l: journey.legs.map((g) => [g.from, g.fromSystem, g.to, g.toSystem, g.commodity, g.buyPrice, g.sellPrice, g.margin]),
@@ -542,7 +552,10 @@ export function decodeJourney(str) {
   if (!str) return null;
   try {
     const p = JSON.parse(str);
-    if (!p || !Array.isArray(p.l) || !p.l.length) return null;
+    if (!p) return null;
+    // Parcours « de zéro » : juste un point de départ.
+    if (Array.isArray(p.s) && p.s[0]) return { legs: [], current: 0, start: { name: p.s[0], system: p.s[1] } };
+    if (!Array.isArray(p.l) || !p.l.length) return null;
     const legs = p.l.map((a) => ({ from: a[0], fromSystem: a[1], to: a[2], toSystem: a[3], commodity: a[4], buyPrice: a[5], sellPrice: a[6], margin: a[7] }));
     return { legs, current: Math.max(0, Math.min(legs.length, p.c | 0)) };
   } catch {
