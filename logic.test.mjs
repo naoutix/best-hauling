@@ -6,6 +6,7 @@ import {
   tripMinutes, loopMinutes, ageDays, pairAge, freshnessFactor, availabilityFactor,
   normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits, scuBoxes, bestChain,
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
+  profitPerHour, rawScoreOf, routePasses, loopPasses,
 } from "./logic.mjs";
 
 // ---------- Temps de trajet ----------
@@ -59,6 +60,32 @@ test("availabilityFactor : sature avec le volume, 0.65 si inconnu", () => {
   assert.ok(availabilityFactor(500, 10) < availabilityFactor(500, 500));
 });
 
+// ---------- Profit horaire & score brut ----------
+test("profitPerHour : null si profit non borné, sinon profit ramené à l'heure", () => {
+  assert.equal(profitPerHour(null, 30), null);
+  assert.equal(profitPerHour(0, 30), 0);
+  assert.equal(profitPerHour(60, 60), 60);   // 60 aUEC en 60 min -> 60/h
+  assert.equal(profitPerHour(100, 30), 200); // 100 en 30 min -> 200/h
+});
+
+test("rawScoreOf : borné -> profit/h × fiabilité", () => {
+  // profitHour=200, fraîcheur(0)=1, dispo(1000,1000)>0.65
+  const s = rawScoreOf(200, 999, 0, 1000, 1000);
+  assert.ok(close(s, 200 * 1 * availabilityFactor(1000, 1000)));
+});
+
+test("rawScoreOf : non borné (profitHour null) -> retombe sur la marge", () => {
+  // base = fallbackMargin (50) car profitHour == null
+  const s = rawScoreOf(null, 50, 0, 1000, 1000);
+  assert.ok(close(s, 50 * 1 * availabilityFactor(1000, 1000)));
+});
+
+test("rawScoreOf : la fraîcheur pénalise un relevé plus vieux", () => {
+  const fresh = rawScoreOf(200, 50, 0, 1000, 1000);
+  const old = rawScoreOf(200, 50, 10, 1000, 1000);
+  assert.ok(old < fresh);
+});
+
 // ---------- Score ----------
 test("normalizeScores : 0-100, 100 pour le meilleur", () => {
   const rows = [{ rawScore: 50 }, { rawScore: 100 }, { rawScore: 0 }];
@@ -88,6 +115,83 @@ test("bySort : valeurs nulles toujours en bas, quel que soit le sens", () => {
 test("bySort : chaînes triées par locale (accents)", () => {
   const data = [{ n: "Zinc" }, { n: "Étain" }, { n: "Aluminium" }];
   assert.deepEqual([...data].sort(bySort("n", 1)).map((x) => x.n), ["Aluminium", "Étain", "Zinc"]);
+});
+
+// ---------- routePasses / loopPasses (filtrage partagé) ----------
+const RECENT = Math.floor(Date.now() / 1000); // relevé « maintenant » pour les tests de fraîcheur
+// Route de test : intra-système, légale, hors avant-poste, relevé récent. `over` fusionne en profondeur.
+const RT = (over = {}) => {
+  const base = {
+    same_system: true, illegal: false, commodity: "Gold",
+    buy: { outpost: false, system: "Stanton", updated: RECENT },
+    sell: { outpost: false, system: "Stanton", updated: RECENT },
+  };
+  return { ...base, ...over, buy: { ...base.buy, ...(over.buy || {}) }, sell: { ...base.sell, ...(over.sell || {}) } };
+};
+const NOFILTER = { sameOnly: false, noOutpost: false, legalOnly: false, sysFilter: "", maxAge: 0, q: "" };
+
+test("routePasses : passe tout quand aucun filtre n'est actif", () => {
+  assert.equal(routePasses(RT(), NOFILTER), true);
+});
+
+test("routePasses : sameOnly exclut les routes inter-systèmes", () => {
+  assert.equal(routePasses(RT({ same_system: false }), { ...NOFILTER, sameOnly: true }), false);
+  assert.equal(routePasses(RT({ same_system: true }), { ...NOFILTER, sameOnly: true }), true);
+});
+
+test("routePasses : noOutpost exclut si l'un des deux terminaux est un avant-poste", () => {
+  assert.equal(routePasses(RT({ buy: { outpost: true } }), { ...NOFILTER, noOutpost: true }), false);
+  assert.equal(routePasses(RT({ sell: { outpost: true } }), { ...NOFILTER, noOutpost: true }), false);
+  assert.equal(routePasses(RT(), { ...NOFILTER, noOutpost: true }), true);
+});
+
+test("routePasses : legalOnly exclut les commodités illégales", () => {
+  assert.equal(routePasses(RT({ illegal: true }), { ...NOFILTER, legalOnly: true }), false);
+});
+
+test("routePasses : sysFilter compare le système d'ACHAT uniquement", () => {
+  assert.equal(routePasses(RT({ buy: { system: "Pyro" } }), { ...NOFILTER, sysFilter: "Stanton" }), false);
+  assert.equal(routePasses(RT({ buy: { system: "Stanton" }, sell: { system: "Pyro" } }), { ...NOFILTER, sysFilter: "Stanton" }), true);
+});
+
+test("routePasses : q filtre par sous-chaîne insensible à la casse", () => {
+  assert.equal(routePasses(RT({ commodity: "Gold" }), { ...NOFILTER, q: "gol" }), true);
+  assert.equal(routePasses(RT({ commodity: "Gold" }), { ...NOFILTER, q: "iron" }), false);
+});
+
+test("routePasses : maxAge exclut les relevés trop vieux ou de date inconnue", () => {
+  assert.equal(routePasses(RT(), { ...NOFILTER, maxAge: 3 }), true);                        // récent
+  assert.equal(routePasses(RT({ buy: { updated: 0 }, sell: { updated: 0 } }), { ...NOFILTER, maxAge: 3 }), false); // date inconnue
+  assert.equal(routePasses(RT({ buy: { updated: RECENT - 10 * 86400 } }), { ...NOFILTER, maxAge: 3 }), false);     // 10 j > 3 j
+});
+
+// Boucle de test : A et B intra-système, légales, hors avant-poste, relevés récents.
+const LP = (over = {}) => {
+  const base = {
+    a: { system: "Stanton", outpost: false },
+    b: { system: "Stanton", outpost: false },
+    out: { illegal: false, commodity: "Gold", updated: RECENT },
+    back: { illegal: false, commodity: "Iron", updated: RECENT },
+  };
+  return {
+    a: { ...base.a, ...(over.a || {}) }, b: { ...base.b, ...(over.b || {}) },
+    out: { ...base.out, ...(over.out || {}) }, back: { ...base.back, ...(over.back || {}) },
+  };
+};
+
+test("loopPasses : sysFilter garde la boucle si A OU B correspond", () => {
+  assert.equal(loopPasses(LP({ a: { system: "Pyro" }, b: { system: "Stanton" } }), { ...NOFILTER, sysFilter: "Stanton" }), true);
+  assert.equal(loopPasses(LP({ a: { system: "Pyro" }, b: { system: "Pyro" } }), { ...NOFILTER, sysFilter: "Stanton" }), false);
+});
+
+test("loopPasses : legalOnly exclut si l'un des deux segments est illégal", () => {
+  assert.equal(loopPasses(LP({ out: { illegal: true } }), { ...NOFILTER, legalOnly: true }), false);
+  assert.equal(loopPasses(LP({ back: { illegal: true } }), { ...NOFILTER, legalOnly: true }), false);
+});
+
+test("loopPasses : q correspond à l'une OU l'autre des deux commodités", () => {
+  assert.equal(loopPasses(LP({ out: { commodity: "Gold" }, back: { commodity: "Iron" } }), { ...NOFILTER, q: "iron" }), true);
+  assert.equal(loopPasses(LP({ out: { commodity: "Gold" }, back: { commodity: "Iron" } }), { ...NOFILTER, q: "zinc" }), false);
 });
 
 // ---------- computeUnits ----------
