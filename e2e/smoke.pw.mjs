@@ -202,3 +202,15 @@ test("Compagnon de voyage : pré-remplit Chaîne + remonte les boucles depuis l'
     await expect(page.locator("#loopRows tr").first()).toHaveClass(/from-here/); // pertinentes en tête
   }
 });
+
+test("Compagnon de voyage : cliquer une étape recale En route (position interactive)", async ({ page }) => {
+  const row = page.locator("#rows tr").first();
+  const buyTerminal = (await row.locator(".term-name").nth(0).innerText()).trim();
+  const sellTerminal = (await row.locator(".term-name").nth(1).innerText()).trim();
+  await row.locator(".journey-pick").click();
+  expect(await page.inputValue("#origin")).toContain(buyTerminal); // au départ
+  // Clique la station d'arrivée -> « je suis là » -> En route repart de l'arrivée.
+  await page.locator("#journeyCard .jstep").nth(1).click();
+  await expect(page.locator("#journeyCard .jstep").nth(1)).toHaveClass(/here/);
+  expect(await page.inputValue("#origin")).toContain(sellTerminal);
+});

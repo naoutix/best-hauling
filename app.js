@@ -730,19 +730,22 @@ function pickJourney(legs) {
   refresh(); // reflète la nouvelle destination/origine dans la vue courante
 }
 
-// Pré-remplit les contrôles des vues d'après la JAMBE COURANTE du parcours (départ -> arrivée).
+// Pré-remplit les contrôles des vues d'après la POSITION COURANTE du parcours.
 // « Pré-rempli » : on pose les défauts, l'utilisateur reste libre de les changer.
 function syncViewsToJourney() {
+  if (!JOURNEY) return;
+  const here = journeyStations(JOURNEY)[JOURNEY.current]; // station où l'on se trouve
+  if (!here) return;
+  const originLabel = `${here.name} — ${here.system}`;
+  $("origin").value = originLabel;    // En route : départ = station courante
+  $("chainOrigin").value = originLabel; // Chaîne : départ = station courante
   const leg = currentLeg(JOURNEY);
-  if (!leg) return;
-  const originLabel = `${leg.from} — ${leg.fromSystem}`;
-  const destLabel = `${leg.to} — ${leg.toSystem}`;
-  // En route : départ = station courante, arrivée = terminal forcé (prime sur le système).
-  $("origin").value = originLabel;
-  $("destTerminal").value = destLabel;
-  $("destSystem").value = "";
-  // Chaîne : départ = station courante (prend en compte le trajet en cours).
-  $("chainOrigin").value = originLabel;
+  if (leg) {
+    $("destTerminal").value = `${leg.to} — ${leg.toSystem}`; // arrivée forcée = jambe courante
+    $("destSystem").value = "";
+  } else {
+    $("destTerminal").value = ""; // au bout du parcours : on cherche le fret onward, pas d'arrivée imposée
+  }
 }
 function clearJourney() {
   JOURNEY = null;
@@ -1286,7 +1289,15 @@ async function init() {
       if (r) pickJourney([legFromRoute(r)]);
       return;
     }
-    if (e.target.closest("#journeyClear")) clearJourney();
+    if (e.target.closest("#journeyClear")) { clearJourney(); return; }
+    // Parcours interactif : clic sur une étape (⦿) = « je suis ici » -> recale les vues.
+    const step = e.target.closest(".jstep");
+    if (step && JOURNEY) {
+      JOURNEY = setJourneyPosition(JOURNEY, Number(step.dataset.i));
+      syncViewsToJourney();
+      renderJourney();
+      refresh();
+    }
   });
   // Corrections locales : clic (ou Entrée/Espace) sur une valeur éditable ; bouton reset.
   document.addEventListener("click", (e) => {
