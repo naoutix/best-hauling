@@ -7,6 +7,9 @@ checklist-achat-idris.md
 # Artefact de site assemblé en CI (publié via GitHub Pages, jamais commité)
 _site/
 
+# Artefacts de test locaux (rapports de `node --test`, etc.)
+test-results/
+
 # Dépendances / OS
 node_modules/
 .DS_Store

@@ -2,9 +2,10 @@
 
 // Fonctions de calcul pures (testées par logic.test.mjs).
 import {
-  tripMinutes, loopMinutes, ageDays, pairAge, freshnessFactor, availabilityFactor,
+  tripMinutes, loopMinutes, ageDays, pairAge,
   normalizeScores, bySort, computeUnits, fillCargo, addableUnits, scuBoxes, bestChain,
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
+  profitPerHour, rawScoreOf, routePasses, loopPasses,
 } from "./logic.mjs";
 
 // Libellé compact des caisses SCU standard, ex. « 8×32 · 1×16 · 1×4 · 1×2 · 1×1 ».
@@ -102,8 +103,8 @@ function suspectTag(r) {
 }
 
 // Score composite (tri « intelligent ») : combine la valeur (profit/heure si borné,
-// sinon marge) avec la fiabilité — fraîcheur × disponibilité. freshnessFactor /
-// availabilityFactor / normalizeScores viennent de logic.mjs.
+// sinon marge) avec la fiabilité — fraîcheur × disponibilité. Le calcul vit dans
+// rawScoreOf (logic.mjs) ; normalizeScores normalise ensuite la liste sur 0-100.
 
 // ---------- Corrections locales (prix & stock) ----------
 // L'utilisateur peut corriger un prix ou un volume (stock à l'achat / demande à la vente)
@@ -181,10 +182,8 @@ function evaluate(r, f) {
   const bounded = isFinite(units);
   const profit = bounded ? units * margin : null;
   const minutes = tripMinutes(r.distance, !r.same_system);
-  const profitHour = profit == null ? null : (profit * 60) / minutes;
-  const base = profit == null ? margin : profitHour;
-  const rawScore =
-    base * freshnessFactor(pairAge(buy.updated, sell.updated)) * availabilityFactor(buy.stock, sell.demand);
+  const profitHour = profitPerHour(profit, minutes);
+  const rawScore = rawScoreOf(profitHour, margin, pairAge(buy.updated, sell.updated), buy.stock, sell.demand);
   return {
     ...r,
     buy, sell, margin, roi,
@@ -230,20 +229,8 @@ function readFilters() {
 
 function render() {
   const f = readFilters();
-  const { sameOnly, noOutpost, legalOnly, sysFilter, maxAge, q } = f;
 
-  let rows = ROUTES.filter((r) => {
-    if (sameOnly && !r.same_system) return false;
-    if (noOutpost && (r.buy.outpost || r.sell.outpost)) return false;
-    if (legalOnly && r.illegal) return false;
-    if (sysFilter && r.buy.system !== sysFilter) return false;
-    if (maxAge) {
-      const a = pairAge(r.buy.updated, r.sell.updated);
-      if (a == null || a > maxAge) return false;
-    }
-    if (q && !r.commodity.toLowerCase().includes(q)) return false;
-    return true;
-  }).map((r) => evaluate(r, f));
+  let rows = ROUTES.filter((r) => routePasses(r, f)).map((r) => evaluate(r, f));
 
   normalizeScores(rows);
   rows.sort(bySort(sortKey, sortDir));
@@ -315,12 +302,11 @@ function evaluateLoop(l, f) {
   const cross = l.a.system !== l.b.system;
   const minutes = loopMinutes(l.distance, cross);
   const profit = bounded ? uOut * out.margin + uBack * back.margin : null;
-  const profitHour = profit == null ? null : (profit * 60) / minutes;
-  const base = profit == null ? loopMargin : profitHour;
-  const rawScore =
-    base *
-    freshnessFactor(pairAge(out.updated, back.updated)) *
-    availabilityFactor(Math.min(out.stock, back.stock), Math.min(out.demand, back.demand));
+  const profitHour = profitPerHour(profit, minutes);
+  const rawScore = rawScoreOf(
+    profitHour, loopMargin, pairAge(out.updated, back.updated),
+    Math.min(out.stock, back.stock), Math.min(out.demand, back.demand)
+  );
   return {
     ...l,
     out, back, loopMargin,
@@ -338,20 +324,8 @@ function evaluateLoop(l, f) {
 
 function renderLoops() {
   const f = readFilters();
-  const { sameOnly, noOutpost, legalOnly, sysFilter, maxAge, q } = f;
 
-  let rows = LOOPS.filter((l) => {
-    if (sameOnly && l.a.system !== l.b.system) return false;
-    if (noOutpost && (l.a.outpost || l.b.outpost)) return false;
-    if (legalOnly && (l.out.illegal || l.back.illegal)) return false;
-    if (sysFilter && l.a.system !== sysFilter && l.b.system !== sysFilter) return false;
-    if (maxAge) {
-      const a = pairAge(l.out.updated, l.back.updated);
-      if (a == null || a > maxAge) return false;
-    }
-    if (q && !(l.out.commodity.toLowerCase().includes(q) || l.back.commodity.toLowerCase().includes(q))) return false;
-    return true;
-  }).map((l) => evaluateLoop(l, f));
+  let rows = LOOPS.filter((l) => loopPasses(l, f)).map((l) => evaluateLoop(l, f));
 
   normalizeScores(rows);
   rows.sort(bySort(loopSortKey, loopSortDir));
@@ -686,15 +660,10 @@ function renderEnRoute() {
   }
 
   const destSystem = $("destSystem").value;
+  // sysFilter:"" — le système d'arrivée est filtré par destSystem, pas par le menu « système d'achat ».
+  const ef = { ...f, sysFilter: "" };
   let deals = enRouteDeals(enrouteOrigin, destSystem)
-    .filter((r) => {
-      if (f.legalOnly && r.illegal) return false;
-      if (f.noOutpost && (r.buy.outpost || r.sell.outpost)) return false;
-      if (f.sameOnly && !r.same_system) return false;
-      if (f.maxAge) { const a = pairAge(r.buy.updated, r.sell.updated); if (a == null || a > f.maxAge) return false; }
-      if (f.q && !r.commodity.toLowerCase().includes(f.q)) return false;
-      return true;
-    })
+    .filter((r) => routePasses(r, ef))
     .map((r) => evaluate(r, f));
 
   normalizeScores(deals);

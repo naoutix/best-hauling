@@ -34,6 +34,18 @@ export function availabilityFactor(stock, demand) {
   return 0.3 + 0.7 * (m / (m + 120));
 }
 
+// ---------- Profit horaire & score brut (partagés routes/boucles) ----------
+// Profit par heure d'un trajet (null si le profit n'est pas borné = pas de contrainte de volume).
+export function profitPerHour(profit, minutes) {
+  return profit == null ? null : (profit * 60) / minutes;
+}
+// Score brut = valeur × fiabilité. Valeur = profit/heure si la route est bornée
+// (profitHour connu), sinon la marge brute (fallbackMargin). Fiabilité = fraîcheur × disponibilité.
+export function rawScoreOf(profitHour, fallbackMargin, age, stock, demand) {
+  const base = profitHour == null ? fallbackMargin : profitHour;
+  return base * freshnessFactor(age) * availabilityFactor(stock, demand);
+}
+
 // ---------- Score ----------
 // Normalise les scores bruts d'une liste sur 0-100 (100 = meilleur de la liste).
 export function normalizeScores(rows) {
@@ -52,6 +64,35 @@ export function bySort(key, dir) {
     if (typeof av === "string" && typeof bv === "string") return av.localeCompare(bv, "fr") * dir;
     return av > bv ? dir : av < bv ? -dir : 0;
   };
+}
+
+// ---------- Filtrage partagé (routes simples, « En route », boucles) ----------
+// f = { sameOnly, noOutpost, legalOnly, sysFilter, maxAge, q }. sysFilter vide = pas de filtre système.
+// La vue « En route » passe sysFilter:"" (le système d'achat est déjà fixé par le terminal de départ).
+export function routePasses(r, f) {
+  if (f.sameOnly && !r.same_system) return false;
+  if (f.noOutpost && (r.buy.outpost || r.sell.outpost)) return false;
+  if (f.legalOnly && r.illegal) return false;
+  if (f.sysFilter && r.buy.system !== f.sysFilter) return false;
+  if (f.maxAge) {
+    const a = pairAge(r.buy.updated, r.sell.updated);
+    if (a == null || a > f.maxAge) return false;
+  }
+  if (f.q && !r.commodity.toLowerCase().includes(f.q)) return false;
+  return true;
+}
+// Boucle A⇄B : le filtre système garde la boucle si A OU B correspond ; recherche sur les deux commodités.
+export function loopPasses(l, f) {
+  if (f.sameOnly && l.a.system !== l.b.system) return false;
+  if (f.noOutpost && (l.a.outpost || l.b.outpost)) return false;
+  if (f.legalOnly && (l.out.illegal || l.back.illegal)) return false;
+  if (f.sysFilter && l.a.system !== f.sysFilter && l.b.system !== f.sysFilter) return false;
+  if (f.maxAge) {
+    const a = pairAge(l.out.updated, l.back.updated);
+    if (a == null || a > f.maxAge) return false;
+  }
+  if (f.q && !(l.out.commodity.toLowerCase().includes(f.q) || l.back.commodity.toLowerCase().includes(f.q))) return false;
+  return true;
 }
 
 // ---------- Unités achetables selon les contraintes actives ----------
