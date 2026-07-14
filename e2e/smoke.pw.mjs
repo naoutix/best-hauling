@@ -177,3 +177,28 @@ test("Compagnon de voyage : sélectionner un trajet pré-remplit En route (dépa
   await page.click("#viewEnroute");
   await expect(page.locator("#manifest")).toContainText(sellTerminal);
 });
+
+test("Compagnon de voyage : pré-remplit Chaîne + remonte les boucles depuis l'arrivée", async ({ page }) => {
+  // Chaîne : chainOrigin = station de départ courante.
+  const row = page.locator("#rows tr").first();
+  const buyTerminal = (await row.locator(".term-name").nth(0).innerText()).trim();
+  await row.locator(".journey-pick").click();
+  expect(await page.inputValue("#chainOrigin")).toContain(buyTerminal);
+
+  // Boucles : sélectionne une route qui arrive sur un terminal de boucle -> les from-here remontent.
+  await page.click("#viewLoops");
+  const loopSet = new Set((await page.locator("#loopRows .term-name").allInnerTexts()).map((t) => t.trim()));
+  await page.click("#viewRoutes");
+  const routes = page.locator("#rows tr");
+  const count = Math.min(await routes.count(), 60);
+  let matched = false;
+  for (let i = 0; i < count; i++) {
+    const sell = (await routes.nth(i).locator(".term-name").nth(1).innerText()).trim();
+    if (loopSet.has(sell)) { await routes.nth(i).locator(".journey-pick").click(); matched = true; break; }
+  }
+  if (matched) {
+    await page.click("#viewLoops");
+    expect(await page.locator("#loopRows tr.from-here").count()).toBeGreaterThan(0);
+    await expect(page.locator("#loopRows tr").first()).toHaveClass(/from-here/); // pertinentes en tête
+  }
+});

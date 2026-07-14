@@ -314,12 +314,19 @@ function renderLoops() {
 
   normalizeScores(rows);
   rows.sort(bySort(loopSortKey, loopSortDir));
+  // Compagnon : remonte en tête (sans filtrer) les boucles qui partent de l'arrivée courante du parcours.
+  const leg = currentLeg(JOURNEY);
+  const hereArrival = leg ? leg.to : JOURNEY ? journeyEnd(JOURNEY)?.name : null;
+  if (hereArrival) {
+    rows.forEach((l) => { l._fromHere = l.a.terminal === hereArrival || l.b.terminal === hereArrival; });
+    rows.sort((a, b) => (b._fromHere ? 1 : 0) - (a._fromHere ? 1 : 0)); // tri stable : pertinentes d'abord
+  }
   shownLoops = rows;
 
   $("loopRows").innerHTML = rows
     .map(
       (l, i) => `
-      <tr data-row="${i}">
+      <tr data-row="${i}"${l._fromHere ? ' class="from-here"' : ""}>
         <td class="loc loop-cell">
           <button class="route-toggle" data-row="${i}" title="Voir le trajet" aria-label="Voir le trajet">🗺</button>
           <div class="loop-ends">
@@ -734,6 +741,8 @@ function syncViewsToJourney() {
   $("origin").value = originLabel;
   $("destTerminal").value = destLabel;
   $("destSystem").value = "";
+  // Chaîne : départ = station courante (prend en compte le trajet en cours).
+  $("chainOrigin").value = originLabel;
 }
 function clearJourney() {
   JOURNEY = null;
