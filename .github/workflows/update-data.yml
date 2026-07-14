@@ -2,7 +2,7 @@ name: Mise à jour des routes UEX
 
 on:
   schedule:
-    - cron: "17 * * * *"   # toutes les heures (à HH:17, décalé pour éviter les pics)
+    - cron: "17,47 * * * *" # toutes les 30 min (à HH:17 / HH:47) — plancher de fraîcheur UEX (~30 min)
   workflow_dispatch:         # bouton manuel dans l'onglet Actions
   push:
     branches: [ main ]       # redéploie le site à chaque changement de code
@@ -23,6 +23,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Exposé au job deploy : "true" seulement si les données UEX ont changé (ou build forcé).
+    outputs:
+      changed: ${{ steps.build.outputs.changed }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
@@ -33,10 +36,18 @@ jobs:
       - name: Tests
         run: node --test
 
+      # Rebuild conditionnel : le cron ne reconstruit que si UEX a changé (compare la signature
+      # au meta.json déjà déployé). push / lancement manuel forcent la reconstruction (FORCE=1).
       - name: Générer les données
+        id: build
+        env:
+          # meta.json du site déjà en ligne (URL Pages de ce dépôt) — sert de signature précédente.
+          DEPLOYED_META_URL: https://naoutix.github.io/best-hauling/data/meta.json
+          FORCE: ${{ github.event_name != 'schedule' && '1' || '' }}
         run: node scripts/build-data.mjs
 
       - name: Assembler le site
+        if: steps.build.outputs.changed != 'false'
         run: |
           mkdir -p _site/data _site/fonts
           cp index.html app.js logic.mjs style.css manifest.webmanifest sw.js icon.svg _site/
@@ -44,13 +55,16 @@ jobs:
           cp data/*.json _site/data/
 
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b  # v5
+        if: steps.build.outputs.changed != 'false'
 
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3
+        if: steps.build.outputs.changed != 'false'
         with:
           path: _site
 
   deploy:
     needs: build
+    if: needs.build.outputs.changed != 'false'  # rien à déployer si les données n'ont pas changé
     runs-on: ubuntu-latest
     environment:
       name: github-pages
