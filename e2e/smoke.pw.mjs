@@ -296,3 +296,17 @@ test("Compagnon de voyage : éditer le manifeste d'une jambe (SCU) persiste hors
   await expect(page.locator("#journeyCard .jcargo-item").first()).toBeVisible({ timeout: 8000 });
   await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(1);  // édits restaurés
 });
+
+test("Compagnon de voyage : on peut ajouter n'importe quel arrêt (même sans fret rentable)", async ({ page }) => {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2);
+  // Attend le chargement du marché (suggestions ou message vide).
+  await expect(page.locator("#journeyCard .jstop-suggest, #journeyCard .journey-suggest-empty").first()).toBeVisible({ timeout: 8000 });
+  // Ajoute un terminal NON suggéré, par NOM SEUL (sans « — Système »).
+  const sug = new Set(await page.locator("#journeyCard .jstop-suggest").evaluateAll((els) => els.map((e) => e.dataset.label)));
+  const opts = await page.locator("#stationList option").evaluateAll((els) => els.map((e) => e.value));
+  const notSuggested = opts.find((o) => !sug.has(o));
+  await page.fill("#journeyAddStop", notSuggested.split(" — ")[0]);
+  await page.click("#journeyAddBtn");
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(3); // ajouté quoi qu'il arrive
+});
