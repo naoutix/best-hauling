@@ -334,8 +334,14 @@ tbody tr:hover td { border-bottom-color: var(--line2); }
 .term-name { font-weight: 600; color: #fff; }
 /* Pastille de fraîcheur : dernière ligne, en bas de la cellule. */
 .loc-fresh { margin-top: 6px; }
-/* Boucles : double flèche mise en avant (le marqueur inter-système se place juste à côté). */
+/* Boucles : Départ / ⇄ inter-système / Arrivée empilés sur 3 lignes, mêmes styles pour les
+   deux noms (via .term-name). Le bouton 🗺 est le 1er enfant du td -> la règle générique
+   « .loc > div:first-child » ne cible pas .loop-ends (aucun div n'est premier enfant). */
 .loop-arrow { color: var(--acc); font-weight: 700; font-size: 13px; }
+.loop-cell { display: flex; align-items: flex-start; gap: 8px; }
+.loop-ends { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.loop-end { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.loop-mid { display: flex; align-items: center; gap: 8px; }
 .cicon {
   flex-shrink: 0; width: 30px; height: 30px; display: grid; place-items: center; font-size: 15px;
   border-radius: 4px; border: 1px solid var(--k-line, var(--line2)); background: var(--k-bg, rgba(255,255,255,.04));
