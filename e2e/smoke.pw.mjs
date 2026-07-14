@@ -253,6 +253,15 @@ test("Compagnon de voyage : manifeste optimal affiché par jambe", async ({ page
   // Le manifeste (cargaison) se calcule (MARKET chargé à la demande).
   await expect(page.locator("#journeyCard .jleg .jcargo-item").first()).toBeVisible({ timeout: 8000 });
   await expect(page.locator("#journeyCard .jleg-profit").first()).toContainText("+");
+  // Chaque matériau porte un indicateur de fraîcheur des données (pastille colorée).
+  await expect(page.locator("#journeyCard .jcargo-item .fresh-dot").first()).toBeVisible();
+  await expect(page.locator("#journeyCard .jcargo-item .fresh-dot")).toHaveCount(
+    await page.locator("#journeyCard .jcargo-item").count()
+  );
+  // Le récap du voyage (colonne de gauche) affiche profit total + KPIs.
+  await expect(page.locator("#journeyRecap")).toBeVisible();
+  await expect(page.locator("#journeyRecap .recap-profit")).toContainText("aUEC");
+  await expect(page.locator("#journeyRecap .recap-kpi")).toHaveCount(4);
 });
 
 test("Compagnon de voyage : les commodités transportées sont surlignées dans le board", async ({ page }) => {

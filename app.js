@@ -91,6 +91,19 @@ function freshChip(updated) {
   else { label = Math.round(d) + " j"; cls = d < 3 ? "f-good" : d < 7 ? "f-ok" : "f-old"; }
   return `<span class="fresh ${cls}" title="Relevé UEX il y a ${label}">${label}</span>`;
 }
+// Version compacte (pastille seule) : indicateur de fraîcheur par matériau dans le compagnon.
+function freshDot(updated) {
+  const d = ageDays(updated);
+  if (d == null) return '<span class="fresh-dot f-old" title="Fraîcheur des données inconnue"></span>';
+  const label = d < 1 ? (d < 1 / 24 ? "moins d'1 h" : Math.round(d * 24) + " h") : Math.round(d) + " j";
+  const cls = d < 3 ? "f-good" : d < 7 ? "f-ok" : "f-old";
+  return `<span class="fresh-dot ${cls}" title="Relevé UEX il y a ${label}"></span>`;
+}
+// Fraîcheur d'une ligne de manifeste = le plus ancien des relevés achat/vente (ou l'un des deux).
+function lineFreshUpdated(l) {
+  const b = l.buyUpdated || 0, s = l.sellUpdated || 0;
+  return b && s ? Math.min(b, s) : b || s || 0;
+}
 
 // Légendes de statut d'inventaire UEX (couleurs officielles).
 const BUY_STATUS = { 1: ["Vide", "red"], 2: ["Très bas", "red"], 3: ["Bas", "orange"], 4: ["Moyen", "blue"], 5: ["Élevé", "blue"], 6: ["Très élevé", "green"], 7: ["Plein", "green"] };
@@ -928,6 +941,8 @@ function renderJourney() {
   // Aucun voyage -> invite à en démarrer un : depuis un trajet (▶) OU « de zéro » (point de départ).
   if (!JOURNEY) {
     card.hidden = false;
+    const recap0 = $("journeyRecap"); if (recap0) recap0.hidden = true; // pas de récap sans voyage
+    const row0 = $("shipJourneyRow"); if (row0) row0.classList.remove("stacked");
     card.innerHTML =
       `<div class="journey-head"><span class="journey-title">◈ Nouveau voyage</span></div>
        <p class="journey-hint">Choisis un trajet (▶) dans une vue, ou démarre de zéro :</p>
@@ -948,6 +963,7 @@ function renderJourney() {
     .join('<span class="jsep">→</span>');
   const n = JOURNEY.legs.length;
   const f = readFilters();
+  let totalProfit = 0, totalScu = 0; // récap : profit réel (aUEC) et SCU transportés sur tout le voyage
   // Manifeste (cargaison) de chaque jambe — optimal ou édité ; jambe dépliable pour l'éditer.
   const legsHtml = JOURNEY.legs.map((leg, i) => {
     const lines = MARKET ? legEffectiveLines(leg, f) : null;
@@ -957,15 +973,17 @@ function renderJourney() {
     if (!MARKET) { cargo = '<span class="muted">calcul…</span>'; total = "—"; }
     else if (!lines.length) { cargo = '<span class="muted">aucun fret rentable</span>'; total = "0"; }
     else {
-      cargo = lines.map((l) => `<span class="jcargo-item">${commodityIcon(l.kind)}<span>${esc(l.name)}${illegalTag(l.illegal)}</span> <b>${fmt(l.units)} SCU</b></span>`).join("");
+      cargo = lines.map((l) => `<span class="jcargo-item">${freshDot(lineFreshUpdated(l))}${commodityIcon(l.kind)}<span>${esc(l.name)}${illegalTag(l.illegal)}</span> <b>${fmt(l.units)} SCU</b></span>`).join("");
       total = fmt(legProfit(lines));
+      totalProfit += legProfit(lines);
+      totalScu += lines.reduce((s, l) => s + l.units, 0);
     }
     let editor = "";
     if (expanded && MARKET) {
       const rows = lines.map((l, li) =>
         `<div class="jman-line">${commodityIcon(l.kind)}` +
         `<span class="mqtywrap"><input type="number" class="jman-qty" min="0" value="${l.units}" data-leg="${i}" data-i="${li}" aria-label="SCU ${esc(l.name)}"><span class="munit">SCU</span></span>` +
-        `<span class="jman-name">${esc(l.name)}${illegalTag(l.illegal)}${l.sellPrice == null ? ' <span class="carry-tag">vend ailleurs</span>' : ""}</span>` +
+        `<span class="jman-name">${freshDot(lineFreshUpdated(l))}${esc(l.name)}${illegalTag(l.illegal)}${l.sellPrice == null ? ' <span class="carry-tag">vend ailleurs</span>' : ""}</span>` +
         `<span class="jman-profit profit">${l.sellPrice == null ? "—" : "+" + fmt(l.units * (l.margin || 0))}</span>` +
         `<button class="jman-del" data-leg="${i}" data-name="${esc(l.name)}" title="Retirer">✕</button></div>`
       ).join("") || '<div class="muted jman-empty">Aucune commodité.</div>';
@@ -998,6 +1016,34 @@ function renderJourney() {
      </div>
      ${suggestBlock}
      <div class="journey-meta">${n} saut${n > 1 ? "s" : ""} · marge cumulée <b class="profit">${fmt(journeyMargin(JOURNEY))}</b> aUEC/SCU</div>`;
+
+  renderJourneyRecap({ n, totalProfit, totalScu, systems: new Set(stations.map((s) => s.system)).size });
+}
+
+// Récap du voyage (colonne de gauche, sous le vaisseau) : remplit l'espace avec des KPIs utiles.
+function renderJourneyRecap({ n, totalProfit, totalScu, systems }) {
+  const recap = $("journeyRecap");
+  if (!recap) return;
+  recap.hidden = false;
+  const materials = MARKET ? journeyCarriedCommodities().size : 0;
+  const kpi = (v, lbl) => `<div class="recap-kpi"><b>${v}</b><span>${lbl}</span></div>`;
+  recap.innerHTML =
+    `<div class="recap-head">◈ Résumé du voyage</div>
+     <div class="recap-profit">${MARKET ? "+" + fmt(totalProfit) : "…"} <span>aUEC</span></div>
+     <div class="recap-kpis">
+       ${kpi(n, "saut" + (n > 1 ? "s" : ""))}
+       ${kpi(MARKET ? fmt(totalScu) : "…", "SCU")}
+       ${kpi(systems, "système" + (systems > 1 ? "s" : ""))}
+       ${kpi(MARKET ? materials : "…", "matériau" + (materials > 1 ? "x" : ""))}
+     </div>`;
+  // Bascule intelligente : si la carte Voyage est bien plus haute que la colonne de gauche
+  // (voyage long / jambe dépliée), on empile en pleine largeur pour supprimer le grand vide.
+  // Mesure synchrone (getBoundingClientRect force le reflow) -> fiable même onglet non peint.
+  const row = $("shipJourneyRow"), jc = $("journeyCard"), vl = $("voyageLeft");
+  if (row && jc && vl && !jc.hidden) {
+    row.classList.remove("stacked"); // mesure toujours dans la disposition côte-à-côte de base
+    if (jc.getBoundingClientRect().height > vl.getBoundingClientRect().height + 140) row.classList.add("stacked");
+  }
 }
 
 // Bascule entre les vues et rafraîchit la bonne.
