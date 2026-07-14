@@ -629,6 +629,7 @@ function renderManifest(origin, destSystem, f, destTerminal) {
 function renderEnRoute() {
   if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderEnRoute(); }); return; }
   if (!enrouteReady) setupEnRoute();
+  resolveOrigin(); // re-résout depuis le champ (peut avoir été posé par le parcours, sans événement input)
   resolveDest();
   const f = readFilters();
   const emptyMsg = $("empty");
@@ -717,8 +718,22 @@ function renderChain() {
 function pickJourney(legs) {
   if (!legs || !legs.length) return;
   JOURNEY = addToJourney(JOURNEY, legs);
+  syncViewsToJourney();
   renderJourney();
-  saveState();
+  refresh(); // reflète la nouvelle destination/origine dans la vue courante
+}
+
+// Pré-remplit les contrôles des vues d'après la JAMBE COURANTE du parcours (départ -> arrivée).
+// « Pré-rempli » : on pose les défauts, l'utilisateur reste libre de les changer.
+function syncViewsToJourney() {
+  const leg = currentLeg(JOURNEY);
+  if (!leg) return;
+  const originLabel = `${leg.from} — ${leg.fromSystem}`;
+  const destLabel = `${leg.to} — ${leg.toSystem}`;
+  // En route : départ = station courante, arrivée = terminal forcé (prime sur le système).
+  $("origin").value = originLabel;
+  $("destTerminal").value = destLabel;
+  $("destSystem").value = "";
 }
 function clearJourney() {
   JOURNEY = null;

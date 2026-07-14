@@ -164,3 +164,16 @@ test("Compagnon de voyage : sélectionner un trajet affiche le parcours", async 
   await page.locator("#journeyClear").click();
   await expect(page.locator("#journeyCard")).toBeHidden();
 });
+
+test("Compagnon de voyage : sélectionner un trajet pré-remplit En route (départ/arrivée)", async ({ page }) => {
+  const row = page.locator("#rows tr").first();
+  const buyTerminal = (await row.locator(".term-name").nth(0).innerText()).trim();
+  const sellTerminal = (await row.locator(".term-name").nth(1).innerText()).trim();
+  await row.locator(".journey-pick").click();
+  // Les champs En route sont pré-remplis avec la jambe courante.
+  expect(await page.inputValue("#origin")).toContain(buyTerminal);
+  expect(await page.inputValue("#destTerminal")).toContain(sellTerminal);
+  // La vue En route affiche bien un manifeste vers la station d'arrivée.
+  await page.click("#viewEnroute");
+  await expect(page.locator("#manifest")).toContainText(sellTerminal);
+});
