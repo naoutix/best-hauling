@@ -11,3 +11,9 @@ _site/
 node_modules/
 .DS_Store
 Thumbs.db
+
+# Playwright (tests E2E)
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/

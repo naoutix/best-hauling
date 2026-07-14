@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import {
   tripMinutes, loopMinutes, ageDays, pairAge, freshnessFactor, availabilityFactor,
   normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits, scuBoxes, bestChain,
+  ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
 } from "./logic.mjs";
 
 // ---------- Temps de trajet ----------
@@ -303,4 +304,81 @@ test("bestChain : un saut dont le stock est 0 (vide) est écarté", () => {
   ]);
   const r = bestChain(adj, "A", 1, { cargo: 50 });
   assert.deepEqual(r.path, ["A", "C"]); // on prend C, pas le B vide
+});
+
+// ---------- ovKey / effFromStore / setInStore (moteur de corrections, store injectable) ----------
+test("ovKey : clé stable commodité|terminal|side", () => {
+  assert.equal(ovKey("Laranite", "CRU-L1", "buy"), "Laranite|CRU-L1|buy");
+});
+
+test("setInStore : enregistre prix + base, efface un champ, supprime la clé si vide", () => {
+  const store = {};
+  setInStore(store, "A|T|buy", "price", "7000", 111);
+  assert.deepEqual(store["A|T|buy"], { price: 7000, base: 111 }); // valeur arrondie + base
+  setInStore(store, "A|T|buy", "vol", 50, 222);
+  assert.deepEqual(store["A|T|buy"], { price: 7000, vol: 50, base: 222 });
+  setInStore(store, "A|T|buy", "price", "", 222); // efface le prix
+  assert.deepEqual(store["A|T|buy"], { vol: 50, base: 222 });
+  setInStore(store, "A|T|buy", "vol", null, 222);  // plus rien -> clé supprimée
+  assert.equal("A|T|buy" in store, false);
+});
+
+test("setInStore : borne à >= 0 et arrondit", () => {
+  const store = {};
+  setInStore(store, "k", "price", -5, 0);
+  assert.equal(store.k.price, 0);
+  setInStore(store, "k", "vol", 3.7, 0);
+  assert.equal(store.k.vol, 4);
+});
+
+test("effFromStore : valeur brute si pas de correction", () => {
+  const store = {};
+  assert.deepEqual(effFromStore(store, "k", 100, 50, 123), { price: 100, vol: 50, oprice: false, ovol: false, stale: false });
+});
+
+test("effFromStore : applique la correction plus récente que le relevé", () => {
+  const store = { k: { price: 200, base: 1000 } };
+  const r = effFromStore(store, "k", 100, 50, 900); // relevé plus ancien que base
+  assert.equal(r.price, 200);
+  assert.equal(r.oprice, true);
+  assert.equal("k" in store, true); // conservée
+});
+
+test("effFromStore : SUPPRIME du store la correction périmée par un relevé plus récent", () => {
+  const store = { k: { price: 200, base: 1000 } };
+  const r = effFromStore(store, "k", 100, 50, 1500); // relevé plus récent que base
+  assert.equal(r.stale, true);
+  assert.equal(r.price, 100);          // retour à la valeur UEX
+  assert.equal("k" in store, false);   // effet de bord : périmée -> supprimée
+});
+
+// ---------- safeKey / encodeState / decodeState (persistance) ----------
+test("safeKey : n'accepte que des lettres (anti-injection de sélecteur)", () => {
+  assert.equal(safeKey("score"), true);
+  assert.equal(safeKey("loopMargin"), true);
+  assert.equal(safeKey('score"]'), false);
+  assert.equal(safeKey("a-b"), false);
+  assert.equal(safeKey(""), false);
+  assert.equal(safeKey(null), false);
+});
+
+test("encodeState : ignore les valeurs vides et nulles", () => {
+  const s = encodeState({ v: "routes", cargo: 96, search: "", system: undefined, x: null });
+  assert.equal(s, "v=routes&cargo=96");
+});
+
+test("encodeState/decodeState : round-trip fidèle", () => {
+  const state = { v: "chain", cargo: "600", origin: "Seraphim — Stanton", useCargo: 1, capStock: 0 };
+  const decoded = decodeState(encodeState(state));
+  // tout revient sous forme de chaînes (query-string)
+  assert.equal(decoded.v, "chain");
+  assert.equal(decoded.cargo, "600");
+  assert.equal(decoded.origin, "Seraphim — Stanton");
+  assert.equal(decoded.useCargo, "1");
+  assert.equal(decoded.capStock, "0");
+});
+
+test("decodeState : chaîne vide -> null", () => {
+  assert.equal(decodeState(""), null);
+  assert.equal(decodeState(undefined), null);
 });

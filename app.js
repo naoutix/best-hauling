@@ -3,7 +3,8 @@
 // Fonctions de calcul pures (testées par logic.test.mjs).
 import {
   tripMinutes, loopMinutes, ageDays, pairAge, freshnessFactor, availabilityFactor,
-  normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits, scuBoxes, bestChain,
+  normalizeScores, bySort, computeUnits, fillCargo, addableUnits, scuBoxes, bestChain,
+  ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
 } from "./logic.mjs";
 
 // Libellé compact des caisses SCU standard, ex. « 8×32 · 1×16 · 1×4 · 1×2 · 1×1 ».
@@ -123,8 +124,7 @@ function loadOverrides() {
 function saveOverrides() {
   try { localStorage.setItem(OV_KEY, JSON.stringify(OVERRIDES)); } catch {}
 }
-const ovKey = (commodity, terminal, side) => `${commodity}|${terminal}|${side}`;
-const ovCount = () => Object.keys(OVERRIDES).length;
+const ovCount = () => Object.keys(OVERRIDES).length; // ovKey vient de logic.mjs
 
 // Renvoie prix/volume effectifs (corrigés si une correction locale existe) + drapeaux.
 // « Intelligent » : si le relevé UEX du point (dataUpdated) est PLUS RÉCENT que celui
@@ -132,21 +132,15 @@ const ovCount = () => Object.keys(OVERRIDES).length;
 // supprime et on revient à la valeur UEX (comptée pour le flash de notification).
 function effVals(commodity, terminal, side, price, vol, dataUpdated) {
   const k = ovKey(commodity, terminal, side);
-  const r = effValue(OVERRIDES[k], price, vol, dataUpdated); // décision pure (logic.mjs)
-  if (r.stale) { delete OVERRIDES[k]; saveOverrides(); supersededKeys.add(k); } // effet de bord ici
+  const r = effFromStore(OVERRIDES, k, price, vol, dataUpdated); // décision + suppression périmée (logic.mjs)
+  if (r.stale) { saveOverrides(); supersededKeys.add(k); } // effets de bord app : persistance + flash
   return r;
 }
 
 // Enregistre (ou efface) une correction. field = "price"|"vol". value null/"" = efface ce champ.
 // baseUpdated = date UEX du point corrigé (l'état de l'export au moment de la correction).
 function setOverride(commodity, terminal, side, field, value, baseUpdated) {
-  const k = ovKey(commodity, terminal, side);
-  const o = OVERRIDES[k] || {};
-  const n = value == null || value === "" ? NaN : Math.max(0, Math.round(Number(value)));
-  if (Number.isFinite(n)) o[field] = n;
-  else delete o[field];
-  if (o.price != null || o.vol != null) { o.base = Number(baseUpdated) || 0; OVERRIDES[k] = o; }
-  else delete OVERRIDES[k];
+  setInStore(OVERRIDES, ovKey(commodity, terminal, side), field, value, baseUpdated); // logic.mjs
   saveOverrides();
 }
 function resetOverrides() { OVERRIDES = {}; saveOverrides(); }
@@ -977,7 +971,7 @@ async function loadShips() {
 // hash de l'URL, pour reprendre là où on s'est arrêté et partager une vue précise.
 const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem", "chainOrigin", "hops", "station"];
 const STATE_CHECKS = ["useCargo", "useBudget", "sameSystem", "noOutpost", "legalOnly", "capStock"];
-const safeKey = (k) => typeof k === "string" && /^[a-zA-Z]+$/.test(k); // anti-injection de sélecteur
+// safeKey / encodeState / decodeState viennent de logic.mjs.
 
 let restoring = false; // évite de resauver pendant qu'on applique un état
 
@@ -990,11 +984,7 @@ function collectState() {
 
 function saveState() {
   if (restoring) return;
-  const params = new URLSearchParams();
-  Object.entries(collectState()).forEach(([k, v]) => {
-    if (v !== "" && v != null) params.set(k, v);
-  });
-  const str = params.toString();
+  const str = encodeState(collectState());
   try { localStorage.setItem(STATE_KEY, str); } catch {}
   history.replaceState(null, "", str ? "#" + str : location.pathname + location.search);
 }
@@ -1002,7 +992,7 @@ function saveState() {
 function loadState() {
   let str = location.hash.replace(/^#/, "");
   if (!str) { try { str = localStorage.getItem(STATE_KEY) || ""; } catch {} }
-  return str ? Object.fromEntries(new URLSearchParams(str)) : null;
+  return decodeState(str);
 }
 
 // Positionne l'indicateur ▾/▴ sur la bonne colonne des deux tables.
