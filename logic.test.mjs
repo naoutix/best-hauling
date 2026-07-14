@@ -8,7 +8,7 @@ import {
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
   profitPerHour, rawScoreOf, routePasses, loopPasses,
   routeMetrics, loopMetrics, dealFrom, enRouteDeals, bestManifest, buildChainAdjacency,
-  commoditySummaries, commodityPoints,
+  commoditySummaries, commodityPoints, compactValue,
 } from "./logic.mjs";
 
 // ---------- Temps de trajet ----------
@@ -741,4 +741,14 @@ test("commodityPoints : noOutpost exclut les points en avant-poste", () => {
   assert.equal(p.sells.length, 1);
   assert.equal(p.sells[0].terminal, "B");
   assert.equal(p.buys.length, 2);
+});
+
+test("compactValue : notation compacte K/M", () => {
+  assert.equal(compactValue(9600), "9.6K");
+  assert.equal(compactValue(146300), "146.3K");
+  assert.equal(compactValue(500000), "500K");
+  assert.equal(compactValue(1600000), "1.6M");
+  assert.equal(compactValue(540), "540");
+  assert.equal(compactValue(0), "0");
+  assert.equal(compactValue(null), "—");
 });

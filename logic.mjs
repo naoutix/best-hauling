@@ -446,3 +446,12 @@ export function commodityPoints(market, name, f = {}) {
   const sells = c.sells.filter(keep).map((s) => point(s, "demand")).sort((a, b) => b.price - a.price);
   return { name: c.name, code: c.code || "", kind: c.kind, illegal: c.illegal, buys, sells };
 }
+
+// Notation compacte K/M pour les tuiles du board (ex. 9600 -> "9.6K", 1_600_000 -> "1.6M").
+export function compactValue(n) {
+  if (n == null || !isFinite(n)) return "—";
+  const a = Math.abs(n);
+  if (a >= 1e6) return Math.round(n / 1e5) / 10 + "M";
+  if (a >= 1e3) return Math.round(n / 100) / 10 + "K";
+  return String(Math.round(n));
+}

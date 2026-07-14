@@ -526,35 +526,32 @@ input.mqty-input.over-stock { color: var(--warn); border-color: var(--warn); box
 .sort-modes button:hover { color: var(--text); }
 .sort-modes button.active { color: #fff; border: 1px solid var(--line2); border-left: 2px solid var(--acc); background: rgba(255, 176, 32, 0.10); }
 
-/* Big board « terminal de trading » : tableau PLEIN LARGEUR dense + tiroir détail en bas. */
-.commodities-wrap { margin: 18px 0 0; display: flex; flex-direction: column; gap: 0; }
-.comm-table-shell { overflow: auto; max-height: 60vh; border: 1px solid var(--line2); background: rgba(4, 7, 14, 0.75); }
-#commTable { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11.5px; }
-#commTable thead th {
-  position: sticky; top: 0; z-index: 1; cursor: pointer; white-space: nowrap;
-  background: #070b16; color: var(--muted);
-  font-family: var(--font); font-size: 9px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
-  padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line2);
+/* Méga-board : grille dense de tuiles « code · marge », colorées en heatmap + tiroir détail dessous. */
+.commodities-wrap { margin: 18px 0 0; display: flex; flex-direction: column; gap: 14px; }
+.comm-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(106px, 1fr)); gap: 3px;
+  max-height: 62vh; overflow: auto; padding: 3px;
+  border: 1px solid var(--line2); background: rgba(4, 7, 14, 0.75);
 }
-#commTable thead th.num { text-align: right; }
-#commTable th[data-comm-sort]:hover { color: var(--acc); }
-#commTable td { padding: 4px 12px; border-bottom: 1px solid rgba(130, 150, 210, 0.06); white-space: nowrap; }
-#commTable tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.012); } /* effet « lignes de cotation » */
-.comm-code { font-weight: 700; color: var(--acc); letter-spacing: 1px; }
-.comm-name { display: flex; align-items: center; gap: 8px; font-family: var(--font); color: #fff; }
-.comm-name .cicon { width: 22px; height: 22px; font-size: 12px; }
-.comm-buy { color: var(--text); background: rgba(70, 229, 160, 0.05); }
-.comm-sell { color: var(--good); background: rgba(70, 229, 160, 0.11); }
-.comm-margin { font-weight: 700; }
-.comm-margin.up { color: var(--good); }
-.comm-margin.down { color: var(--bad); }
-.cell-status { text-align: center; color: var(--muted); }
-.comm-pts { color: var(--muted); }
-.comm-pts .pts-sep { opacity: 0.4; margin: 0 1px; }
-.comm-row { cursor: pointer; }
-.comm-row:hover td { background: rgba(255, 176, 32, 0.07); }
-.comm-row.selected td { background: rgba(255, 176, 32, 0.14); }
-.comm-row.selected .comm-code { color: #fff; }
+.comm-tile {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  padding: 5px 9px; min-width: 0; cursor: pointer;
+  font-family: var(--mono); font-size: 11px; text-align: left;
+  color: var(--text); background: rgba(255, 255, 255, 0.015);
+  border: 1px solid var(--line); border-left: 2px solid transparent;
+}
+.comm-tile:hover { background: rgba(255, 176, 32, 0.08); border-color: var(--line2); }
+.comm-tile.selected { border: 1px solid var(--acc); border-left: 2px solid var(--acc); background: rgba(255, 176, 32, 0.14); box-shadow: inset 0 0 12px rgba(255, 176, 32, 0.12); }
+.comm-tile.illegal { border-left: 2px solid var(--bad); } /* liseré rouge = commodité illégale */
+.tile-code { color: var(--muted); font-weight: 700; letter-spacing: 0.5px; overflow: hidden; text-overflow: ellipsis; }
+.comm-tile.selected .tile-code { color: #fff; }
+.tile-val { flex-shrink: 0; font-weight: 700; }
+/* Heatmap de la marge (valeur) : rouge très lucratif → bleu correct → gris atone → sans marge. */
+.t-hot .tile-val  { color: var(--bad); }
+.t-warm .tile-val { color: var(--warn); }
+.t-mid .tile-val  { color: var(--stanton); }
+.t-low .tile-val  { color: #6d84a8; }
+.t-none .tile-val { color: rgba(138, 147, 168, 0.5); }
 
 /* Tiroir de détail (points d'achat / vente) — sous le board, plein largeur. */
 .comm-detail { border: 1px solid var(--line2); border-top: 2px solid var(--acc); background: var(--panel); padding: 16px 20px; margin-top: 12px; }
