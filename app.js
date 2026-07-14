@@ -780,6 +780,37 @@ function legManifest(leg, f) {
   return bestManifest(MARKET, fromIdx, "", f, effVals, toIdx); // { lines, profit, … } ou null
 }
 
+// Index du terminal de FIN de parcours (point d'extension), ou null.
+function journeyEndIndex() {
+  const end = journeyEnd(JOURNEY);
+  return end && stationMap.size ? stationMap.get(`${end.name} — ${end.system}`) : null;
+}
+// Meilleure jambe (commodité de marge max) entre deux terminaux, ou null si aucun fret rentable.
+function bestLegTo(fromIdx, toIdx) {
+  if (fromIdx == null || toIdx == null) return null;
+  const deals = enRouteDeals(MARKET, fromIdx, "", toIdx); // meilleure vente vers toIdx par commodité
+  if (!deals.length) return null;
+  return legFromRoute(deals.reduce((a, b) => (b.margin > a.margin ? b : a)));
+}
+// Suggestions d'arrêts : meilleures destinations rentables depuis la fin du parcours (top 4).
+function journeyStopSuggestions() {
+  const fromIdx = journeyEndIndex();
+  if (fromIdx == null) return [];
+  const byDest = new Map();
+  enRouteDeals(MARKET, fromIdx, "").forEach((d) => {
+    const label = `${d.sell.terminal} — ${d.sell.system}`;
+    const cur = byDest.get(label);
+    if (!cur || d.margin > cur.margin) byDest.set(label, { label, terminal: d.sell.terminal, commodity: d.commodity, margin: d.margin });
+  });
+  return [...byDest.values()].sort((a, b) => b.margin - a.margin).slice(0, 4);
+}
+// Ajoute un arrêt (terminal) : nouvelle jambe optimale depuis la fin du parcours -> étend.
+function addStopByTerminal(label) {
+  const toIdx = stationMap.get((label || "").trim());
+  const leg = bestLegTo(journeyEndIndex(), toIdx);
+  if (leg) pickJourney([leg]);
+}
+
 function renderJourney() {
   const card = $("journeyCard");
   if (!card) return;
@@ -811,10 +842,19 @@ function renderJourney() {
       </div>`;
   }).join("");
 
+  // Ajout d'arrêt : champ libre (tous terminaux) + suggestions rentables depuis la fin.
+  const suggestions = MARKET
+    ? journeyStopSuggestions().map((s) => `<button class="jstop-suggest" data-label="${esc(s.label)}" title="Ajouter ${esc(s.terminal)} — via ${esc(s.commodity)}, +${fmt(s.margin)} marge/SCU">+ ${esc(s.terminal)} <span class="muted">+${fmt(s.margin)}</span></button>`).join("")
+    : "";
   card.innerHTML =
     `<div class="journey-head"><span class="journey-title">◈ Voyage en cours</span><button id="journeyClear" class="journey-clear" title="Effacer le parcours" aria-label="Effacer">✕</button></div>
      <div class="journey-path">${path}</div>
      <div class="journey-legs">${legsHtml}</div>
+     <div class="journey-add">
+       <input id="journeyAddStop" list="stationList" placeholder="+ Ajouter un arrêt (terminal)…" autocomplete="off" aria-label="Ajouter un arrêt" />
+       <button id="journeyAddBtn" type="button" class="chain-pick">+ Arrêt</button>
+     </div>
+     ${suggestions ? `<div class="journey-suggest">${suggestions}</div>` : ""}
      <div class="journey-meta">${n} saut${n > 1 ? "s" : ""} · marge cumulée <b class="profit">${fmt(journeyMargin(JOURNEY))}</b> aUEC/SCU</div>`;
 }
 
@@ -1347,6 +1387,10 @@ async function init() {
     }
     if (e.target.closest("#chainToJourney") && shownChain) { pickJourney(legsFromChain(shownChain, MARKET.terminals)); return; }
     if (e.target.closest("#journeyClear")) { clearJourney(); return; }
+    // Ajout d'arrêt : bouton « + Arrêt » ou une suggestion.
+    if (e.target.closest("#journeyAddBtn")) { addStopByTerminal($("journeyAddStop").value); return; }
+    const sug = e.target.closest(".jstop-suggest");
+    if (sug) { addStopByTerminal(sug.dataset.label); return; }
     // Parcours interactif : clic sur une étape (⦿) = « je suis ici » -> recale les vues.
     const step = e.target.closest(".jstep");
     if (step && JOURNEY) {
@@ -1355,6 +1399,10 @@ async function init() {
       renderJourney();
       refresh();
     }
+  });
+  // Ajout d'arrêt à la touche Entrée dans le champ.
+  document.addEventListener("keydown", (e) => {
+    if (e.target.id === "journeyAddStop" && e.key === "Enter") { e.preventDefault(); addStopByTerminal(e.target.value); }
   });
   // Corrections locales : clic (ou Entrée/Espace) sur une valeur éditable ; bouton reset.
   document.addEventListener("click", (e) => {

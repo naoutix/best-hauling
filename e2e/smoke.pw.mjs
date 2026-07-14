@@ -259,3 +259,11 @@ test("Compagnon de voyage : les commodités transportées sont surlignées dans 
   await expect(page.locator("#commGrid .comm-tile.carried")).not.toHaveCount(0); // au moins une surlignée
   await expect(page.locator("#commGrid .comm-tile.carried .tile-carried").first()).toBeVisible();
 });
+
+test("Compagnon de voyage : ajouter un arrêt (suggestion) étend le parcours", async ({ page }) => {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jstop-suggest").first()).toBeVisible({ timeout: 8000 });
+  const stopsBefore = await page.locator("#journeyCard .jstep").count();
+  await page.locator("#journeyCard .jstop-suggest").first().click();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(stopsBefore + 1);
+});
