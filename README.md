@@ -40,11 +40,31 @@ Autres éléments :
 - **Manifeste ajustable** : chaque ligne se modifie à la main — tu peux **dépasser le stock UEX** (vol de fret, relevé périmé…) ; le champ passe en ambre pour le signaler.
 - **Schéma de trajet** dépliable (🗺) : système › planète › terminal, type de saut, temps estimé.
 - **Fiabilité des données** : pastille d'âge par relevé, filtre de fraîcheur (< 24 h / 3 j / 7 j), point de statut d'inventaire, tag « à vérifier », bandeau global « données d'il y a X h ».
-- **Filtres** : commodité, système, même système uniquement, exclure les avant-postes, commodités légales uniquement, limiter au stock & à la demande UEX.
-  - **Portée** : ils s'appliquent à **Trajets, Boucles, En route et Chaîne**. La vue **Corrections** n'est jamais filtrée ; la vue **Commodités** n'applique que **« légales »** et **« exclure avant-postes »** (sa barre de recherche filtre le tableau). *(Garanti par des tests — voir [Tests](#tests).)*
+- **Filtres** : commodité, système, même système uniquement, exclure les avant-postes, commodités légales uniquement, limiter au stock & à la demande UEX. Ils ne s'appliquent pas tous à toutes les vues — voir la **[matrice ci-dessous](#portée-des-filtres-par-vue)**.
 - **Permaliens & persistance** : l'état (filtres, tri, vue, vaisseau) est mémorisé (localStorage) et encodé dans l'URL → bouton **Partager**.
 - **Copier le manifeste**, **raccourcis clavier** (`/` recherche, `1`–`6` vues).
 - Systèmes couverts : **Stanton**, **Pyro**, **Nyx**.
+
+### Portée des filtres par vue
+
+Tous les filtres ne s'appliquent pas à toutes les vues — comportement **garanti par des tests** ([voir Tests](#tests)) :
+
+| Filtre | Trajets | Boucles | En route | Chaîne | Corrections | Commodités |
+|--------|:-:|:-:|:-:|:-:|:-:|:-:|
+| Soute (SCU) | ✅ | ✅ | ✅ | ✅ | — | — |
+| Budget | ✅ | ✅ | ✅ | —¹ | — | — |
+| Commodité (recherche) | ✅ | ✅ | ✅ | —² | station | ✅ (tableau) |
+| Système d'achat | ✅ | ✅ | —³ | —³ | — | — |
+| Fraîcheur | ✅ | ✅ | ✅ | ✅ | — | — |
+| Même système | ✅ | ✅ | ✅ | ✅ | — | — |
+| Exclure avant-postes | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| Légales uniquement | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| Stock & demande | ✅ | ✅ | ✅ | ✅⁴ | — | — |
+
+¹ Le budget se reconstitue à chaque vente → non pertinent pour une chaîne.
+² Une chaîne est multi-commodité par nature.
+³ Le terminal de départ est déjà choisi → le menu « système d'achat » serait redondant.
+⁴ La chaîne plafonne **toujours** au stock/demande de chaque saut.
 
 ## Démarrage rapide (local)
 
@@ -120,6 +140,19 @@ Fichiers de données (dans [`data/`](data/)) :
 | `market.json` | Graphe d'échange compact (tous les points d'achat/vente, + **code UEX** par commodité) | En route, Chaîne, Corrections, **Commodités** (chargé à la demande) |
 | `ships.json` | Vaisseaux avec soute (nom, SCU, photo) | Champ vaisseau |
 | `meta.json` | Métadonnées (date, compteurs, systèmes, **`data_signature`**) | Bandeau de fraîcheur + rebuild conditionnel |
+
+### Refresh & rebuild conditionnel
+
+Le workflow tourne **toutes les 30 min** mais évite le travail inutile :
+
+1. Il récupère les prix UEX et calcule une **signature** = `nb de relevés : date_modified max`.
+2. Il la compare au `data_signature` du `meta.json` **déjà en ligne** (pas de fichier d'état).
+3. **Inchangé** → il s'arrête **avant** le calcul des distances ; ni build, ni déploiement.
+4. **Changé** (ou `push` / lancement manuel, qui *forcent*) → build complet + déploiement, et le nouveau `data_signature` est écrit pour le run suivant.
+
+Pourquoi 30 min : UEX met ses prix en cache ~30 min (`Cache-Control: max-age=1800`), donc interroger
+plus souvent ne renverrait pas de données plus fraîches. Le dépôt étant **public**, les minutes GitHub
+Actions sont gratuites — l'intérêt du rebuild conditionnel est surtout d'**éviter les déploiements à vide**.
 
 ## Corrections locales
 
