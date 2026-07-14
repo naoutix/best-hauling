@@ -848,6 +848,21 @@ function bestLegTo(fromIdx, toIdx) {
   if (!deals.length) return null;
   return legFromRoute(deals.reduce((a, b) => (b.margin > a.margin ? b : a)));
 }
+// Jambe « à vide » (aucune commodité) entre deux terminaux — pour ajouter un arrêt même sans fret rentable.
+function emptyLeg(fromIdx, toIdx) {
+  if (fromIdx == null || toIdx == null) return null;
+  const ft = MARKET.terminals[fromIdx], tt = MARKET.terminals[toIdx];
+  return { from: ft.name, fromSystem: ft.system, to: tt.name, toSystem: tt.system, commodity: "", buyPrice: 0, sellPrice: 0, margin: 0 };
+}
+// Résout un terminal depuis le texte : libellé exact « Nom — Système », sinon par nom seul.
+function resolveStationLabel(input) {
+  const v = (input || "").trim();
+  if (!v) return null;
+  if (stationMap.has(v)) return stationMap.get(v);
+  const lc = v.toLowerCase();
+  for (const [label, idx] of stationMap) if (label.split(" — ")[0].toLowerCase() === lc) return idx;
+  return null;
+}
 // Suggestions d'arrêts : meilleures destinations rentables depuis la fin du parcours (top 4).
 function journeyStopSuggestions() {
   const fromIdx = journeyEndIndex();
@@ -862,9 +877,11 @@ function journeyStopSuggestions() {
 }
 // Ajoute un arrêt (terminal) : nouvelle jambe optimale depuis la fin du parcours -> étend.
 function addStopByTerminal(label) {
-  const toIdx = stationMap.get((label || "").trim());
-  const leg = bestLegTo(journeyEndIndex(), toIdx);
-  if (leg) pickJourney([leg]);
+  const fromIdx = journeyEndIndex();
+  const toIdx = resolveStationLabel(label);
+  if (fromIdx == null || toIdx == null) return; // terminal inconnu / parcours vide
+  // Jambe optimale s'il y a du fret rentable, sinon jambe « à vide » (on l'ajoute quand même).
+  pickJourney([bestLegTo(fromIdx, toIdx) || emptyLeg(fromIdx, toIdx)]);
 }
 
 // Retire un arrêt (index de station) et RECONNECTE les voisins (recalcule la jambe A->C).
@@ -938,9 +955,11 @@ function renderJourney() {
   }).join("");
 
   // Ajout d'arrêt : champ libre (tous terminaux) + suggestions rentables depuis la fin.
-  const suggestions = MARKET
-    ? journeyStopSuggestions().map((s) => `<button class="jstop-suggest" data-label="${esc(s.label)}" title="Ajouter ${esc(s.terminal)} — via ${esc(s.commodity)}, +${fmt(s.margin)} marge/SCU">+ ${esc(s.terminal)} <span class="muted">+${fmt(s.margin)}</span></button>`).join("")
-    : "";
+  const sugList = MARKET ? journeyStopSuggestions() : [];
+  const suggestBlock = !MARKET ? ""
+    : sugList.length
+      ? `<div class="journey-suggest"><span class="suggest-lbl">Suggestions :</span>${sugList.map((s) => `<button class="jstop-suggest" data-label="${esc(s.label)}" title="Ajouter ${esc(s.terminal)} — via ${esc(s.commodity)}, +${fmt(s.margin)} marge/SCU">+ ${esc(s.terminal)} <span class="muted">+${fmt(s.margin)}</span></button>`).join("")}</div>`
+      : '<div class="journey-suggest-empty muted">Aucune destination rentable depuis ici — ajoute quand même un arrêt au champ ci-dessus (il aura un manifeste vide, à remplir à la main).</div>';
   card.innerHTML =
     `<div class="journey-head"><span class="journey-title">◈ Voyage en cours</span><button id="journeyClear" class="journey-clear" title="Effacer le parcours" aria-label="Effacer">✕</button></div>
      <div class="journey-path">${path}</div>
@@ -949,7 +968,7 @@ function renderJourney() {
        <input id="journeyAddStop" list="stationList" placeholder="+ Ajouter un arrêt (terminal)…" autocomplete="off" aria-label="Ajouter un arrêt" />
        <button id="journeyAddBtn" type="button" class="chain-pick">+ Arrêt</button>
      </div>
-     ${suggestions ? `<div class="journey-suggest">${suggestions}</div>` : ""}
+     ${suggestBlock}
      <div class="journey-meta">${n} saut${n > 1 ? "s" : ""} · marge cumulée <b class="profit">${fmt(journeyMargin(JOURNEY))}</b> aUEC/SCU</div>`;
 }
 
