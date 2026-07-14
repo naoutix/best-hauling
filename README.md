@@ -1,95 +1,149 @@
 # Best Hauling — Routes commerciales Star Citizen
 
-Site statique qui affiche les meilleures routes d'arbitrage de commodités dans Star Citizen.
-Les données viennent de l'[API publique UEX Corp](https://uexcorp.space/api/documentation/)
-(lecture sans token) et sont rafraîchies automatiquement par GitHub Actions.
+Site **statique** qui calcule les meilleures routes d'arbitrage de commodités dans Star Citizen,
+à partir de l'[API publique UEX Corp](https://uexcorp.space/api/documentation/) (lecture, sans token).
+Les données sont rafraîchies **toutes les heures** par GitHub Actions, et le site est **installable**
+(PWA) et consultable **hors-ligne**.
 
-## Comment ça marche
+> Pas de serveur, pas de clé API, pas de coût. Tout tourne côté navigateur sur des JSON pré-calculés.
 
-```
-GitHub Actions (cron horaire / push)
-   ├─ node --test                    (tests des fonctions de calcul)
-   └─ node scripts/build-data.mjs
-        ├─ GET api.uexcorp.uk/2.0/terminals?type=commodity
-        ├─ GET api.uexcorp.uk/2.0/commodities_prices_all
-        ├─ calcule les meilleures routes (achat le moins cher → vente la plus chère)
-        └─ écrit data/routes.json + data/meta.json
-                                   │
-        assemble _site/ (html+js+css+data) ─→ publie l'artefact GitHub Pages
-                                   │
-GitHub Pages (page statique)  ────┘
-   └─ index.html + app.js chargent data/routes.json
-        └─ calcul du profit/voyage selon ta soute (SCU) et ton budget (aUEC)
-```
+## Sommaire
 
-Pas de serveur, pas de clé API, pas de coût.
+- [Fonctionnalités](#fonctionnalités)
+- [Démarrage rapide (local)](#démarrage-rapide-local)
+- [Déploiement (une seule fois)](#déploiement-une-seule-fois)
+- [Architecture](#architecture)
+- [Corrections locales](#corrections-locales)
+- [Tests](#tests)
+- [Personnalisation](#personnalisation)
+- [Sources de données](#sources-de-données)
 
 ## Fonctionnalités
 
-- Liste triable : profit/voyage, marge/SCU, ROI, unités, commodité.
-- Interface thème **Star Citizen** (sombre, anguleux, accents cyan), icônes de catégorie
-  colorées par commodité (métal, minerai, gaz, médical, drogue…) et **photo du vaisseau** sélectionné.
-- Champ **vaisseau** avec autocomplétion par sous-chaîne (taper « railen » trouve « Gatac Railen »)
-  qui remplit automatiquement la soute (SCU) — 128 modèles UEX.
-- Entrées **capacité de soute (SCU)** et **budget (aUEC)** → unités à acheter, coût total, profit réel par voyage.
-- Chaque contrainte est **désactivable** : couper le budget → meilleure route pour ta soute peu
-  importe le prix ; couper la soute → meilleure route pour ton budget peu importe le volume.
-- **Profit/heure** : estimation du temps de trajet à partir de la distance UEX (orbite→orbite)
-  + manutention + saut inter-système, pour classer les routes par rentabilité horaire.
-- Vue **Boucles aller-retour** : meilleures boucles A⇄B (une commodité à l'aller, une autre au
-  retour) pour ne jamais repartir à vide.
-- Filtre **commodités légales uniquement** (exclut la contrebande / le risque de scan).
-- **Fiabilité des données** : âge de chaque relevé UEX (pastille colorée) + filtre par fraîcheur
-  (< 24 h / < 3 j / < 7 j), point de statut d'inventaire coloré (stock à l'achat / demande à la
-  vente), et tag **« à vérifier »** sur les relevés > 10 jours ou aux prix aberrants vs moyenne UEX.
-- Filtres : commodité, système d'achat, « même système uniquement » (routes sans saut),
-  « exclure les avant-postes » (élévateurs de fret peu fiables — garde stations et villes),
-  et « limiter au stock & à la demande UEX » (plafonne les unités par le stock dispo à l'achat
-  ET la demande à la vente ; relevés souvent périmés, donc désactivé par défaut).
-- Repère les sauts inter-systèmes (Stanton ↔ Pyro).
+Cinq vues, un même moteur de calcul (soute SCU + budget aUEC → unités, coût, profit/voyage, profit/heure) :
+
+| Vue | Ce qu'elle fait |
+|-----|-----------------|
+| **Trajets simples** | Meilleures routes A→B, triables, avec un **score de fiabilité** composite (rentabilité × fraîcheur × disponibilité) par défaut |
+| **Boucles ⇄** | Meilleures boucles A⇄B (une commodité à l'aller, une autre au retour) pour ne jamais repartir à vide |
+| **En route 🧭** | Depuis un terminal de départ : le fret rentable + un **manifeste optimal** qui remplit la soute avec **plusieurs commodités** vers une même destination (avec suggestions pour combler l'espace libre) |
+| **Chaîne ⛓️** | Trajets **multi-sauts A→B→C…** (2 à 4 sauts) : achète, vends, rachète sur place, revends plus loin — recherche par faisceau du circuit le plus rentable |
+| **Corrections ✎** | Voir/gérer ses corrections locales et en créer en **cherchant une station** (voir plus bas) |
+
+Autres éléments :
+
+- **Vaisseau** : autocomplétion par sous-chaîne (128 modèles UEX), remplit la soute automatiquement, affiche la photo.
+- **Contraintes désactivables** : couper le budget → meilleure route pour la soute ; couper la soute → meilleure route pour le budget.
+- **Décomposition SCU en caisses** (32/24/16/8/4/2/1) sur le manifeste et en infobulle.
+- **Schéma de trajet** dépliable (🗺) : système › planète › terminal, type de saut, temps estimé.
+- **Fiabilité des données** : pastille d'âge par relevé, filtre de fraîcheur (< 24 h / 3 j / 7 j), point de statut d'inventaire, tag « à vérifier », bandeau global « données d'il y a X h ».
+- **Filtres** : commodité, système, même système uniquement, exclure les avant-postes, commodités légales uniquement, limiter au stock & à la demande UEX.
+- **Permaliens & persistance** : l'état (filtres, tri, vue, vaisseau) est mémorisé (localStorage) et encodé dans l'URL → bouton **Partager**.
+- **Copier le manifeste**, **raccourcis clavier** (`/` recherche, `1`–`5` vues).
+- Systèmes couverts : **Stanton**, **Pyro**, **Nyx**.
+
+## Démarrage rapide (local)
+
+Le site a besoin d'un serveur HTTP (l'app est un module ES et charge des JSON via `fetch` — pas de `file://`).
+
+```bash
+npm run serve        # sert le dossier sur http://localhost:4173 (serveur maison, sans dépendance)
+# puis ouvre http://localhost:4173/index.html
+```
+
+Les `data/*.json` versionnés servent d'**amorce** pour le dev local. Pour les régénérer depuis UEX :
+
+```bash
+npm run build        # = node scripts/build-data.mjs  (Node >= 20, fetch natif)
+```
+
+Lancer les tests :
+
+```bash
+npm test             # tests unitaires (node --test) — fonctions pures, aucune dépendance
+npm run e2e          # tests E2E (Playwright) — nécessite: npm install && npx playwright install chromium
+```
 
 ## Déploiement (une seule fois)
 
-Le workflow **construit les données puis publie le site entier** (données fraîches
-comprises) comme artefact GitHub Pages. Les JSON ne sont plus commités dans le dépôt,
-donc l'historique git ne gonfle pas.
+Le workflow [`update-data.yml`](.github/workflows/update-data.yml) **construit les données puis publie le site entier**
+(données fraîches comprises) comme **artefact GitHub Pages**. Les JSON ne sont donc pas commités à chaque run
+(l'historique git ne gonfle pas).
 
-1. Crée un dépôt GitHub et pousse ces fichiers sur la branche `main`.
-2. **Settings → Pages** → Source : **`GitHub Actions`** (⚠️ *pas* `Deploy from a branch` —
-   le workflow échouera tant que ce réglage n'est pas sur `GitHub Actions`).
-3. Onglet **Actions** → lance *Mise à jour des routes UEX* manuellement une première fois.
-4. Le site est en ligne sur `https://<ton-pseudo>.github.io/<nom-du-repo>/`.
+1. Pousse le dépôt sur GitHub (branche `main`).
+2. **Settings → Pages → Source : `GitHub Actions`** ⚠️ *(pas « Deploy from a branch » — le job `deploy` échoue sinon)*.
+3. Onglet **Actions** → lance *Mise à jour des routes UEX* une première fois.
+4. En ligne sur `https://<pseudo>.github.io/<repo>/`.
 
-Ensuite, le site se reconstruit et se redéploie toutes les heures (données rafraîchies),
-et à chaque push sur `main`. En cas d'échec, une issue est ouverte automatiquement
-(et refermée au retour à la normale).
+Ensuite : reconstruction/redéploiement **toutes les heures** et à chaque push sur `main`.
+En cas d'échec, une **issue est ouverte automatiquement** (et refermée au retour à la normale).
 
-## Lancer en local
+## Architecture
 
-```bash
-npm test                         # tests des fonctions de calcul (node --test)
-npm run build                    # régénère data/*.json (ou: node scripts/build-data.mjs)
-npx serve .                      # ou: python -m http.server
+```
+┌─ Build (GitHub Actions, horaire) ─────────────────────────────┐
+│  scripts/build-data.mjs                                        │
+│    ├─ GET api.uexcorp.uk/2.0 : terminals, prix, vaisseaux…     │
+│    ├─ calcule routes / boucles / graphe de marché             │
+│    └─ écrit data/*.json                                        │
+│         routes.json · loops.json · ships.json                 │
+│         market.json (graphe complet) · meta.json              │
+└───────────────────────────┬───────────────────────────────────┘
+                            │ artefact Pages
+┌─ Front (statique, navigateur) ────────────────────────────────┐
+│  index.html                                                   │
+│    ├─ logic.mjs   ← fonctions PURES (calcul), testées         │
+│    └─ app.js      ← module ES : rendu DOM, état, interactions │
+│  sw.js (service worker) + manifest.webmanifest → PWA offline  │
+└───────────────────────────────────────────────────────────────┘
 ```
 
-Ouvre l'URL indiquée (ne pas ouvrir `index.html` en `file://` — `fetch` a besoin d'un serveur).
-Les `data/*.json` versionnés servent d'amorce pour le dev local ; en production, le workflow
-en génère toujours une version fraîche avant de publier.
+**Séparation clé** : toute la logique de calcul sans DOM vit dans [`logic.mjs`](logic.mjs)
+(temps de trajet, score, `computeUnits`, corrections, remplissage glouton, chaîne, décodage d'état…),
+importée à la fois par `app.js` (navigateur) et par les tests. `app.js` ne fait que le rendu et le câblage.
+
+Fichiers de données (dans [`data/`](data/)) :
+
+| Fichier | Contenu | Usage |
+|---------|---------|-------|
+| `routes.json` | Top routes A→B (achat le moins cher → meilleures ventes) | Trajets simples |
+| `loops.json` | Meilleures boucles A⇄B | Boucles |
+| `market.json` | Graphe d'échange compact (tous les points d'achat/vente) | En route, Chaîne, Corrections (chargé à la demande) |
+| `ships.json` | Vaisseaux avec soute (nom, SCU, photo) | Champ vaisseau |
+| `meta.json` | Métadonnées (date, compteurs, systèmes) | Bandeau de fraîcheur |
+
+## Corrections locales
+
+Quand un relevé UEX est faux, tu peux corriger un **prix** ou un **stock/demande** en cliquant le chiffre
+(dans les tableaux ou via la vue **Corrections** → recherche de station). C'est **local** (localStorage,
+jamais partagé ni mis dans l'URL) et **intelligent** :
+
+- Une correction est **ancrée** à la date UEX du point au moment où tu la fais.
+- Elle est **périmée automatiquement** dès qu'UEX republie ce point avec un relevé plus récent (retour à la valeur UEX, petit flash de notification).
+- Sémantique respectée : un **stock d'achat à 0 = terminal vide** (plafonne à 0) ; une **demande brute à 0 = quantité inconnue** (ignorée) ; mais une **demande que _tu_ corriges à 0 = « pas de demande »** (plafonne à 0).
+
+## Tests
+
+- **Unitaires** ([`logic.test.mjs`](logic.test.mjs), [`scripts/build-data.test.mjs`](scripts/build-data.test.mjs)) :
+  couvrent les fonctions pures — calcul de routes/boucles/marché, score, contraintes de volume, moteur de
+  corrections, persistance. Runner intégré `node --test`, **zéro dépendance**.
+- **E2E de fumée** ([`e2e/smoke.pw.mjs`](e2e/smoke.pw.mjs), Playwright) : non-régression des bugs vécus
+  (carte vaisseau au reload, demande corrigée à 0, contrôles qui ne fuient plus, persistance des corrections,
+  navigation, schéma). Playwright est une dépendance **de dev uniquement** — le site livré reste sans dépendance.
+- **CI** ([`ci.yml`](.github/workflows/ci.yml)) : unitaires + E2E sur chaque push/PR.
 
 ## Personnalisation
 
-- Fréquence de mise à jour : le `cron` dans [`.github/workflows/update-data.yml`](.github/workflows/update-data.yml).
-- Nombre de routes / ventes candidates : `MAX_ROUTES` et `TOP_SELLS` dans
-  [`scripts/build-data.mjs`](scripts/build-data.mjs).
+- Fréquence de mise à jour : le `cron` dans [`update-data.yml`](.github/workflows/update-data.yml).
+- Volumes gardés dans les JSON / concurrence des appels : `MAX_ROUTES`, `MAX_LOOPS`, `TOP_SELLS`,
+  `FETCH_CONCURRENCY` en tête de [`scripts/build-data.mjs`](scripts/build-data.mjs).
 
-## Sources de données alternatives / complémentaires
+## Sources de données
 
-- **UEX Corp** (utilisé ici) — la plus complète, API publique, données communautaires.
-- **SC Trade Tools** (`sc-trade.tools`) — routes optimisées, mais pas d'API publique documentée.
-- **Regolith Co** — plutôt orienté minage/raffinage.
-- **API SC officielle (RSI)** — pas d'API de prix marché ; le marché in-game n'est pas exposé.
-
-UEX reste la meilleure source unique pour cet usage.
+- **UEX Corp** (utilisée) — la plus complète, API publique, données communautaires.
+- **SC Trade Tools** (`sc-trade.tools`) — routes optimisées, pas d'API publique documentée.
+- **Regolith Co** — plutôt minage/raffinage.
+- **API RSI officielle** — pas de marché exposé.
 
 ---
 
