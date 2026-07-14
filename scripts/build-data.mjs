@@ -163,7 +163,7 @@ function buildMarket(byCommodity, term) {
   for (const [, c] of byCommodity) {
     if (!c.buys.length || !c.sells.length) continue; // uniquement les commodités échangeables
     commodities.push({
-      name: c.name, kind: c.kind, illegal: c.illegal,
+      name: c.name, code: c.code || "", kind: c.kind, illegal: c.illegal,
       buys: c.buys.map((b) => [idxOf(b.id), b.price, b.stock, b.updated, b.status]),
       sells: c.sells.map((s) => [idxOf(s.id), s.price, s.demand, s.updated, s.status]),
     });
@@ -182,6 +182,7 @@ async function main() {
   const commodities = await getJSON("commodities");
   const kindById = new Map(commodities.map((c) => [c.id, normalizeKind(c.kind)]));
   const illegalById = new Map(commodities.map((c) => [c.id, !!c.is_illegal]));
+  const codeById = new Map(commodities.map((c) => [c.id, c.code || ""])); // code officiel UEX (AGRI, LARA…)
   // Prix de référence (moyenne UEX par commodité) — sert à détecter les prix aberrants/périmés.
   const refBuyById = new Map(commodities.map((c) => [c.id, c.price_buy || 0]));
   const refSellById = new Map(commodities.map((c) => [c.id, c.price_sell || 0]));
@@ -212,6 +213,7 @@ async function main() {
     if (!c) {
       c = {
         name: p.commodity_name,
+        code: codeById.get(p.id_commodity) || "",
         kind: kindById.get(p.id_commodity) || "other",
         illegal: illegalById.get(p.id_commodity) || false,
         refBuy: refBuyById.get(p.id_commodity) || 0,

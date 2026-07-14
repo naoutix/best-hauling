@@ -8,6 +8,7 @@ import {
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
   profitPerHour, rawScoreOf, routePasses, loopPasses,
   routeMetrics, loopMetrics, dealFrom, enRouteDeals, bestManifest, buildChainAdjacency,
+  commoditySummaries, commodityPoints,
 } from "./logic.mjs";
 
 // ---------- Temps de trajet ----------
@@ -644,4 +645,51 @@ test("buildChainAdjacency : legalOnly écarte les commodités illégales", () =>
   };
   assert.equal(buildChainAdjacency(mkt, { legalOnly: true, noOutpost: false }, idResolve).size, 0);
   assert.equal(buildChainAdjacency(mkt, { legalOnly: false, noOutpost: false }, idResolve).get(0).length, 1);
+});
+
+// ---------- Commodités : résumé global + points d'achat/vente ----------
+const CMKT = {
+  terminals: [
+    { name: "A", system: "Stanton", planet: "Hurston", outpost: false },
+    { name: "B", system: "Stanton", planet: "Crusader", outpost: false },
+    { name: "C", system: "Pyro", planet: "Ruin", outpost: true },
+  ],
+  commodities: [
+    { name: "Gold", code: "GOLD", kind: "metal", illegal: false,
+      buys: [[0, 100, 500, NOW, 5], [1, 90, 200, NOW, 4]],
+      sells: [[1, 150, 300, NOW, 3], [2, 300, 50, NOW, 2]] },
+    { name: "Drug", code: "DRUG", kind: "drug", illegal: true,
+      buys: [[0, 50, 100, NOW, 5]], sells: [] },
+  ],
+};
+
+test("commoditySummaries : meilleur achat/vente + marge par commodité", () => {
+  const gold = commoditySummaries(CMKT).find((x) => x.name === "Gold");
+  assert.equal(gold.code, "GOLD");
+  assert.equal(gold.bestBuy, 90);    // achat le moins cher
+  assert.equal(gold.bestSell, 300);  // vente la plus chère
+  assert.equal(gold.margin, 210);
+  assert.equal(gold.nBuy, 2);
+  assert.equal(gold.nSell, 2);
+});
+
+test("commoditySummaries : marge/vente null si aucun point de vente", () => {
+  const drug = commoditySummaries(CMKT).find((x) => x.name === "Drug");
+  assert.equal(drug.bestSell, null);
+  assert.equal(drug.margin, null);
+  assert.equal(drug.nSell, 0);
+});
+
+test("commodityPoints : achats du moins cher, ventes du plus cher, avec terminal", () => {
+  const p = commodityPoints(CMKT, "Gold");
+  assert.deepEqual(p.buys.map((b) => b.price), [90, 100]);
+  assert.deepEqual(p.sells.map((s) => s.price), [300, 150]);
+  assert.equal(p.buys[0].terminal, "B");
+  assert.equal(p.buys[0].stock, 200);
+  assert.equal(p.sells[0].terminal, "C");
+  assert.equal(p.sells[0].demand, 50);
+});
+
+test("commodityPoints : null si commodité inconnue", () => {
+  assert.equal(commodityPoints(CMKT, "Inconnu"), null);
 });

@@ -36,6 +36,7 @@
         <button id="viewEnroute" class="vbtn" data-view="enroute" title="En route (raccourci : 3)"><span class="rn">03</span><span class="rl">En&nbsp;route</span></button>
         <button id="viewChain" class="vbtn" data-view="chain" title="Chaîne multi-sauts (raccourci : 4)"><span class="rn">04</span><span class="rl">Chaîne</span></button>
         <button id="viewCorrections" class="vbtn" data-view="corrections" title="Corrections locales (raccourci : 5)"><span class="rn">05</span><span class="rl">Corrections</span></button>
+        <button id="viewCommodities" class="vbtn" data-view="commodities" title="Commodités : tous les points d'achat/vente (raccourci : 6)"><span class="rn">06</span><span class="rl">Commodités</span></button>
       </div>
 
       <button id="share" class="share-btn" title="Copier un lien vers cette vue filtrée">⟐ <span class="rl">Partager</span></button>
@@ -148,6 +149,39 @@
         <div id="corrections" class="corrections-wrap" hidden>
           <div id="correctionsStation"></div>
           <div id="correctionsList"></div>
+        </div>
+
+        <section id="commoditiesControls" class="enroute-controls" hidden>
+          <div class="field">
+            <label>Tri du tableau</label>
+            <div class="sort-modes" id="commSortModes">
+              <button type="button" data-sort="margin" class="active">Marge</button>
+              <button type="button" data-sort="code">Code A→Z</button>
+              <button type="button" data-sort="kind">Catégorie</button>
+            </div>
+          </div>
+          <p class="enroute-hint">Toutes les commodités et <b>tous leurs points d'achat / vente</b>. Clique une ligne — ou cherche via le champ <b>Commodité</b> — pour voir où l'acheter au meilleur prix et surtout <b>où l'écouler</b> quand une station n'a plus de demande.</p>
+        </section>
+
+        <div id="commodities" class="commodities-wrap" hidden>
+          <div class="comm-table-shell">
+            <table id="commTable">
+              <thead>
+                <tr>
+                  <th data-comm-sort="code">Code</th>
+                  <th data-comm-sort="name">Commodité</th>
+                  <th data-comm-sort="kind">Cat.</th>
+                  <th class="num" data-comm-sort="nBuy">Achats</th>
+                  <th class="num" data-comm-sort="nSell">Ventes</th>
+                  <th class="num" data-comm-sort="bestBuy">Meil. achat</th>
+                  <th class="num" data-comm-sort="bestSell">Meil. vente</th>
+                  <th class="num" data-comm-sort="margin">Marge max</th>
+                </tr>
+              </thead>
+              <tbody id="commRows"></tbody>
+            </table>
+          </div>
+          <div id="commDetail" class="comm-detail"></div>
         </div>
 
         <div class="table-wrap">

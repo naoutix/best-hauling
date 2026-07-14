@@ -7,6 +7,7 @@ import {
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
   routePasses, loopPasses,
   routeMetrics, loopMetrics, enRouteDeals, bestManifest, buildChainAdjacency,
+  commoditySummaries, commodityPoints,
 } from "./logic.mjs";
 
 // Libellé compact des caisses SCU standard, ex. « 8×32 · 1×16 · 1×4 · 1×2 · 1×1 ».
@@ -25,6 +26,8 @@ let loopSortKey = "score";
 let loopSortDir = -1;
 // Lignes actuellement affichées (dans l'ordre du DOM) pour déplier le schéma de trajet.
 let shownRoutes = [], shownEnroute = [], shownLoops = [];
+// Vue « Commodités » : mode de tri (margin|code|kind|custom), clé/sens custom, sélection.
+let commMode = "margin", commSortKey = "margin", commSortDir = -1, commSelected = null, shownCommodities = [];
 // Affiche la carte du vaisseau correspondant au champ (défini par loadShips ; utilisé à la restauration).
 let showShipCard = () => {};
 
@@ -469,7 +472,7 @@ function paintManifest() {
     <div class="manifest-lines">` +
     m.lines.map((l, i) =>
       `<div class="mline">${commodityIcon(l.kind)}` +
-      `<span class="mqtywrap"><input type="number" class="mqty-input" min="0" max="${l.cap}" value="${l.units}" data-i="${i}" data-margin="${l.margin}" data-buy="${l.buyPrice}" data-cap="${l.cap}" title="Réduis si le stock in-game est plus bas" aria-label="SCU ${esc(l.name)}"><span class="munit">SCU</span></span>` +
+      `<span class="mqtywrap"><input type="number" class="mqty-input" min="0" value="${l.units}" data-i="${i}" data-margin="${l.margin}" data-buy="${l.buyPrice}" data-cap="${l.cap}" title="Ajuste librement — tu peux dépasser le stock UEX (vol de fret, relevé périmé…)" aria-label="SCU ${esc(l.name)}"><span class="munit">SCU</span></span>` +
       `<span class="mname">${esc(l.name)}${illegalTag(l.illegal)}</span>` +
       `<span class="mstock">stock ${editv(l.name, m.origin.name, "buy", "vol", l.stock, isOv(l.name, m.origin.name, "buy", "vol"), l.buyUpdated)} · dem. ${editv(l.name, m.dest.name, "sell", "vol", l.demand, isOv(l.name, m.dest.name, "sell", "vol"), l.sellUpdated)}</span>` +
       `<span class="mprice">${editv(l.name, m.origin.name, "buy", "price", l.buyPrice, isOv(l.name, m.origin.name, "buy", "price"), l.buyUpdated)} → ${editv(l.name, m.dest.name, "sell", "price", l.sellPrice, isOv(l.name, m.dest.name, "sell", "price"), l.sellUpdated)}</span>` +
@@ -489,7 +492,9 @@ function updateManifestTotals() {
     const cap = Number(inp.dataset.cap);
     let u = Math.floor(Number(inp.value));
     if (!Number.isFinite(u) || u < 0) u = 0;
-    if (u > cap) { u = cap; inp.value = String(cap); }
+    // Le dépassement du stock UEX est autorisé (vol de fret, relevé périmé…) : on ne plafonne
+    // plus à `cap`, on le signale visuellement pour que ce soit un choix conscient.
+    inp.classList.toggle("over-stock", u > cap);
     if (currentManifest.lines[i]) currentManifest.lines[i].units = u;
     profit += u * Number(inp.dataset.margin);
     invest += u * Number(inp.dataset.buy);
@@ -637,6 +642,7 @@ function refresh() {
   else if (view === "enroute") renderEnRoute();
   else if (view === "chain") renderChain();
   else if (view === "corrections") renderCorrections();
+  else if (view === "commodities") renderCommodities();
   else render();
   saveState();
 }
@@ -647,6 +653,7 @@ function switchView(v) {
   $("viewEnroute").classList.toggle("active", v === "enroute");
   $("viewChain").classList.toggle("active", v === "chain");
   $("viewCorrections").classList.toggle("active", v === "corrections");
+  $("viewCommodities").classList.toggle("active", v === "commodities");
   $("routes").hidden = v !== "routes";
   $("loops").hidden = v !== "loops";
   $("enroute").hidden = v !== "enroute";
@@ -655,8 +662,10 @@ function switchView(v) {
   $("chainOut").hidden = v !== "chain";
   $("correctionsControls").hidden = v !== "corrections";
   $("corrections").hidden = v !== "corrections";
+  $("commoditiesControls").hidden = v !== "commodities";
+  $("commodities").hidden = v !== "commodities";
   if (v !== "enroute") $("manifest").hidden = true;
-  if (v === "chain" || v === "corrections") $("empty").hidden = true;
+  if (v === "chain" || v === "corrections" || v === "commodities") $("empty").hidden = true;
   refresh();
 }
 
@@ -857,7 +866,7 @@ function applyState(s) {
   STATE_CHECKS.forEach((id) => { if (s[id] != null) $(id).checked = s[id] === "1"; });
   if (safeKey(s.sk)) { sortKey = s.sk; sortDir = Number(s.sd) === 1 ? 1 : -1; }
   if (safeKey(s.lk)) { loopSortKey = s.lk; loopSortDir = Number(s.ld) === 1 ? 1 : -1; }
-  if (["routes", "loops", "enroute", "chain", "corrections"].includes(s.v)) view = s.v;
+  if (["routes", "loops", "enroute", "chain", "corrections", "commodities"].includes(s.v)) view = s.v;
   applySortIndicators();
   syncToggles();
   restoring = false;
@@ -969,6 +978,85 @@ function renderCorrections() {
   notifySuperseded();
 }
 
+// ---------- Vue « Commodités » : grand tableau + tous les points d'achat/vente ----------
+// Tri du tableau : 3 modes prédéfinis (boutons) + tri par colonne (clic en-tête).
+function sortCommodities(rows) {
+  if (commMode === "margin") return rows.sort(bySort("margin", -1));                 // plus lucratif d'abord
+  if (commMode === "code") return rows.sort(bySort("code", 1));                       // code A→Z
+  if (commMode === "kind")                                                            // catégorie puis marge
+    return rows.sort((a, b) => (a.kind || "").localeCompare(b.kind || "", "fr") || (b.margin ?? -Infinity) - (a.margin ?? -Infinity));
+  return rows.sort(bySort(commSortKey, commSortDir));                                 // colonne (mode custom)
+}
+
+// Applique un tri (bouton mode ou clic en-tête) et re-rend.
+function setCommSort(key) {
+  if (key === "margin" || key === "code" || key === "kind") {
+    commMode = key;
+  } else {
+    if (commMode === "custom" && commSortKey === key) commSortDir *= -1;
+    else { commSortKey = key; commSortDir = key === "bestBuy" || key === "name" || key === "code" ? 1 : -1; }
+    commMode = "custom";
+  }
+  renderCommodities();
+  saveState();
+}
+
+function commodityRowHTML(c) {
+  return `<tr class="comm-row${c.name === commSelected ? " selected" : ""}" data-name="${esc(c.name)}">
+      <td class="comm-code">${esc(c.code || "—")}</td>
+      <td class="loc"><div class="commodity-cell">${commodityIcon(c.kind)}<span class="cname">${esc(c.name)}${illegalTag(c.illegal)}</span></div></td>
+      <td class="comm-kind">${esc(c.kind)}</td>
+      <td class="num">${c.nBuy}</td>
+      <td class="num">${c.nSell}</td>
+      <td class="num">${fmt(c.bestBuy)}</td>
+      <td class="num">${fmt(c.bestSell)}</td>
+      <td class="num profit">${fmt(c.margin)}</td>
+    </tr>`;
+}
+
+// Détail d'une commodité : tous ses points d'achat (moins cher d'abord) et de vente (mieux payé d'abord).
+function paintCommodityDetail() {
+  const box = $("commDetail");
+  if (!commSelected) { box.innerHTML = '<p class="manifest-hint">Sélectionne une commodité (ligne du tableau ou champ « Commodité ») pour voir tous ses points d\'achat et de vente.</p>'; return; }
+  const p = commodityPoints(MARKET, commSelected);
+  if (!p) { box.innerHTML = ""; return; }
+  const buyRow = (b) => `<tr><td class="loc"><div>${esc(b.terminal)}${sysBadge(b.system)}${outpostTag(b.outpost)}</div><div class="loc-sub">${esc(b.planet)}</div></td><td class="num">${fmt(b.price)}</td><td class="num">${statusDot(b.status, "buy")} ${fmt(b.stock)}</td><td>${freshChip(b.updated)}</td></tr>`;
+  const sellRow = (s) => `<tr><td class="loc"><div>${esc(s.terminal)}${sysBadge(s.system)}${outpostTag(s.outpost)}</div><div class="loc-sub">${esc(s.planet)}</div></td><td class="num">${fmt(s.price)}</td><td class="num">${statusDot(s.status, "sell")} ${fmt(s.demand)}</td><td>${freshChip(s.updated)}</td></tr>`;
+  const table = (rows, head, mapper) => rows.length
+    ? `<table class="comm-points"><thead><tr><th>Terminal</th><th class="num">Prix</th><th class="num">${head}</th><th>Relevé</th></tr></thead><tbody>${rows.map(mapper).join("")}</tbody></table>`
+    : '<p class="muted">Aucun point.</p>';
+  box.innerHTML =
+    `<div class="comm-detail-head">${commodityIcon(p.kind)}<span class="comm-detail-title">${p.code ? `<b class="comm-code">${esc(p.code)}</b> · ` : ""}${esc(p.name)}${illegalTag(p.illegal)}</span></div>
+     <div class="comm-cols">
+       <div class="comm-col"><h4>◈ Où acheter <span class="muted">(${p.buys.length} · moins cher d'abord)</span></h4>${table(p.buys, "Stock", buyRow)}</div>
+       <div class="comm-col"><h4>◈ Où vendre <span class="muted">(${p.sells.length} · mieux payé d'abord)</span></h4>${table(p.sells, "Demande", sellRow)}</div>
+     </div>`;
+}
+
+function renderCommodities() {
+  if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderCommodities(); }); return; }
+  if (!enrouteReady) setupEnRoute();
+  const q = $("search").value.trim().toLowerCase();
+  let rows = commoditySummaries(MARKET).filter(
+    (c) => !q || c.name.toLowerCase().includes(q) || (c.code && c.code.toLowerCase().includes(q))
+  );
+  sortCommodities(rows);
+  shownCommodities = rows;
+  // Sélection : garde la commodité choisie si toujours visible, sinon prend la 1re.
+  if (commSelected && !rows.some((r) => r.name === commSelected)) commSelected = null;
+  if (!commSelected && rows.length) commSelected = rows[0].name;
+  $("commRows").innerHTML = rows.map(commodityRowHTML).join("");
+  // Indicateurs de tri : boutons de mode + colonne active.
+  document.querySelectorAll("#commSortModes button").forEach((b) => b.classList.toggle("active", commMode !== "custom" && b.dataset.sort === commMode));
+  document.querySelectorAll("#commTable th[data-comm-sort]").forEach((th) => {
+    const active = commMode === "custom" ? th.dataset.commSort === commSortKey : th.dataset.commSort === commMode;
+    th.classList.toggle("sorted-asc", active && (commMode === "custom" ? commSortDir === 1 : commMode === "code"));
+    th.classList.toggle("sorted-desc", active && (commMode === "custom" ? commSortDir === -1 : commMode !== "code"));
+  });
+  paintCommodityDetail();
+  notifySuperseded();
+}
+
 // Grise le champ soute/budget quand sa contrainte est désactivée.
 function syncToggles() {
   const cargoOff = !$("useCargo").checked;
@@ -995,7 +1083,19 @@ async function init() {
   $("viewEnroute").addEventListener("click", () => switchView("enroute"));
   $("viewChain").addEventListener("click", () => switchView("chain"));
   $("viewCorrections").addEventListener("click", () => switchView("corrections"));
+  $("viewCommodities").addEventListener("click", () => switchView("commodities"));
   $("share").addEventListener("click", copyShareLink);
+  // Contrôles « Commodités » : modes de tri, tri par colonne, sélection d'une ligne.
+  $("commSortModes").addEventListener("click", (e) => { const b = e.target.closest("button[data-sort]"); if (b) setCommSort(b.dataset.sort); });
+  document.querySelectorAll("#commTable th[data-comm-sort]").forEach((th) => th.addEventListener("click", () => setCommSort(th.dataset.commSort)));
+  $("commRows").addEventListener("click", (e) => {
+    const tr = e.target.closest(".comm-row");
+    if (!tr) return;
+    commSelected = tr.dataset.name;
+    document.querySelectorAll("#commRows .comm-row").forEach((r) => r.classList.toggle("selected", r.dataset.name === commSelected));
+    paintCommodityDetail();
+    saveState();
+  });
   // Contrôles « En route ».
   $("origin").addEventListener("input", () => { resolveOrigin(); refresh(); });
   $("destSystem").addEventListener("input", refresh);
@@ -1055,6 +1155,7 @@ async function init() {
     else if (e.key === "3") switchView("enroute");
     else if (e.key === "4") switchView("chain");
     else if (e.key === "5") switchView("corrections");
+    else if (e.key === "6") switchView("commodities");
   });
   loadOverrides();
   updateOvBadge();
