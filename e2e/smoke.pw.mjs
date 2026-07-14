@@ -154,3 +154,13 @@ test("En route : destination forçable + ajout/retrait libre au manifeste", asyn
   await page.fill("#destTerminal", term);
   await expect(page.locator("#manifest")).toBeVisible();
 });
+
+test("Compagnon de voyage : sélectionner un trajet affiche le parcours", async ({ page }) => {
+  await expect(page.locator("#journeyCard")).toBeHidden();
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard")).toBeVisible();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2); // 2 stations pour 1 saut
+  await expect(page.locator("#journeyCard .jstep.here")).toHaveCount(1);
+  await page.locator("#journeyClear").click();
+  await expect(page.locator("#journeyCard")).toBeHidden();
+});

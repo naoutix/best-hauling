@@ -255,6 +255,26 @@ input::placeholder { color: #4d5670; }
 .ship-card-scu { font-size: 13px; color: var(--muted); font-family: var(--mono); }
 .ship-card-scu b { color: var(--good); }
 
+/* ---------- Compagnon de voyage : résumé du parcours + bouton ▶ ---------- */
+.journey-pick { background: transparent; border: none; color: var(--acc); cursor: pointer; font-size: 12px; padding: 0 3px; line-height: 1; opacity: 0.65; }
+.journey-pick:hover { opacity: 1; transform: scale(1.15); }
+.journey-card {
+  position: relative; margin: 12px 0 0; max-width: 640px; padding: 12px 16px;
+  border: 1px solid var(--acc-2); border-left: 2px solid var(--acc-2);
+  background: linear-gradient(90deg, rgba(169, 112, 255, 0.08), rgba(11, 15, 28, 0.75));
+}
+.journey-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
+.journey-title { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--acc-2); font-weight: 700; }
+.journey-clear { background: transparent; border: 1px solid var(--line); color: var(--muted); cursor: pointer; border-radius: 3px; padding: 0 6px; line-height: 1.5; }
+.journey-clear:hover { color: var(--bad); border-color: var(--bad); }
+.journey-path { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 4px; }
+.jstep { background: rgba(255, 255, 255, 0.03); border: 1px solid var(--line); cursor: pointer; padding: 3px 4px; border-radius: 3px; }
+.jstep:hover { border-color: var(--acc); }
+.jstep.here { border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc), 0 0 10px rgba(255, 176, 32, 0.25); }
+.jstep.here::after { content: " ⦿"; color: var(--acc); font-size: 10px; }
+.jsep { color: var(--acc-2); font-size: 13px; }
+.journey-meta { margin-top: 9px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
 /* ---------- Contrôles En route / Chaîne / Corrections ---------- */
 .enroute-controls {
   display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; margin: 18px 0 0; padding: 16px 20px;

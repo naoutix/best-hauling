@@ -8,6 +8,8 @@ import {
   routePasses, loopPasses,
   routeMetrics, loopMetrics, enRouteDeals, bestManifest, buildChainAdjacency,
   commoditySummaries, commodityPoints, compactValue,
+  legFromRoute, legsFromLoop, legsFromChain, startJourney, journeyStations, journeyEnd,
+  journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
 } from "./logic.mjs";
 
 // Libellé compact des caisses SCU standard, ex. « 8×32 · 1×16 · 1×4 · 1×2 · 1×1 ».
@@ -29,6 +31,8 @@ let shownRoutes = [], shownEnroute = [], shownLoops = [];
 // Vue « Commodités » : mode de tri (margin|code|kind|custom), clé/sens custom, sélection.
 let commMode = "margin", commSortKey = "margin", commSortDir = -1, commSelected = null, shownCommodities = [];
 let commMaxMargin = 0; // marge max de la liste courante (pour colorer la heatmap en relatif)
+// Compagnon de voyage : parcours sélectionné { legs[], current } ou null.
+let JOURNEY = null;
 // Affiche la carte du vaisseau correspondant au champ (défini par loadShips ; utilisé à la restauration).
 let showShipCard = () => {};
 
@@ -262,7 +266,7 @@ function routeRowHTML(r, i) {
   return `
       <tr data-row="${i}">
         <td class="loc">
-          <div class="commodity-cell"><button class="route-toggle" data-row="${i}" title="Voir le trajet" aria-label="Voir le trajet">🗺</button>${commodityIcon(r.kind)}<span class="cname">${esc(r.commodity)}</span></div>
+          <div class="commodity-cell"><button class="route-toggle" data-row="${i}" title="Voir le trajet" aria-label="Voir le trajet">🗺</button><button class="journey-pick" data-row="${i}" title="Faire ce trajet — compagnon de voyage" aria-label="Sélectionner ce trajet">▶</button>${commodityIcon(r.kind)}<span class="cname">${esc(r.commodity)}</span></div>
           <div class="loc-badges">${illegalTag(r.illegal)}${suspectTag(r)}${cross}</div>
         </td>
         <td class="loc">
@@ -706,6 +710,35 @@ function renderChain() {
   if (!chain || !chain.legs.length) return hint("Aucune chaîne rentable depuis ce terminal avec ces filtres.");
   box.innerHTML = chainCardHTML(chain);
   notifySuperseded();
+}
+
+// ---------- Compagnon de voyage : résumé du parcours (près du vaisseau) ----------
+// Sélectionne un trajet/une boucle/une chaîne -> met à jour le parcours (étend si ça s'enchaîne).
+function pickJourney(legs) {
+  if (!legs || !legs.length) return;
+  JOURNEY = addToJourney(JOURNEY, legs);
+  renderJourney();
+  saveState();
+}
+function clearJourney() {
+  JOURNEY = null;
+  renderJourney();
+  saveState();
+}
+function renderJourney() {
+  const card = $("journeyCard");
+  if (!card) return;
+  if (!JOURNEY || !JOURNEY.legs.length) { card.hidden = true; card.innerHTML = ""; return; }
+  const stations = journeyStations(JOURNEY);
+  const path = stations
+    .map((s, i) => `<button class="jstep${i === JOURNEY.current ? " here" : ""}" data-i="${i}" title="Je suis ici"><span class="sys ${esc(s.system.toLowerCase())}">${esc(s.name)}</span></button>`)
+    .join('<span class="jsep">→</span>');
+  const n = JOURNEY.legs.length;
+  card.hidden = false;
+  card.innerHTML =
+    `<div class="journey-head"><span class="journey-title">◈ Voyage en cours</span><button id="journeyClear" class="journey-clear" title="Effacer le parcours" aria-label="Effacer">✕</button></div>
+     <div class="journey-path">${path}</div>
+     <div class="journey-meta">${n} saut${n > 1 ? "s" : ""} · marge cumulée <b class="profit">${fmt(journeyMargin(JOURNEY))}</b> aUEC/SCU</div>`;
 }
 
 // Bascule entre les vues et rafraîchit la bonne.
@@ -1219,6 +1252,17 @@ async function init() {
     const html = tableId === "loops" ? loopSchemaHTML(item) : routeSchemaHTML(item);
     tr.insertAdjacentHTML("afterend", `<tr class="schema-row"><td colspan="${tr.children.length}">${html}</td></tr>`);
     btn.classList.add("open");
+  });
+  // Compagnon de voyage : ▶ sélectionne un trajet (Trajets / En route) ; ✕ efface le parcours.
+  document.addEventListener("click", (e) => {
+    const pick = e.target.closest(".journey-pick");
+    if (pick) {
+      const tableId = pick.closest("table").id;
+      const r = (tableId === "enroute" ? shownEnroute : shownRoutes)[Number(pick.dataset.row)];
+      if (r) pickJourney([legFromRoute(r)]);
+      return;
+    }
+    if (e.target.closest("#journeyClear")) clearJourney();
   });
   // Corrections locales : clic (ou Entrée/Espace) sur une valeur éditable ; bouton reset.
   document.addEventListener("click", (e) => {
