@@ -264,7 +264,9 @@ input::placeholder { color: #4d5670; }
 }
 .journey-pick:hover { background: rgba(255, 176, 32, 0.22); color: #fff; }
 /* Vaisseau + Voyage côte à côte (le résumé du voyage à droite du vaisseau). */
-.ship-journey-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: stretch; margin: 16px 0 0; }
+/* align-items: flex-start -> la carte vaisseau garde sa hauteur naturelle même si le
+   voyage est long (sinon l'image serait étirée/zoomée par object-fit pour remplir). */
+.ship-journey-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; margin: 16px 0 0; }
 .ship-journey-row .ship-card { margin: 0; }
 .journey-card {
   position: relative; margin: 0; flex: 1 1 300px; min-width: 0; max-width: 640px; padding: 12px 16px;
@@ -446,6 +448,11 @@ tbody tr:hover td { border-bottom-color: var(--line2); }
 .fresh.f-good { color: var(--good); background: rgba(70, 229, 160, 0.10); border: 1px solid rgba(70, 229, 160, 0.4); }
 .fresh.f-ok { color: var(--warn); background: rgba(245, 167, 66, 0.10); border: 1px solid #5a4a1c; }
 .fresh.f-old { color: var(--bad); background: rgba(255, 93, 93, 0.10); border: 1px solid rgba(255, 93, 93, 0.4); }
+/* Pastille de fraîcheur compacte (compagnon de voyage) : couleur = âge du relevé UEX. */
+.fresh-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; vertical-align: middle; margin-right: 5px; background: currentColor; box-shadow: 0 0 5px currentColor; }
+.fresh-dot.f-good { color: var(--good); }
+.fresh-dot.f-ok { color: var(--warn); }
+.fresh-dot.f-old { color: var(--bad); }
 
 /* Point de statut d'inventaire */
 .sdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
