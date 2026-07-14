@@ -2,7 +2,8 @@
 
 Site **statique** qui calcule les meilleures routes d'arbitrage de commodités dans Star Citizen,
 à partir de l'[API publique UEX Corp](https://uexcorp.space/api/documentation/) (lecture, sans token).
-Les données sont rafraîchies **toutes les heures** par GitHub Actions, et le site est **installable**
+Les données sont rafraîchies **toutes les 30 minutes** par GitHub Actions — mais uniquement
+reconstruites/redéployées **quand UEX a réellement changé** — et le site est **installable**
 (PWA) et consultable **hors-ligne**.
 
 > Pas de serveur, pas de clé API, pas de coût. Tout tourne côté navigateur sur des JSON pré-calculés.
@@ -20,7 +21,7 @@ Les données sont rafraîchies **toutes les heures** par GitHub Actions, et le s
 
 ## Fonctionnalités
 
-Cinq vues, un même moteur de calcul (soute SCU + budget aUEC → unités, coût, profit/voyage, profit/heure) :
+Six vues, un même moteur de calcul (soute SCU + budget aUEC → unités, coût, profit/voyage, profit/heure) :
 
 | Vue | Ce qu'elle fait |
 |-----|-----------------|
@@ -29,18 +30,41 @@ Cinq vues, un même moteur de calcul (soute SCU + budget aUEC → unités, coût
 | **En route 🧭** | Depuis un terminal de départ : le fret rentable + un **manifeste optimal** qui remplit la soute avec **plusieurs commodités** vers une même destination (avec suggestions pour combler l'espace libre) |
 | **Chaîne ⛓️** | Trajets **multi-sauts A→B→C…** (2 à 4 sauts) : achète, vends, rachète sur place, revends plus loin — recherche par faisceau du circuit le plus rentable |
 | **Corrections ✎** | Voir/gérer ses corrections locales et en créer en **cherchant une station** (voir plus bas) |
+| **Commodités 📊** | *Big board* type « salle des marchés » : toutes les commodités avec leur **code officiel UEX** (AGRI, QUAN…), triables (marge / code / catégorie), et au clic **tous leurs points d'achat et de vente** — pratique pour trouver **où écouler** une commodité quand une station n'a plus de demande |
 
 Autres éléments :
 
 - **Vaisseau** : autocomplétion par sous-chaîne (128 modèles UEX), remplit la soute automatiquement, affiche la photo.
 - **Contraintes désactivables** : couper le budget → meilleure route pour la soute ; couper la soute → meilleure route pour le budget.
 - **Décomposition SCU en caisses** (32/24/16/8/4/2/1) sur le manifeste et en infobulle.
+- **Manifeste ajustable** : chaque ligne se modifie à la main — tu peux **dépasser le stock UEX** (vol de fret, relevé périmé…) ; le champ passe en ambre pour le signaler.
 - **Schéma de trajet** dépliable (🗺) : système › planète › terminal, type de saut, temps estimé.
 - **Fiabilité des données** : pastille d'âge par relevé, filtre de fraîcheur (< 24 h / 3 j / 7 j), point de statut d'inventaire, tag « à vérifier », bandeau global « données d'il y a X h ».
-- **Filtres** : commodité, système, même système uniquement, exclure les avant-postes, commodités légales uniquement, limiter au stock & à la demande UEX.
+- **Filtres** : commodité, système, même système uniquement, exclure les avant-postes, commodités légales uniquement, limiter au stock & à la demande UEX. Ils ne s'appliquent pas tous à toutes les vues — voir la **[matrice ci-dessous](#portée-des-filtres-par-vue)**.
 - **Permaliens & persistance** : l'état (filtres, tri, vue, vaisseau) est mémorisé (localStorage) et encodé dans l'URL → bouton **Partager**.
-- **Copier le manifeste**, **raccourcis clavier** (`/` recherche, `1`–`5` vues).
+- **Copier le manifeste**, **raccourcis clavier** (`/` recherche, `1`–`6` vues).
 - Systèmes couverts : **Stanton**, **Pyro**, **Nyx**.
+
+### Portée des filtres par vue
+
+Tous les filtres ne s'appliquent pas à toutes les vues — comportement **garanti par des tests** ([voir Tests](#tests)) :
+
+| Filtre | Trajets | Boucles | En route | Chaîne | Corrections | Commodités |
+|--------|:-:|:-:|:-:|:-:|:-:|:-:|
+| Soute (SCU) | ✅ | ✅ | ✅ | ✅ | — | — |
+| Budget | ✅ | ✅ | ✅ | —¹ | — | — |
+| Commodité (recherche) | ✅ | ✅ | ✅ | —² | station | ✅ (tableau) |
+| Système d'achat | ✅ | ✅ | —³ | —³ | — | — |
+| Fraîcheur | ✅ | ✅ | ✅ | ✅ | — | — |
+| Même système | ✅ | ✅ | ✅ | ✅ | — | — |
+| Exclure avant-postes | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| Légales uniquement | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| Stock & demande | ✅ | ✅ | ✅ | ✅⁴ | — | — |
+
+¹ Le budget se reconstitue à chaque vente → non pertinent pour une chaîne.
+² Une chaîne est multi-commodité par nature.
+³ Le terminal de départ est déjà choisi → le menu « système d'achat » serait redondant.
+⁴ La chaîne plafonne **toujours** au stock/demande de chaque saut.
 
 ## Démarrage rapide (local)
 
@@ -75,13 +99,17 @@ Le workflow [`update-data.yml`](.github/workflows/update-data.yml) **construit l
 3. Onglet **Actions** → lance *Mise à jour des routes UEX* une première fois.
 4. En ligne sur `https://<pseudo>.github.io/<repo>/`.
 
-Ensuite : reconstruction/redéploiement **toutes les heures** et à chaque push sur `main`.
+Ensuite, le workflow tourne **toutes les 30 minutes** (et à chaque push sur `main`), mais il ne
+**reconstruit/redéploie que si les données UEX ont réellement changé** : il compare une *signature
+de données* (`data_signature` dans `meta.json`) à celle du site déjà en ligne et s'arrête **avant**
+les calculs coûteux (distances) si rien n'a bougé. Les 30 min sont le **plancher de fraîcheur d'UEX**,
+qui met ses prix en cache ~30 min ; un push ou un lancement manuel forcent une reconstruction complète.
 En cas d'échec, une **issue est ouverte automatiquement** (et refermée au retour à la normale).
 
 ## Architecture
 
 ```
-┌─ Build (GitHub Actions, horaire) ─────────────────────────────┐
+┌─ Build (GitHub Actions, /30 min · rebuild si UEX a changé) ───┐
 │  scripts/build-data.mjs                                        │
 │    ├─ GET api.uexcorp.uk/2.0 : terminals, prix, vaisseaux…     │
 │    ├─ calcule routes / boucles / graphe de marché             │
@@ -99,8 +127,9 @@ En cas d'échec, une **issue est ouverte automatiquement** (et refermée au reto
 ```
 
 **Séparation clé** : toute la logique de calcul sans DOM vit dans [`logic.mjs`](logic.mjs)
-(temps de trajet, score, `computeUnits`, corrections, remplissage glouton, chaîne, décodage d'état…),
-importée à la fois par `app.js` (navigateur) et par les tests. `app.js` ne fait que le rendu et le câblage.
+(temps de trajet, score, `computeUnits`, **filtres partagés** par vue, corrections, remplissage glouton,
+chaîne, **graphe de marché**, **résumés de commodités**, décodage d'état…), importée à la fois par
+`app.js` (navigateur) et par les tests. `app.js` ne fait que le rendu et le câblage.
 
 Fichiers de données (dans [`data/`](data/)) :
 
@@ -108,9 +137,22 @@ Fichiers de données (dans [`data/`](data/)) :
 |---------|---------|-------|
 | `routes.json` | Top routes A→B (achat le moins cher → meilleures ventes) | Trajets simples |
 | `loops.json` | Meilleures boucles A⇄B | Boucles |
-| `market.json` | Graphe d'échange compact (tous les points d'achat/vente) | En route, Chaîne, Corrections (chargé à la demande) |
+| `market.json` | Graphe d'échange compact (tous les points d'achat/vente, + **code UEX** par commodité) | En route, Chaîne, Corrections, **Commodités** (chargé à la demande) |
 | `ships.json` | Vaisseaux avec soute (nom, SCU, photo) | Champ vaisseau |
-| `meta.json` | Métadonnées (date, compteurs, systèmes) | Bandeau de fraîcheur |
+| `meta.json` | Métadonnées (date, compteurs, systèmes, **`data_signature`**) | Bandeau de fraîcheur + rebuild conditionnel |
+
+### Refresh & rebuild conditionnel
+
+Le workflow tourne **toutes les 30 min** mais évite le travail inutile :
+
+1. Il récupère les prix UEX et calcule une **signature** = `nb de relevés : date_modified max`.
+2. Il la compare au `data_signature` du `meta.json` **déjà en ligne** (pas de fichier d'état).
+3. **Inchangé** → il s'arrête **avant** le calcul des distances ; ni build, ni déploiement.
+4. **Changé** (ou `push` / lancement manuel, qui *forcent*) → build complet + déploiement, et le nouveau `data_signature` est écrit pour le run suivant.
+
+Pourquoi 30 min : UEX met ses prix en cache ~30 min (`Cache-Control: max-age=1800`), donc interroger
+plus souvent ne renverrait pas de données plus fraîches. Le dépôt étant **public**, les minutes GitHub
+Actions sont gratuites — l'intérêt du rebuild conditionnel est surtout d'**éviter les déploiements à vide**.
 
 ## Corrections locales
 
@@ -126,10 +168,12 @@ jamais partagé ni mis dans l'URL) et **intelligent** :
 
 - **Unitaires** ([`logic.test.mjs`](logic.test.mjs), [`scripts/build-data.test.mjs`](scripts/build-data.test.mjs)) :
   couvrent les fonctions pures — calcul de routes/boucles/marché, score, contraintes de volume, moteur de
-  corrections, persistance. Runner intégré `node --test`, **zéro dépendance**.
+  corrections, persistance, **résumés & points de commodités**, et **filtrage par vue** (chaîne, commodités).
+  Runner intégré `node --test`, **zéro dépendance**.
 - **E2E de fumée** ([`e2e/smoke.pw.mjs`](e2e/smoke.pw.mjs), Playwright) : non-régression des bugs vécus
   (carte vaisseau au reload, demande corrigée à 0, contrôles qui ne fuient plus, persistance des corrections,
-  navigation, schéma). Playwright est une dépendance **de dev uniquement** — le site livré reste sans dépendance.
+  navigation, schéma) et **cohérence des filtres par vue** (« légales » agit sur Trajets/Boucles/Commodités,
+  « même système » contraint la Chaîne). Playwright est une dépendance **de dev uniquement** — le site livré reste sans dépendance.
 - **CI** ([`ci.yml`](.github/workflows/ci.yml)) : unitaires + E2E sur chaque push/PR.
 
 ## Personnalisation
