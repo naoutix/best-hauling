@@ -8,6 +8,9 @@ import {
   routePasses, loopPasses,
   routeMetrics, loopMetrics, enRouteDeals, bestManifest, buildChainAdjacency,
   commoditySummaries, commodityPoints, compactValue,
+  legFromRoute, legsFromLoop, legsFromChain, startJourney, journeyStations, journeyEnd,
+  journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
+  encodeJourney, decodeJourney,
 } from "./logic.mjs";
 
 // Libellé compact des caisses SCU standard, ex. « 8×32 · 1×16 · 1×4 · 1×2 · 1×1 ».
@@ -29,6 +32,8 @@ let shownRoutes = [], shownEnroute = [], shownLoops = [];
 // Vue « Commodités » : mode de tri (margin|code|kind|custom), clé/sens custom, sélection.
 let commMode = "margin", commSortKey = "margin", commSortDir = -1, commSelected = null, shownCommodities = [];
 let commMaxMargin = 0; // marge max de la liste courante (pour colorer la heatmap en relatif)
+// Compagnon de voyage : parcours sélectionné { legs[], current } ou null.
+let JOURNEY = null;
 // Affiche la carte du vaisseau correspondant au champ (défini par loadShips ; utilisé à la restauration).
 let showShipCard = () => {};
 
@@ -262,7 +267,7 @@ function routeRowHTML(r, i) {
   return `
       <tr data-row="${i}">
         <td class="loc">
-          <div class="commodity-cell"><button class="route-toggle" data-row="${i}" title="Voir le trajet" aria-label="Voir le trajet">🗺</button>${commodityIcon(r.kind)}<span class="cname">${esc(r.commodity)}</span></div>
+          <div class="commodity-cell"><button class="route-toggle" data-row="${i}" title="Voir le trajet" aria-label="Voir le trajet">🗺</button><button class="journey-pick" data-row="${i}" title="Faire ce trajet — compagnon de voyage" aria-label="Sélectionner ce trajet">▶</button>${commodityIcon(r.kind)}<span class="cname">${esc(r.commodity)}</span></div>
           <div class="loc-badges">${illegalTag(r.illegal)}${suspectTag(r)}${cross}</div>
         </td>
         <td class="loc">
@@ -310,14 +315,22 @@ function renderLoops() {
 
   normalizeScores(rows);
   rows.sort(bySort(loopSortKey, loopSortDir));
+  // Compagnon : remonte en tête (sans filtrer) les boucles qui partent de la FIN du parcours —
+  // c'est le point d'extension (une boucle depuis là s'enchaîne au parcours). Cohérent avec addToJourney.
+  const hereArrival = JOURNEY ? journeyEnd(JOURNEY)?.name : null;
+  if (hereArrival) {
+    rows.forEach((l) => { l._fromHere = l.a.terminal === hereArrival || l.b.terminal === hereArrival; });
+    rows.sort((a, b) => (b._fromHere ? 1 : 0) - (a._fromHere ? 1 : 0)); // tri stable : pertinentes d'abord
+  }
   shownLoops = rows;
 
   $("loopRows").innerHTML = rows
     .map(
       (l, i) => `
-      <tr data-row="${i}">
+      <tr data-row="${i}"${l._fromHere ? ' class="from-here"' : ""}>
         <td class="loc loop-cell">
           <button class="route-toggle" data-row="${i}" title="Voir le trajet" aria-label="Voir le trajet">🗺</button>
+          <button class="journey-pick" data-row="${i}" title="Ajouter cette boucle au voyage" aria-label="Ajouter au voyage">▶</button>
           <div class="loop-ends">
             <div class="loop-end"><span class="term-name">${esc(l.a.terminal)}</span>${sysBadge(l.a.system)}${outpostTag(l.a.outpost)}</div>
             <div class="loop-mid"><span class="loop-arrow">⇄</span>${l.cross ? '<span class="cross">⚡ inter-système</span>' : ""}</div>
@@ -625,6 +638,7 @@ function renderManifest(origin, destSystem, f, destTerminal) {
 function renderEnRoute() {
   if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderEnRoute(); }); return; }
   if (!enrouteReady) setupEnRoute();
+  resolveOrigin(); // re-résout depuis le champ (peut avoir été posé par le parcours, sans événement input)
   resolveDest();
   const f = readFilters();
   const emptyMsg = $("empty");
@@ -656,6 +670,7 @@ function renderEnRoute() {
 
 // ---------- Vue « Chaîne » (multi-sauts A -> B -> C ...) ----------
 let chainOrigin = null; // index du terminal de départ de la chaîne
+let shownChain = null;  // chaîne actuellement affichée (pour l'ajout au voyage)
 
 function resolveChainOrigin() {
   const v = $("chainOrigin").value.trim();
@@ -687,6 +702,7 @@ function chainCardHTML(chain) {
       <div class="chain-head">
         <span class="chain-path">${nodes}</span>
         <span class="chain-tot">Profit <b class="profit">${fmt(chain.profit)}</b> aUEC · ${chain.legs.length} saut${chain.legs.length > 1 ? "s" : ""} · capital de départ ${fmt(invest)} · ~${Math.round(minutes)} min</span>
+        <button id="chainToJourney" class="chain-pick" title="Ajouter cette chaîne au voyage en cours">▶ Ajouter au voyage</button>
       </div>
       <div class="chain-legs">${legs}</div>
     </div>`;
@@ -698,14 +714,64 @@ function renderChain() {
   resolveChainOrigin();
   const box = $("chainOut");
   const f = readFilters();
+  shownChain = null;
   const hint = (msg) => { box.innerHTML = `<div class="manifest-hint">${msg}</div>`; notifySuperseded(); };
   if (chainOrigin == null) return hint("Choisis un <b>terminal de départ</b> pour calculer une chaîne rentable.");
   if (!f.useCargo || !(f.cargo > 0)) return hint("Active la <b>soute (SCU)</b> pour dimensionner la chaîne.");
   const hops = Number($("hops").value) || 3;
   const chain = bestChain(buildChainAdjacency(MARKET, f, effVals), chainOrigin, hops, { cargo: f.cargo });
   if (!chain || !chain.legs.length) return hint("Aucune chaîne rentable depuis ce terminal avec ces filtres.");
+  shownChain = chain;
   box.innerHTML = chainCardHTML(chain);
   notifySuperseded();
+}
+
+// ---------- Compagnon de voyage : résumé du parcours (près du vaisseau) ----------
+// Sélectionne un trajet/une boucle/une chaîne -> met à jour le parcours (étend si ça s'enchaîne).
+function pickJourney(legs) {
+  if (!legs || !legs.length) return;
+  JOURNEY = addToJourney(JOURNEY, legs);
+  syncViewsToJourney();
+  renderJourney();
+  refresh(); // reflète la nouvelle destination/origine dans la vue courante
+}
+
+// Pré-remplit les contrôles des vues d'après la POSITION COURANTE du parcours.
+// « Pré-rempli » : on pose les défauts, l'utilisateur reste libre de les changer.
+function syncViewsToJourney() {
+  if (!JOURNEY) return;
+  const here = journeyStations(JOURNEY)[JOURNEY.current]; // station où l'on se trouve
+  if (!here) return;
+  const originLabel = `${here.name} — ${here.system}`;
+  $("origin").value = originLabel;    // En route : départ = station courante
+  $("chainOrigin").value = originLabel; // Chaîne : départ = station courante
+  const leg = currentLeg(JOURNEY);
+  if (leg) {
+    $("destTerminal").value = `${leg.to} — ${leg.toSystem}`; // arrivée forcée = jambe courante
+    $("destSystem").value = "";
+  } else {
+    $("destTerminal").value = ""; // au bout du parcours : on cherche le fret onward, pas d'arrivée imposée
+  }
+}
+function clearJourney() {
+  JOURNEY = null;
+  renderJourney();
+  saveState();
+}
+function renderJourney() {
+  const card = $("journeyCard");
+  if (!card) return;
+  if (!JOURNEY || !JOURNEY.legs.length) { card.hidden = true; card.innerHTML = ""; return; }
+  const stations = journeyStations(JOURNEY);
+  const path = stations
+    .map((s, i) => `<button class="jstep${i === JOURNEY.current ? " here" : ""}" data-i="${i}" title="Je suis ici"><span class="sys ${esc(s.system.toLowerCase())}">${esc(s.name)}</span></button>`)
+    .join('<span class="jsep">→</span>');
+  const n = JOURNEY.legs.length;
+  card.hidden = false;
+  card.innerHTML =
+    `<div class="journey-head"><span class="journey-title">◈ Voyage en cours</span><button id="journeyClear" class="journey-clear" title="Effacer le parcours" aria-label="Effacer">✕</button></div>
+     <div class="journey-path">${path}</div>
+     <div class="journey-meta">${n} saut${n > 1 ? "s" : ""} · marge cumulée <b class="profit">${fmt(journeyMargin(JOURNEY))}</b> aUEC/SCU</div>`;
 }
 
 // Bascule entre les vues et rafraîchit la bonne.
@@ -902,6 +968,7 @@ function collectState() {
   const s = { v: view, sk: sortKey, sd: sortDir, lk: loopSortKey, ld: loopSortDir };
   STATE_FIELDS.forEach((id) => (s[id] = $(id).value));
   STATE_CHECKS.forEach((id) => (s[id] = $(id).checked ? 1 : 0));
+  if (JOURNEY) s.j = encodeJourney(JOURNEY); // compagnon de voyage (partageable)
   return s;
 }
 
@@ -939,6 +1006,7 @@ function applyState(s) {
   if (safeKey(s.sk)) { sortKey = s.sk; sortDir = Number(s.sd) === 1 ? 1 : -1; }
   if (safeKey(s.lk)) { loopSortKey = s.lk; loopSortDir = Number(s.ld) === 1 ? 1 : -1; }
   if (["routes", "loops", "enroute", "chain", "corrections", "commodities"].includes(s.v)) view = s.v;
+  if (s.j) JOURNEY = decodeJourney(s.j); // compagnon de voyage restauré (les champs sont déjà repris ci-dessus)
   applySortIndicators();
   syncToggles();
   restoring = false;
@@ -1220,6 +1288,27 @@ async function init() {
     tr.insertAdjacentHTML("afterend", `<tr class="schema-row"><td colspan="${tr.children.length}">${html}</td></tr>`);
     btn.classList.add("open");
   });
+  // Compagnon de voyage : ▶ sélectionne un trajet (Trajets / En route) ; ✕ efface le parcours.
+  document.addEventListener("click", (e) => {
+    const pick = e.target.closest(".journey-pick");
+    if (pick) {
+      const tableId = pick.closest("table").id;
+      const i = Number(pick.dataset.row);
+      if (tableId === "loops") { const l = shownLoops[i]; if (l) pickJourney(legsFromLoop(l)); }
+      else { const r = (tableId === "enroute" ? shownEnroute : shownRoutes)[i]; if (r) pickJourney([legFromRoute(r)]); }
+      return;
+    }
+    if (e.target.closest("#chainToJourney") && shownChain) { pickJourney(legsFromChain(shownChain, MARKET.terminals)); return; }
+    if (e.target.closest("#journeyClear")) { clearJourney(); return; }
+    // Parcours interactif : clic sur une étape (⦿) = « je suis ici » -> recale les vues.
+    const step = e.target.closest(".jstep");
+    if (step && JOURNEY) {
+      JOURNEY = setJourneyPosition(JOURNEY, Number(step.dataset.i));
+      syncViewsToJourney();
+      renderJourney();
+      refresh();
+    }
+  });
   // Corrections locales : clic (ou Entrée/Espace) sur une valeur éditable ; bouton reset.
   document.addEventListener("click", (e) => {
     const span = e.target.closest(".editv");
@@ -1288,6 +1377,7 @@ async function init() {
     // Applique l'état restauré une fois le menu système peuplé, puis affiche la bonne vue.
     applyState(saved);
     showShipCard(); // ré-affiche la carte du vaisseau restauré (image comprise)
+    renderJourney(); // ré-affiche le parcours restauré (compagnon de voyage)
     switchView(view);
   } catch (e) {
     $("meta").textContent = "Erreur de chargement des données.";

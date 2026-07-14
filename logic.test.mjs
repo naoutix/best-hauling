@@ -9,6 +9,9 @@ import {
   profitPerHour, rawScoreOf, routePasses, loopPasses,
   routeMetrics, loopMetrics, dealFrom, enRouteDeals, bestManifest, buildChainAdjacency,
   commoditySummaries, commodityPoints, compactValue,
+  legFromRoute, legsFromLoop, legsFromChain, startJourney, journeyStations, journeyEnd,
+  journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
+  encodeJourney, decodeJourney,
 } from "./logic.mjs";
 
 // ---------- Temps de trajet ----------
@@ -767,4 +770,83 @@ test("bestManifest : destTerminal force la destination", () => {
   const toC = bestManifest(MKT(), 0, "", f, idResolve, 2);                   // forcé sur C
   assert.equal(toC.dest.name, "C");
   assert.equal(toC.profit, 100 * 200);
+});
+
+// ---------- Compagnon de voyage : modèle de parcours ----------
+const ROUTE_AB = { commodity: "Gold", margin: 50, buy: { terminal: "A", system: "Stanton", price: 100 }, sell: { terminal: "B", system: "Stanton", price: 150 } };
+const LOOP_BC = {
+  a: { terminal: "B", system: "Stanton" }, b: { terminal: "C", system: "Pyro" },
+  out: { commodity: "Iron", buyPrice: 10, sellPrice: 40, margin: 30 },
+  back: { commodity: "Wood", buyPrice: 5, sellPrice: 20, margin: 15 },
+};
+
+test("legFromRoute : trajet évalué -> une jambe", () => {
+  const leg = legFromRoute(ROUTE_AB);
+  assert.deepEqual(leg, { from: "A", fromSystem: "Stanton", to: "B", toSystem: "Stanton", commodity: "Gold", buyPrice: 100, sellPrice: 150, margin: 50 });
+});
+
+test("legsFromLoop : boucle -> aller + retour", () => {
+  const legs = legsFromLoop(LOOP_BC);
+  assert.equal(legs.length, 2);
+  assert.deepEqual([legs[0].from, legs[0].to], ["B", "C"]);
+  assert.deepEqual([legs[1].from, legs[1].to], ["C", "B"]);
+  assert.equal(legs[0].commodity, "Iron");
+});
+
+test("legsFromChain : chaîne (index) -> jambes nommées", () => {
+  const terminals = [{ name: "A", system: "Stanton" }, { name: "B", system: "Stanton" }, { name: "D", system: "Pyro" }];
+  const chain = { path: [0, 1, 2], legs: [{ commodity: "X", buyPrice: 1, sellPrice: 3, margin: 2 }, { commodity: "Y", buyPrice: 2, sellPrice: 8, margin: 6 }] };
+  const legs = legsFromChain(chain, terminals);
+  assert.deepEqual(legs.map((l) => [l.from, l.to]), [["A", "B"], ["B", "D"]]);
+  assert.equal(legs[1].toSystem, "Pyro");
+});
+
+test("startJourney + journeyStations : stations = legs.length + 1", () => {
+  const j = startJourney([legFromRoute(ROUTE_AB)]);
+  assert.equal(j.current, 0);
+  assert.deepEqual(journeyStations(j).map((s) => s.name), ["A", "B"]);
+  assert.equal(journeyEnd(j).name, "B");
+});
+
+test("journeyConnects : les jambes s'enchaînent si leur départ == fin du parcours", () => {
+  const j = startJourney([legFromRoute(ROUTE_AB)]); // finit en B
+  assert.equal(journeyConnects(j, legsFromLoop(LOOP_BC)), true);   // boucle part de B
+  assert.equal(journeyConnects(j, [legFromRoute(ROUTE_AB)]), false); // repart de A, pas B
+});
+
+test("addToJourney : ÉTEND si ça s'enchaîne, sinon REMPLACE", () => {
+  const j = startJourney([legFromRoute(ROUTE_AB)]); // A->B
+  const ext = addToJourney(j, legsFromLoop(LOOP_BC)); // B->C->B
+  assert.deepEqual(journeyStations(ext).map((s) => s.name), ["A", "B", "C", "B"]);
+  // ne s'enchaîne pas -> remplace
+  const other = { commodity: "Z", margin: 1, buy: { terminal: "X", system: "S", price: 1 }, sell: { terminal: "Y", system: "S", price: 2 } };
+  const repl = addToJourney(j, [legFromRoute(other)]);
+  assert.deepEqual(journeyStations(repl).map((s) => s.name), ["X", "Y"]);
+});
+
+test("setJourneyPosition + currentLeg : position bornée, jambe courante = current -> current+1", () => {
+  const j = addToJourney(startJourney([legFromRoute(ROUTE_AB)]), legsFromLoop(LOOP_BC)); // A->B->C->B (3 jambes)
+  assert.equal(currentLeg(j).from, "A");                 // current 0 -> jambe A->B
+  const j2 = setJourneyPosition(j, 2);                   // à la station index 2 (C)
+  assert.equal(currentLeg(j2).from, "C");                // jambe C->B
+  const j3 = setJourneyPosition(j, 99);                  // borné à legs.length (3) = dernière station
+  assert.equal(currentLeg(j3), null);                    // au bout, plus de jambe
+  assert.equal(setJourneyPosition(j, -5).current, 0);    // borné à 0
+});
+
+test("journeyMargin : somme des marges des jambes", () => {
+  const j = addToJourney(startJourney([legFromRoute(ROUTE_AB)]), legsFromLoop(LOOP_BC)); // 50 + 30 + 15
+  assert.equal(journeyMargin(j), 95);
+});
+
+test("encodeJourney / decodeJourney : aller-retour + robustesse", () => {
+  const j = addToJourney(startJourney([legFromRoute(ROUTE_AB)]), legsFromLoop(LOOP_BC));
+  const round = decodeJourney(encodeJourney(j));
+  assert.deepEqual(journeyStations(round).map((s) => s.name), ["A", "B", "C", "B"]);
+  assert.equal(round.current, j.current);
+  assert.equal(round.legs[0].margin, 50);
+  assert.equal(encodeJourney(null), "");          // vide
+  assert.equal(encodeJourney({ legs: [] }), "");   // pas de jambe
+  assert.equal(decodeJourney(""), null);           // vide
+  assert.equal(decodeJourney("pas du json"), null); // malformé -> null (pas d'exception)
 });

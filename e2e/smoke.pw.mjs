@@ -154,3 +154,92 @@ test("En route : destination forçable + ajout/retrait libre au manifeste", asyn
   await page.fill("#destTerminal", term);
   await expect(page.locator("#manifest")).toBeVisible();
 });
+
+test("Compagnon de voyage : sélectionner un trajet affiche le parcours", async ({ page }) => {
+  await expect(page.locator("#journeyCard")).toBeHidden();
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard")).toBeVisible();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2); // 2 stations pour 1 saut
+  await expect(page.locator("#journeyCard .jstep.here")).toHaveCount(1);
+  await page.locator("#journeyClear").click();
+  await expect(page.locator("#journeyCard")).toBeHidden();
+});
+
+test("Compagnon de voyage : sélectionner un trajet pré-remplit En route (départ/arrivée)", async ({ page }) => {
+  const row = page.locator("#rows tr").first();
+  const buyTerminal = (await row.locator(".term-name").nth(0).innerText()).trim();
+  const sellTerminal = (await row.locator(".term-name").nth(1).innerText()).trim();
+  await row.locator(".journey-pick").click();
+  // Les champs En route sont pré-remplis avec la jambe courante.
+  expect(await page.inputValue("#origin")).toContain(buyTerminal);
+  expect(await page.inputValue("#destTerminal")).toContain(sellTerminal);
+  // La vue En route affiche bien un manifeste vers la station d'arrivée.
+  await page.click("#viewEnroute");
+  await expect(page.locator("#manifest")).toContainText(sellTerminal);
+});
+
+test("Compagnon de voyage : pré-remplit Chaîne + remonte les boucles depuis l'arrivée", async ({ page }) => {
+  // Chaîne : chainOrigin = station de départ courante.
+  const row = page.locator("#rows tr").first();
+  const buyTerminal = (await row.locator(".term-name").nth(0).innerText()).trim();
+  await row.locator(".journey-pick").click();
+  expect(await page.inputValue("#chainOrigin")).toContain(buyTerminal);
+
+  // Boucles : sélectionne une route qui arrive sur un terminal de boucle -> les from-here remontent.
+  await page.click("#viewLoops");
+  const loopSet = new Set((await page.locator("#loopRows .term-name").allInnerTexts()).map((t) => t.trim()));
+  await page.click("#viewRoutes");
+  const routes = page.locator("#rows tr");
+  const count = Math.min(await routes.count(), 60);
+  let matched = false;
+  for (let i = 0; i < count; i++) {
+    const sell = (await routes.nth(i).locator(".term-name").nth(1).innerText()).trim();
+    if (loopSet.has(sell)) { await routes.nth(i).locator(".journey-pick").click(); matched = true; break; }
+  }
+  if (matched) {
+    await page.click("#viewLoops");
+    expect(await page.locator("#loopRows tr.from-here").count()).toBeGreaterThan(0);
+    await expect(page.locator("#loopRows tr").first()).toHaveClass(/from-here/); // pertinentes en tête
+  }
+});
+
+test("Compagnon de voyage : cliquer une étape recale En route (position interactive)", async ({ page }) => {
+  const row = page.locator("#rows tr").first();
+  const buyTerminal = (await row.locator(".term-name").nth(0).innerText()).trim();
+  const sellTerminal = (await row.locator(".term-name").nth(1).innerText()).trim();
+  await row.locator(".journey-pick").click();
+  expect(await page.inputValue("#origin")).toContain(buyTerminal); // au départ
+  // Clique la station d'arrivée -> « je suis là » -> En route repart de l'arrivée.
+  await page.locator("#journeyCard .jstep").nth(1).click();
+  await expect(page.locator("#journeyCard .jstep").nth(1)).toHaveClass(/here/);
+  expect(await page.inputValue("#origin")).toContain(sellTerminal);
+});
+
+test("Compagnon de voyage : étendre le parcours avec une boucle depuis l'arrivée", async ({ page }) => {
+  await page.click("#viewLoops");
+  const loopSet = new Set((await page.locator("#loopRows .term-name").allInnerTexts()).map((t) => t.trim()));
+  await page.click("#viewRoutes");
+  const routes = page.locator("#rows tr");
+  const count = Math.min(await routes.count(), 60);
+  let matched = false;
+  for (let i = 0; i < count; i++) {
+    const sell = (await routes.nth(i).locator(".term-name").nth(1).innerText()).trim();
+    if (loopSet.has(sell)) { await routes.nth(i).locator(".journey-pick").click(); matched = true; break; }
+  }
+  test.skip(!matched, "aucune route vers un terminal de boucle dans le jeu de données");
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2); // 1 saut = 2 stations
+  await page.click("#viewLoops");
+  await page.locator("#loopRows tr.from-here").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(4); // + boucle (2 sauts) = 3 sauts, 4 stations
+});
+
+test("Compagnon de voyage : le parcours survit au rechargement (persistance)", async ({ page }) => {
+  const row = page.locator("#rows tr").first();
+  const sellTerminal = (await row.locator(".term-name").nth(1).innerText()).trim();
+  await row.locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard")).toBeVisible();
+  await page.reload();
+  await expect(page.locator("#rows tr").first()).toBeVisible();
+  await expect(page.locator("#journeyCard")).toBeVisible();             // restauré
+  await expect(page.locator("#journeyCard")).toContainText(sellTerminal);
+});

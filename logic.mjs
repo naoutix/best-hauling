@@ -459,3 +459,93 @@ export function compactValue(n) {
   if (a >= 1e3) return Math.round(n / 100) / 10 + "K";
   return String(Math.round(n));
 }
+
+// ---------- Compagnon de voyage : modèle de « parcours » (pur, sérialisable) ----------
+// Un parcours = suite ORDONNÉE de sauts (legs) contigus + position courante (index de station).
+//   leg = { from, fromSystem, to, toSystem, commodity, buyPrice, sellPrice, margin }
+//   stations dérivées = [from0, to0(=from1), to1, …]  ->  legs.length + 1 stations.
+//   current = index de la station où l'on se trouve (0..legs.length). La « jambe courante »
+//   va de stations[current] à stations[current+1].
+
+// Construit une jambe depuis un trajet évalué (vue Trajets / En route).
+export function legFromRoute(r) {
+  return {
+    from: r.buy.terminal, fromSystem: r.buy.system, to: r.sell.terminal, toSystem: r.sell.system,
+    commodity: r.commodity, buyPrice: r.buy.price, sellPrice: r.sell.price, margin: r.margin,
+  };
+}
+// Deux jambes depuis une boucle évaluée (aller puis retour).
+export function legsFromLoop(l) {
+  return [
+    { from: l.a.terminal, fromSystem: l.a.system, to: l.b.terminal, toSystem: l.b.system, commodity: l.out.commodity, buyPrice: l.out.buyPrice, sellPrice: l.out.sellPrice, margin: l.out.margin },
+    { from: l.b.terminal, fromSystem: l.b.system, to: l.a.terminal, toSystem: l.a.system, commodity: l.back.commodity, buyPrice: l.back.buyPrice, sellPrice: l.back.sellPrice, margin: l.back.margin },
+  ];
+}
+// N jambes depuis une chaîne (bestChain) : `terminals` résout les index -> noms/systèmes.
+export function legsFromChain(chain, terminals) {
+  return chain.legs.map((leg, i) => {
+    const from = terminals[chain.path[i]], to = terminals[chain.path[i + 1]];
+    return { from: from.name, fromSystem: from.system, to: to.name, toSystem: to.system, commodity: leg.commodity, buyPrice: leg.buyPrice, sellPrice: leg.sellPrice, margin: leg.margin };
+  });
+}
+
+// Démarre un parcours neuf à partir de jambes (position au départ).
+export function startJourney(legs) {
+  return { legs: legs.slice(), current: 0 };
+}
+// Stations ordonnées du parcours : [{ name, system }, …] (legs.length + 1 entrées).
+export function journeyStations(journey) {
+  if (!journey || !journey.legs.length) return [];
+  const st = [{ name: journey.legs[0].from, system: journey.legs[0].fromSystem }];
+  for (const leg of journey.legs) st.push({ name: leg.to, system: leg.toSystem });
+  return st;
+}
+// Dernière station (fin du parcours planifié), ou null.
+export function journeyEnd(journey) {
+  const st = journeyStations(journey);
+  return st.length ? st[st.length - 1] : null;
+}
+// Les nouvelles jambes s'enchaînent-elles à la fin du parcours ? (leur départ == dernière station)
+export function journeyConnects(journey, legs) {
+  const end = journeyEnd(journey);
+  return !!(end && legs.length && legs[0].from === end.name);
+}
+// Politique produit : ÉTENDRE si ça s'enchaîne (ajoute à la fin, garde la position), sinon REMPLACER.
+export function addToJourney(journey, legs) {
+  if (journeyConnects(journey, legs)) return { legs: journey.legs.concat(legs), current: journey.current };
+  return startJourney(legs);
+}
+// Déplace la position courante (bornée à 0..legs.length).
+export function setJourneyPosition(journey, i) {
+  return { ...journey, current: Math.max(0, Math.min(journey.legs.length, i | 0)) };
+}
+// Jambe courante (stations[current] -> [current+1]), ou null si on est à la dernière station.
+export function currentLeg(journey) {
+  return journey && journey.current < journey.legs.length ? journey.legs[journey.current] : null;
+}
+// Profit total du parcours = somme des marges (les unités sont décidées ailleurs par vue).
+export function journeyMargin(journey) {
+  return journey ? journey.legs.reduce((a, l) => a + (l.margin || 0), 0) : 0;
+}
+
+// Encode un parcours en chaîne compacte auto-suffisante (pour localStorage / URL partageable).
+// Chaque jambe -> tuple [from, fromSystem, to, toSystem, commodity, buyPrice, sellPrice, margin].
+export function encodeJourney(journey) {
+  if (!journey || !journey.legs.length) return "";
+  return JSON.stringify({
+    c: journey.current,
+    l: journey.legs.map((g) => [g.from, g.fromSystem, g.to, g.toSystem, g.commodity, g.buyPrice, g.sellPrice, g.margin]),
+  });
+}
+// Reconstruit un parcours depuis la chaîne (null si vide/invalide). Robuste aux entrées malformées.
+export function decodeJourney(str) {
+  if (!str) return null;
+  try {
+    const p = JSON.parse(str);
+    if (!p || !Array.isArray(p.l) || !p.l.length) return null;
+    const legs = p.l.map((a) => ({ from: a[0], fromSystem: a[1], to: a[2], toSystem: a[3], commodity: a[4], buyPrice: a[5], sellPrice: a[6], margin: a[7] }));
+    return { legs, current: Math.max(0, Math.min(legs.length, p.c | 0)) };
+  } catch {
+    return null;
+  }
+}
