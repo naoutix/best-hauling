@@ -247,7 +247,10 @@ input::placeholder { color: #4d5670; }
 .ship-card::before, .ship-card::after { content: ""; position: absolute; width: 14px; height: 14px; border-color: var(--acc); }
 .ship-card::before { top: 0; left: 0; border-top: 2px solid; border-left: 2px solid; }
 .ship-card::after { bottom: 0; right: 0; border-bottom: 2px solid; border-right: 2px solid; }
-.ship-img-wrap { width: 180px; min-height: 104px; background: #04060c; border-right: 1px solid var(--line2); flex-shrink: 0; display: grid; place-items: center; }
+/* height fixe (et non min-height) : l'image reste 180×104 en toute disposition. Sans ça,
+   « height: 100% » de l'image se résout contre un parent de hauteur indéfinie et peut
+   « exploser » (s'étirer) quand la carte change de contexte flex (ex. mode empilé). */
+.ship-img-wrap { width: 180px; height: 104px; background: #04060c; border-right: 1px solid var(--line2); flex-shrink: 0; display: grid; place-items: center; }
 .ship-img { width: 100%; height: 100%; object-fit: cover; display: block; filter: saturate(1.05) contrast(1.05); }
 .ship-card-info { display: flex; flex-direction: column; justify-content: center; gap: 5px; padding: 14px 20px; }
 .ship-card-label { font-size: 9.5px; letter-spacing: 2px; text-transform: uppercase; color: var(--acc); }
@@ -263,16 +266,33 @@ input::placeholder { color: #4d5670; }
   cursor: pointer; font-size: 9px; line-height: 1;
 }
 .journey-pick:hover { background: rgba(255, 176, 32, 0.22); color: #fff; }
-/* Vaisseau + Voyage côte à côte (le résumé du voyage à droite du vaisseau). */
-/* align-items: flex-start -> la carte vaisseau garde sa hauteur naturelle même si le
-   voyage est long (sinon l'image serait étirée/zoomée par object-fit pour remplir). */
+/* Vaisseau + Voyage côte à côte : colonne de gauche (vaisseau + récap) | carte Voyage à droite.
+   align-items: flex-start -> le vaisseau garde sa hauteur naturelle (image jamais étirée). */
 .ship-journey-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; margin: 16px 0 0; }
-.ship-journey-row .ship-card { margin: 0; }
+.voyage-left { display: flex; flex-direction: column; gap: 14px; flex: 0 1 auto; min-width: 240px; max-width: 520px; }
+.voyage-left .ship-card { margin: 0; max-width: none; }
 .journey-card {
-  position: relative; margin: 0; flex: 1 1 300px; min-width: 0; max-width: 640px; padding: 12px 16px;
+  position: relative; margin: 0; flex: 1 1 320px; min-width: 0; max-width: 640px; padding: 12px 16px;
   border: 1px solid var(--acc-2); border-left: 2px solid var(--acc-2);
   background: linear-gradient(90deg, rgba(169, 112, 255, 0.08), rgba(11, 15, 28, 0.75));
 }
+/* Récap voyage : remplit l'espace sous le vaisseau avec des KPIs utiles. */
+.journey-recap {
+  position: relative; padding: 12px 16px; border: 1px solid var(--line2); border-left: 2px solid var(--good);
+  background: linear-gradient(90deg, rgba(70, 229, 160, 0.06), rgba(11, 15, 28, 0.72));
+}
+.recap-head { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--good); font-weight: 700; margin-bottom: 8px; }
+.recap-profit { font-family: var(--mono); font-size: 22px; font-weight: 700; color: var(--good); text-shadow: 0 0 10px rgba(70, 229, 160, 0.22); line-height: 1; }
+.recap-profit span { font-size: 11px; color: var(--muted); font-weight: 400; letter-spacing: 1px; }
+.recap-kpis { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 12px; margin-top: 12px; }
+.recap-kpi { display: flex; flex-direction: column; gap: 1px; }
+.recap-kpi b { font-family: var(--mono); font-size: 16px; color: var(--text); line-height: 1.1; }
+.recap-kpi span { font-size: 9.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+/* Bascule pleine largeur : voyage long -> tout s'empile, la colonne de gauche passe en rangée. */
+.ship-journey-row.stacked { flex-direction: column; }
+.ship-journey-row.stacked .voyage-left { flex-direction: row; flex-wrap: wrap; align-items: flex-start; max-width: none; width: 100%; }
+.ship-journey-row.stacked .voyage-left > * { flex: 1 1 240px; }
+.ship-journey-row.stacked .journey-card { width: 100%; max-width: none; }
 .journey-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
 .journey-title { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--acc-2); font-weight: 700; }
 .journey-clear { background: transparent; border: 1px solid var(--line); color: var(--muted); cursor: pointer; border-radius: 3px; padding: 0 6px; line-height: 1.5; }
