@@ -458,6 +458,18 @@ input.mqty-input.over-stock { color: var(--warn); border-color: var(--warn); box
 .suggest-add { font-family: var(--font); font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--good); background: rgba(70, 229, 160, 0.08); border: 1px solid rgba(70, 229, 160, 0.35); border-radius: 3px; padding: 5px 11px; cursor: pointer; transition: background 0.12s, color 0.12s; }
 .suggest-add:hover { color: #04120a; background: var(--good); border-color: var(--good); }
 
+/* Retrait d'une ligne (petit ✕ dans le nom). */
+.mname .mline-del { margin-left: 8px; padding: 0 5px; font-size: 11px; line-height: 1.4; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 3px; cursor: pointer; vertical-align: middle; }
+.mname .mline-del:hover { color: var(--bad); border-color: var(--bad); }
+/* Ligne « carry-only » : chargée mais non vendable à cette destination (à écouler ailleurs). */
+.carry-tag { color: var(--warn); font-style: italic; }
+.mline.carry { background: rgba(245, 167, 66, 0.04); }
+.mprofit.muted { color: var(--muted); }
+/* Ajout libre d'une commodité au manifeste. */
+.manifest-add { display: flex; gap: 8px; padding: 10px 20px; border-top: 1px solid var(--line); }
+#manifestAddInput { flex: 1; min-width: 0; padding: 7px 10px; background: rgba(8, 11, 20, 0.9); border: 1px solid var(--line2); color: var(--text); border-radius: 3px; font-family: var(--font); font-size: 12px; }
+#manifestAddBtn { white-space: nowrap; }
+
 /* ---------- Chaîne ---------- */
 .chain-wrap { margin: 0 0 20px; }
 .chain { border: 1px solid rgba(169, 112, 255, 0.35); background: linear-gradient(90deg, rgba(169, 112, 255, 0.06), rgba(11, 15, 28, 0.7)); }

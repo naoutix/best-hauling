@@ -752,3 +752,19 @@ test("compactValue : notation compacte K/M", () => {
   assert.equal(compactValue(0), "0");
   assert.equal(compactValue(null), "—");
 });
+
+test("enRouteDeals : destTerminal force le terminal d'arrivée", () => {
+  const toC = enRouteDeals(MKT(), 0, "", 2); // force C (idx 2)
+  const gold = toC.find((d) => d.commodity === "Gold");
+  assert.equal(gold.sell.terminal, "C");
+  assert.equal(gold.margin, 200);
+  assert.equal(toC.some((d) => d.commodity === "Drug"), false); // Drug ne vend pas à C
+});
+
+test("bestManifest : destTerminal force la destination", () => {
+  const f = F({ useCargo: true, cargo: 100 });
+  assert.equal(bestManifest(MKT(), 0, "", f, idResolve, 1).dest.name, "B"); // forcé sur B
+  const toC = bestManifest(MKT(), 0, "", f, idResolve, 2);                   // forcé sur C
+  assert.equal(toC.dest.name, "C");
+  assert.equal(toC.profit, 100 * 200);
+});

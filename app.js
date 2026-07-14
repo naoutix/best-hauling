@@ -384,6 +384,10 @@ function setupEnRoute() {
   stations.sort((a, b) => a.label.localeCompare(b.label, "fr"));
   $("stationList").innerHTML = stations.map((s) => `<option value="${esc(s.label)}"></option>`).join("");
 
+  // Datalist de TOUTES les commodités (pour l'ajout libre au manifeste).
+  $("commodityList").innerHTML = MARKET.commodities
+    .map((c) => `<option value="${esc(c.name)}">${esc(c.code || "")}</option>`).join("");
+
   enrouteReady = true;
   resolveOrigin(); // au cas où une valeur a été restaurée
 }
@@ -392,6 +396,13 @@ function setupEnRoute() {
 function resolveOrigin() {
   const v = $("origin").value.trim();
   enrouteOrigin = originMap.has(v) ? originMap.get(v) : null;
+}
+
+// Résout le terminal d'ARRIVÉE forcé (En route) depuis le champ (libellé exact), ou null.
+let enrouteDest = null;
+function resolveDest() {
+  const v = $("destTerminal").value.trim();
+  enrouteDest = stationMap.has(v) ? stationMap.get(v) : null;
 }
 
 // dealFrom / enRouteDeals / bestManifest / buildChainAdjacency vivent dans logic.mjs (fonctions
@@ -470,6 +481,43 @@ function addSuggestion(name) {
   paintManifest();
 }
 
+// Ajout LIBRE : n'importe quelle commodité (par nom ou code), même si elle n'est pas vendable à
+// destination — on la charge pour l'écouler ailleurs (ligne « carry-only », marge nulle ici).
+function addManifestCommodity(name) {
+  const m = currentManifest;
+  if (!m || !name) return;
+  const q = name.trim().toLowerCase();
+  const c = MARKET.commodities.find((x) => x.name.toLowerCase() === q || (x.code && x.code.toLowerCase() === q));
+  if (!c || m.lines.some((l) => l.name === c.name)) return; // inconnue ou déjà dans le manifeste
+  const b = c.buys.find((x) => x[0] === m.originIdx);   // achat au terminal de départ (si dispo)
+  const s = c.sells.find((x) => x[0] === m.destIdx);    // vente à destination (peut ne pas exister)
+  const eb = b ? effVals(c.name, m.origin.name, "buy", b[1], b[2], b[3]) : null;
+  const es = s ? effVals(c.name, m.dest.name, "sell", s[1], s[2], s[3]) : null;
+  const buyPrice = eb ? eb.price : 0;
+  const stock = eb ? eb.vol : Infinity;
+  const rem = manifestRemaining();
+  let u = Math.max(0, rem.cargoLeft);
+  if (isFinite(stock)) u = Math.min(u, stock);
+  if (u <= 0) u = isFinite(stock) ? Math.max(1, Math.min(stock, 1)) : 1; // au moins 1 SCU
+  m.lines.push({
+    name: c.name, kind: c.kind, illegal: c.illegal,
+    buyPrice, stock,
+    sellPrice: es ? es.price : null, demand: es ? es.vol : null, demandKnown: es ? es.ovol : false,
+    margin: es ? es.price - buyPrice : 0, // pas vendable ici -> 0 (profit ailleurs)
+    buyUpdated: b ? b[3] : 0, sellUpdated: s ? s[3] : 0,
+    units: u, cap: u, carry: !es,
+  });
+  paintManifest();
+}
+
+// Retire une ligne du manifeste (par nom de commodité).
+function removeManifestLine(name) {
+  const m = currentManifest;
+  if (!m) return;
+  m.lines = m.lines.filter((l) => l.name !== name);
+  paintManifest();
+}
+
 // Dessine le manifeste courant : totaux + lignes (SCU/prix/stock éditables) + suggestions.
 function paintManifest() {
   const m = currentManifest;
@@ -484,16 +532,25 @@ function paintManifest() {
       <button id="copyManifest" class="copy-btn" title="Copier le plan de chargement">⧉ Copier</button>
     </div>
     <div class="manifest-lines">` +
-    m.lines.map((l, i) =>
-      `<div class="mline">${commodityIcon(l.kind)}` +
-      `<span class="mqtywrap"><input type="number" class="mqty-input" min="0" value="${l.units}" data-i="${i}" data-margin="${l.margin}" data-buy="${l.buyPrice}" data-cap="${l.cap}" title="Ajuste librement — tu peux dépasser le stock UEX (vol de fret, relevé périmé…)" aria-label="SCU ${esc(l.name)}"><span class="munit">SCU</span></span>` +
-      `<span class="mname">${esc(l.name)}${illegalTag(l.illegal)}</span>` +
-      `<span class="mstock">stock ${editv(l.name, m.origin.name, "buy", "vol", l.stock, isOv(l.name, m.origin.name, "buy", "vol"), l.buyUpdated)} · dem. ${editv(l.name, m.dest.name, "sell", "vol", l.demand, isOv(l.name, m.dest.name, "sell", "vol"), l.sellUpdated)}</span>` +
-      `<span class="mprice">${editv(l.name, m.origin.name, "buy", "price", l.buyPrice, isOv(l.name, m.origin.name, "buy", "price"), l.buyUpdated)} → ${editv(l.name, m.dest.name, "sell", "price", l.sellPrice, isOv(l.name, m.dest.name, "sell", "price"), l.sellUpdated)}</span>` +
-      `<span class="mprofit profit">+${fmt(l.units * l.margin)}</span>` +
-      `<span class="mboxes" title="Caisses SCU standard à charger">📦 ${scuBoxesLabel(l.units)}</span></div>`
-    ).join("") +
-    `</div><div id="manifestSuggest" class="manifest-suggest"></div>`;
+    m.lines.map((l, i) => {
+      const carry = l.sellPrice == null; // pas vendable à cette destination -> à écouler ailleurs
+      const demCell = carry ? '<span class="muted">—</span>' : editv(l.name, m.dest.name, "sell", "vol", l.demand, isOv(l.name, m.dest.name, "sell", "vol"), l.sellUpdated);
+      const sellCell = carry ? '<span class="carry-tag" title="Pas vendable à cette destination — à écouler ailleurs">vend ailleurs</span>' : editv(l.name, m.dest.name, "sell", "price", l.sellPrice, isOv(l.name, m.dest.name, "sell", "price"), l.sellUpdated);
+      const profitCell = carry ? '<span class="mprofit muted">—</span>' : `<span class="mprofit profit">+${fmt(l.units * l.margin)}</span>`;
+      return `<div class="mline${carry ? " carry" : ""}">${commodityIcon(l.kind)}` +
+        `<span class="mqtywrap"><input type="number" class="mqty-input" min="0" value="${l.units}" data-i="${i}" data-margin="${l.margin}" data-buy="${l.buyPrice}" data-cap="${l.cap}" title="Ajuste librement — tu peux dépasser le stock UEX (vol de fret, relevé périmé…)" aria-label="SCU ${esc(l.name)}"><span class="munit">SCU</span></span>` +
+        `<span class="mname">${esc(l.name)}${illegalTag(l.illegal)}<button class="mline-del" data-name="${esc(l.name)}" title="Retirer du manifeste" aria-label="Retirer">✕</button></span>` +
+        `<span class="mstock">stock ${editv(l.name, m.origin.name, "buy", "vol", l.stock, isOv(l.name, m.origin.name, "buy", "vol"), l.buyUpdated)} · dem. ${demCell}</span>` +
+        `<span class="mprice">${editv(l.name, m.origin.name, "buy", "price", l.buyPrice, isOv(l.name, m.origin.name, "buy", "price"), l.buyUpdated)} → ${sellCell}</span>` +
+        profitCell +
+        `<span class="mboxes" title="Caisses SCU standard à charger">📦 ${scuBoxesLabel(l.units)}</span></div>`;
+    }).join("") +
+    `</div>
+    <div class="manifest-add">
+      <input id="manifestAddInput" list="commodityList" placeholder="Ajouter n'importe quelle commodité (même non vendable ici)…" autocomplete="off" aria-label="Ajouter une commodité" />
+      <button id="manifestAddBtn" type="button" class="copy-btn">+ Ajouter</button>
+    </div>
+    <div id="manifestSuggest" class="manifest-suggest"></div>`;
   renderSuggestions();
 }
 
@@ -544,7 +601,7 @@ function copyManifest() {
   }).catch(() => {});
 }
 
-function renderManifest(origin, destSystem, f) {
+function renderManifest(origin, destSystem, f, destTerminal) {
   const card = $("manifest");
   currentManifest = null;
   if (enrouteOrigin == null) { card.hidden = true; return; }
@@ -553,7 +610,7 @@ function renderManifest(origin, destSystem, f) {
     card.innerHTML = `<div class="manifest-hint">Active la <b>soute (SCU)</b> pour calculer un manifeste de remplissage.</div>`;
     return;
   }
-  const man = bestManifest(MARKET, origin, destSystem, f, effVals);
+  const man = bestManifest(MARKET, origin, destSystem, f, effVals, destTerminal);
   if (!man) {
     card.hidden = false;
     card.innerHTML = `<div class="manifest-hint">Aucun chargement rentable depuis ce terminal vers cette destination.</div>`;
@@ -568,10 +625,11 @@ function renderManifest(origin, destSystem, f) {
 function renderEnRoute() {
   if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderEnRoute(); }); return; }
   if (!enrouteReady) setupEnRoute();
+  resolveDest();
   const f = readFilters();
   const emptyMsg = $("empty");
 
-  renderManifest(enrouteOrigin, $("destSystem").value, f);
+  renderManifest(enrouteOrigin, $("destSystem").value, f, enrouteDest);
 
   if (enrouteOrigin == null) {
     $("enrouteRows").innerHTML = "";
@@ -581,9 +639,9 @@ function renderEnRoute() {
   }
 
   const destSystem = $("destSystem").value;
-  // sysFilter:"" — le système d'arrivée est filtré par destSystem, pas par le menu « système d'achat ».
+  // sysFilter:"" — le système d'arrivée est filtré par destSystem (ou le terminal forcé), pas par le menu « système d'achat ».
   const ef = { ...f, sysFilter: "" };
-  let deals = enRouteDeals(MARKET, enrouteOrigin, destSystem)
+  let deals = enRouteDeals(MARKET, enrouteOrigin, destSystem, enrouteDest)
     .filter((r) => routePasses(r, ef))
     .map((r) => evaluate(r, f));
 
@@ -834,7 +892,7 @@ async function loadShips() {
 // ---------- Persistance & permaliens ----------
 // L'état (filtres, tri, vue, vaisseau) est sauvé dans localStorage ET encodé dans le
 // hash de l'URL, pour reprendre là où on s'est arrêté et partager une vue précise.
-const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem", "chainOrigin", "hops", "station"];
+const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem", "destTerminal", "chainOrigin", "hops", "station"];
 const STATE_CHECKS = ["useCargo", "useBudget", "sameSystem", "noOutpost", "legalOnly", "capStock"];
 // safeKey / encodeState / decodeState viennent de logic.mjs.
 
@@ -1121,6 +1179,7 @@ async function init() {
   // Contrôles « En route ».
   $("origin").addEventListener("input", () => { resolveOrigin(); refresh(); });
   $("destSystem").addEventListener("input", refresh);
+  $("destTerminal").addEventListener("input", refresh); // terminal d'arrivée forcé
   // Contrôles « Chaîne ».
   $("chainOrigin").addEventListener("input", () => { resolveChainOrigin(); refresh(); });
   $("hops").addEventListener("input", refresh);
@@ -1131,14 +1190,20 @@ async function init() {
     if (del) { delete OVERRIDES[del.dataset.key]; saveOverrides(); updateOvBadge(); refresh(); return; }
     if (e.target.closest("#resetAll")) resetAllOverrides();
   });
-  // Manifeste : ajustement des SCU (recalcul à la volée) + ajout d'une commodité suggérée.
+  // Manifeste : ajustement des SCU + ajout (suggéré ou libre) + retrait d'une ligne.
   $("manifest").addEventListener("input", (e) => {
     if (e.target.classList.contains("mqty-input")) updateManifestTotals();
   });
   $("manifest").addEventListener("click", (e) => {
     if (e.target.closest("#copyManifest")) { copyManifest(); return; }
+    if (e.target.closest("#manifestAddBtn")) { addManifestCommodity($("manifestAddInput").value); return; }
+    const del = e.target.closest(".mline-del");
+    if (del) { removeManifestLine(del.dataset.name); return; }
     const add = e.target.closest(".suggest-add");
     if (add) addSuggestion(add.dataset.name);
+  });
+  $("manifest").addEventListener("keydown", (e) => {
+    if (e.target.id === "manifestAddInput" && e.key === "Enter") { e.preventDefault(); addManifestCommodity(e.target.value); }
   });
   // Schéma de trajet : déplie/replie une ligne détaillée sous la ligne cliquée.
   document.addEventListener("click", (e) => {
