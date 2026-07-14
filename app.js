@@ -1033,7 +1033,7 @@ function commodityRowHTML(c) {
 function paintCommodityDetail() {
   const box = $("commDetail");
   if (!commSelected) { box.innerHTML = '<p class="manifest-hint">Sélectionne une commodité (ligne du tableau ou champ « Commodité ») pour voir tous ses points d\'achat et de vente.</p>'; return; }
-  const p = commodityPoints(MARKET, commSelected);
+  const p = commodityPoints(MARKET, commSelected, readFilters()); // exclut les avant-postes si le filtre est actif
   if (!p) { box.innerHTML = ""; return; }
   const buyRow = (b) => `<tr><td class="loc"><div>${esc(b.terminal)}${sysBadge(b.system)}${outpostTag(b.outpost)}</div><div class="loc-sub">${esc(b.planet)}</div></td><td class="num">${fmt(b.price)}</td><td class="num">${statusDot(b.status, "buy")} ${fmt(b.stock)}</td><td>${freshChip(b.updated)}</td></tr>`;
   const sellRow = (s) => `<tr><td class="loc"><div>${esc(s.terminal)}${sysBadge(s.system)}${outpostTag(s.outpost)}</div><div class="loc-sub">${esc(s.planet)}</div></td><td class="num">${fmt(s.price)}</td><td class="num">${statusDot(s.status, "sell")} ${fmt(s.demand)}</td><td>${freshChip(s.updated)}</td></tr>`;
@@ -1051,8 +1051,9 @@ function paintCommodityDetail() {
 function renderCommodities() {
   if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderCommodities(); }); return; }
   if (!enrouteReady) setupEnRoute();
-  const q = $("search").value.trim().toLowerCase();
-  let rows = commoditySummaries(MARKET).filter(
+  const f = readFilters();
+  const q = f.q;
+  let rows = commoditySummaries(MARKET, f).filter( // légales + avant-postes s'appliquent ici
     (c) => !q || c.name.toLowerCase().includes(q) || (c.code && c.code.toLowerCase().includes(q))
   );
   sortCommodities(rows);

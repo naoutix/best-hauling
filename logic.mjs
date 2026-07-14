@@ -388,6 +388,8 @@ export function buildChainAdjacency(market, f, resolve) {
         if (s[0] === b[0]) return;
         const st = market.terminals[s[0]];
         if (f.noOutpost && st.outpost) return;
+        if (f.sameOnly && bt.system !== st.system) return;          // même système uniquement
+        if (f.maxAge) { const a = pairAge(b[3], s[3]); if (a == null || a > f.maxAge) return; } // fraîcheur
         const es = resolve(c.name, st.name, "sell", s[1], s[2], s[3]);
         const margin = es.price - eb.price;
         if (margin <= 0) return;
@@ -407,32 +409,40 @@ export function buildChainAdjacency(market, f, resolve) {
 
 // ---------- Panneau « Commodités » : résumé global + points d'achat/vente ----------
 // Une ligne de synthèse par commodité (pour le grand tableau triable).
-export function commoditySummaries(market) {
-  return market.commodities.map((c) => {
+// f (optionnel) = { legalOnly, noOutpost } — seuls filtres pertinents ici : masque les
+// commodités illégales, et exclut les points en avant-poste du calcul best/compteurs.
+export function commoditySummaries(market, f = {}) {
+  const out = [];
+  for (const c of market.commodities) {
+    if (f.legalOnly && c.illegal) continue;
+    const buys = f.noOutpost ? c.buys.filter((b) => !market.terminals[b[0]].outpost) : c.buys;
+    const sells = f.noOutpost ? c.sells.filter((s) => !market.terminals[s[0]].outpost) : c.sells;
     // Achat le moins cher / vente la plus chère + le statut d'inventaire à ce point.
     let bestBuy = null, buyStatus = 0;
-    for (const b of c.buys) if (bestBuy == null || b[1] < bestBuy) { bestBuy = b[1]; buyStatus = b[4] || 0; }
+    for (const b of buys) if (bestBuy == null || b[1] < bestBuy) { bestBuy = b[1]; buyStatus = b[4] || 0; }
     let bestSell = null, sellStatus = 0;
-    for (const s of c.sells) if (bestSell == null || s[1] > bestSell) { bestSell = s[1]; sellStatus = s[4] || 0; }
+    for (const s of sells) if (bestSell == null || s[1] > bestSell) { bestSell = s[1]; sellStatus = s[4] || 0; }
     const margin = bestBuy != null && bestSell != null ? bestSell - bestBuy : null;
-    return {
+    out.push({
       name: c.name, code: c.code || "", kind: c.kind, illegal: c.illegal,
-      nBuy: c.buys.length, nSell: c.sells.length, bestBuy, bestSell, buyStatus, sellStatus, margin,
-    };
-  });
+      nBuy: buys.length, nSell: sells.length, bestBuy, bestSell, buyStatus, sellStatus, margin,
+    });
+  }
+  return out;
 }
 
 // Tous les points d'ACHAT (les moins chers d'abord) et de VENTE (les plus chers d'abord)
 // d'une commodité, avec la localisation du terminal. Null si commodité inconnue.
-export function commodityPoints(market, name) {
+export function commodityPoints(market, name, f = {}) {
   const c = market.commodities.find((x) => x.name === name);
   if (!c) return null;
   const T = (i) => market.terminals[i];
+  const keep = (p) => !(f.noOutpost && T(p[0]).outpost); // exclut les avant-postes si demandé
   const point = (p, volKey) => ({
     terminal: T(p[0]).name, system: T(p[0]).system, planet: T(p[0]).planet, outpost: T(p[0]).outpost,
     price: p[1], [volKey]: p[2], updated: p[3], status: p[4],
   });
-  const buys = c.buys.map((b) => point(b, "stock")).sort((a, b) => a.price - b.price);
-  const sells = c.sells.map((s) => point(s, "demand")).sort((a, b) => b.price - a.price);
+  const buys = c.buys.filter(keep).map((b) => point(b, "stock")).sort((a, b) => a.price - b.price);
+  const sells = c.sells.filter(keep).map((s) => point(s, "demand")).sort((a, b) => b.price - a.price);
   return { name: c.name, code: c.code || "", kind: c.kind, illegal: c.illegal, buys, sells };
 }

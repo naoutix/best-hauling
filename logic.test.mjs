@@ -695,3 +695,50 @@ test("commodityPoints : achats du moins cher, ventes du plus cher, avec terminal
 test("commodityPoints : null si commodité inconnue", () => {
   assert.equal(commodityPoints(CMKT, "Inconnu"), null);
 });
+
+// ---------- Cohérence des filtres par vue (garde-fou anti-régression) ----------
+test("buildChainAdjacency : sameOnly écarte les segments inter-systèmes", () => {
+  const adj = buildChainAdjacency(MKT(), { sameOnly: true }, idResolve);
+  const legs = adj.get(0);
+  assert.equal(legs.length, 1);   // A->C (Pyro) exclu, reste A->B (Stanton)
+  assert.equal(legs[0].to, 1);
+});
+
+test("buildChainAdjacency : maxAge écarte les segments trop vieux", () => {
+  const old = RECENT - 10 * 86400;
+  const mkt = {
+    terminals: [
+      { name: "A", system: "S", planet: "", outpost: false },
+      { name: "B", system: "S", planet: "", outpost: false },
+      { name: "C", system: "S", planet: "", outpost: false },
+    ],
+    commodities: [{
+      name: "X", code: "X", kind: "metal", illegal: false,
+      buys: [[0, 100, 500, RECENT, 5]],
+      sells: [[1, 150, 300, RECENT, 3], [2, 200, 300, old, 2]], // B frais, C périmé
+    }],
+  };
+  const legs = buildChainAdjacency(mkt, { maxAge: 3 }, idResolve).get(0);
+  assert.equal(legs.length, 1);   // A->C (vieux) écarté
+  assert.equal(legs[0].to, 1);
+});
+
+test("commoditySummaries : legalOnly masque les commodités illégales", () => {
+  const s = commoditySummaries(CMKT, { legalOnly: true });
+  assert.equal(s.length, 1);
+  assert.equal(s[0].name, "Gold");
+});
+
+test("commoditySummaries : noOutpost exclut les points en avant-poste du calcul", () => {
+  const gold = commoditySummaries(CMKT, { noOutpost: true }).find((x) => x.name === "Gold");
+  assert.equal(gold.bestSell, 150); // vente à 300 (avant-poste C) exclue -> B à 150
+  assert.equal(gold.nSell, 1);
+  assert.equal(gold.bestBuy, 90);   // achats non touchés (aucun avant-poste)
+});
+
+test("commodityPoints : noOutpost exclut les points en avant-poste", () => {
+  const p = commodityPoints(CMKT, "Gold", { noOutpost: true });
+  assert.equal(p.sells.length, 1);
+  assert.equal(p.sells[0].terminal, "B");
+  assert.equal(p.buys.length, 2);
+});

@@ -90,3 +90,43 @@ test("vue Corrections : rechercher une station affiche ses commodités éditable
   await expect(page.locator("#correctionsStation .station-table tbody tr").first()).toBeVisible();
   expect(await page.locator("#correctionsStation .editv").count()).toBeGreaterThan(0);
 });
+
+test("les filtres s'appliquent aux bonnes vues — légales uniquement (régression câblage)", async ({ page }) => {
+  // Trajets : « légales uniquement » retire les routes de commodités illégales (souvent en tête de marge).
+  const routesAll = await page.locator("#rows tr").count();
+  await page.check("#legalOnly");
+  await expect(page.locator("#rows tr").first()).toBeVisible();
+  const routesLegal = await page.locator("#rows tr").count();
+  expect(routesLegal).toBeLessThan(routesAll);
+  await page.uncheck("#legalOnly");
+
+  // Boucles : le filtre doit aussi agir (<= car une boucle illégale n'est pas garantie en tête).
+  await page.click("#viewLoops");
+  const loopsAll = await page.locator("#loopRows tr").count();
+  await page.check("#legalOnly");
+  const loopsLegal = await page.locator("#loopRows tr").count();
+  expect(loopsLegal).toBeLessThanOrEqual(loopsAll);
+  await page.uncheck("#legalOnly");
+
+  // Commodités : LE bug d'origine — « légales uniquement » doit masquer les commodités illégales.
+  await page.click("#viewCommodities");
+  await expect(page.locator("#commRows tr").first()).toBeVisible();
+  const commAll = await page.locator("#commRows tr").count();
+  await page.check("#legalOnly");
+  const commLegal = await page.locator("#commRows tr").count();
+  expect(commLegal).toBeLessThan(commAll);
+  await page.uncheck("#legalOnly");
+});
+
+test("Chaîne : le filtre « même système » contraint la chaîne (régression)", async ({ page }) => {
+  await page.click("#viewChain");
+  await expect(page.locator("#chainControls")).toBeVisible();
+  const origin = await page.locator("#originList option").first().getAttribute("value");
+  await page.fill("#chainOrigin", origin);
+  await expect(page.locator("#chainOut .chain-leg").first()).toBeVisible();
+  // Avec « même système », tous les badges système de la chaîne doivent être identiques.
+  await page.check("#sameSystem");
+  await expect(page.locator("#chainOut .chain-leg").first()).toBeVisible();
+  const systems = await page.locator("#chainOut .chain-leg .sys").allInnerTexts();
+  expect(new Set(systems.map((s) => s.trim())).size).toBeLessThanOrEqual(1);
+});
