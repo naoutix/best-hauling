@@ -32,6 +32,7 @@ let shownRoutes = [], shownEnroute = [], shownLoops = [];
 // Vue « Commodités » : mode de tri (margin|code|kind|custom), clé/sens custom, sélection.
 let commMode = "margin", commSortKey = "margin", commSortDir = -1, commSelected = null, shownCommodities = [];
 let commMaxMargin = 0; // marge max de la liste courante (pour colorer la heatmap en relatif)
+let commCarried = new Set(); // commodités transportées au moins 1 fois dans le voyage (highlight board)
 // Compagnon de voyage : parcours sélectionné { legs[], current } ou null.
 let JOURNEY = null;
 // Affiche la carte du vaisseau correspondant au champ (défini par loadShips ; utilisé à la restauration).
@@ -758,6 +759,18 @@ function clearJourney() {
   renderJourney();
   saveState();
 }
+// Ensemble des commodités transportées au moins une fois sur le parcours (union des manifestes).
+function journeyCarriedCommodities() {
+  const set = new Set();
+  if (!JOURNEY || !MARKET) return set;
+  const f = readFilters();
+  JOURNEY.legs.forEach((leg) => {
+    const man = legManifest(leg, f);
+    if (man) man.lines.forEach((l) => set.add(l.name));
+  });
+  return set;
+}
+
 // Manifeste optimal d'une jambe (from -> to) : remplissage multi-commodité, terminal d'arrivée forcé.
 function legManifest(leg, f) {
   if (!MARKET || !stationMap.size) return null;
@@ -1185,14 +1198,16 @@ function marginTier(m) {
 
 // Une tuile du board : code UEX + marge max compacte (K/M), colorée par palier.
 function commodityTileHTML(c) {
+  const carried = commCarried.has(c.name);
   const cls = [
     "comm-tile", marginTier(c.margin),
     c.name === commSelected ? "selected" : "",
     c.illegal ? "illegal" : "",
+    carried ? "carried" : "",
   ].filter(Boolean).join(" ");
-  const title = `${c.name}${c.illegal ? " (illégal)" : ""} — marge max ${fmt(c.margin)} aUEC/SCU · ${c.nBuy} achat(s) / ${c.nSell} vente(s)`;
+  const title = `${c.name}${c.illegal ? " (illégal)" : ""}${carried ? " — transportée dans ton voyage" : ""} — marge max ${fmt(c.margin)} aUEC/SCU · ${c.nBuy} achat(s) / ${c.nSell} vente(s)`;
   return `<button class="${cls}" data-name="${esc(c.name)}" title="${esc(title)}">
-      <span class="tile-code">${esc(c.code || c.name.slice(0, 4).toUpperCase())}</span>
+      <span class="tile-code">${carried ? '<span class="tile-carried" title="Dans ton voyage">◆</span>' : ""}${esc(c.code || c.name.slice(0, 4).toUpperCase())}</span>
       <span class="tile-val">${c.margin == null ? "—" : compactValue(c.margin)}</span>
     </button>`;
 }
@@ -1227,6 +1242,7 @@ function renderCommodities() {
   sortCommodities(rows);
   shownCommodities = rows;
   commMaxMargin = rows.reduce((mx, c) => Math.max(mx, c.margin || 0), 0); // pour la heatmap relative
+  commCarried = journeyCarriedCommodities(); // commodités du voyage à surligner
   // Sélection : garde la commodité choisie si toujours visible, sinon prend la 1re.
   if (commSelected && !rows.some((r) => r.name === commSelected)) commSelected = null;
   if (!commSelected && rows.length) commSelected = rows[0].name;

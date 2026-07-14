@@ -251,3 +251,11 @@ test("Compagnon de voyage : manifeste optimal affiché par jambe", async ({ page
   await expect(page.locator("#journeyCard .jleg .jcargo-item").first()).toBeVisible({ timeout: 8000 });
   await expect(page.locator("#journeyCard .jleg-profit").first()).toContainText("+");
 });
+
+test("Compagnon de voyage : les commodités transportées sont surlignées dans le board", async ({ page }) => {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jcargo-item").first()).toBeVisible({ timeout: 8000 });
+  await page.click("#viewCommodities");
+  await expect(page.locator("#commGrid .comm-tile.carried")).not.toHaveCount(0); // au moins une surlignée
+  await expect(page.locator("#commGrid .comm-tile.carried .tile-carried").first()).toBeVisible();
+});

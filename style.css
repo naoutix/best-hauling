@@ -600,6 +600,8 @@ input.mqty-input.over-stock { color: var(--warn); border-color: var(--warn); box
 .comm-tile:hover { background: rgba(255, 176, 32, 0.08); border-color: var(--line2); }
 .comm-tile.selected { border: 1px solid var(--acc); border-left: 2px solid var(--acc); background: rgba(255, 176, 32, 0.14); box-shadow: inset 0 0 12px rgba(255, 176, 32, 0.12); }
 .comm-tile.illegal { border-left: 2px solid var(--bad); } /* liseré rouge = commodité illégale */
+.comm-tile.carried { border-color: var(--acc-2); box-shadow: inset 0 0 0 1px var(--acc-2), 0 0 10px rgba(169, 112, 255, 0.15); } /* transportée dans le voyage */
+.tile-carried { color: var(--acc-2); font-size: 8px; margin-right: 3px; vertical-align: middle; }
 .tile-code { color: var(--muted); font-weight: 700; letter-spacing: 0.5px; overflow: hidden; text-overflow: ellipsis; }
 .comm-tile.selected .tile-code { color: #fff; }
 .tile-val { flex-shrink: 0; font-weight: 700; }
