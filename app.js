@@ -811,6 +811,29 @@ function addStopByTerminal(label) {
   if (leg) pickJourney([leg]);
 }
 
+// Retire un arrêt (index de station) et RECONNECTE les voisins (recalcule la jambe A->C).
+function removeJourneyStop(stopIndex) {
+  if (!JOURNEY) return;
+  const legs = JOURNEY.legs;
+  let newLegs;
+  if (stopIndex <= 0) newLegs = legs.slice(1);                 // 1er arrêt -> retire la 1re jambe
+  else if (stopIndex >= legs.length) newLegs = legs.slice(0, -1); // dernier arrêt -> retire la dernière jambe
+  else {
+    // arrêt du milieu : reconnecte stops[i-1] -> stops[i+1].
+    const prev = legs[stopIndex - 1], next = legs[stopIndex];
+    const fromIdx = stationMap.get(`${prev.from} — ${prev.fromSystem}`);
+    const toIdx = stationMap.get(`${next.to} — ${next.toSystem}`);
+    const bridge = bestLegTo(fromIdx, toIdx) || // si aucun fret rentable A->C, jambe « à vide » (contiguïté préservée)
+      { from: prev.from, fromSystem: prev.fromSystem, to: next.to, toSystem: next.toSystem, commodity: "", buyPrice: 0, sellPrice: 0, margin: 0 };
+    newLegs = [...legs.slice(0, stopIndex - 1), bridge, ...legs.slice(stopIndex + 1)];
+  }
+  if (!newLegs.length) { clearJourney(); return; }
+  JOURNEY = { legs: newLegs, current: Math.min(JOURNEY.current, newLegs.length) };
+  syncViewsToJourney();
+  renderJourney();
+  refresh();
+}
+
 function renderJourney() {
   const card = $("journeyCard");
   if (!card) return;
@@ -822,7 +845,7 @@ function renderJourney() {
 
   const stations = journeyStations(JOURNEY);
   const path = stations
-    .map((s, i) => `<button class="jstep${i === JOURNEY.current ? " here" : ""}" data-i="${i}" title="Je suis ici"><span class="sys ${esc(s.system.toLowerCase())}">${esc(s.name)}</span></button>`)
+    .map((s, i) => `<span class="jstep-wrap"><button class="jstep${i === JOURNEY.current ? " here" : ""}" data-i="${i}" title="Je suis ici"><span class="sys ${esc(s.system.toLowerCase())}">${esc(s.name)}</span></button><button class="jstep-del" data-i="${i}" title="Retirer cet arrêt" aria-label="Retirer">✕</button></span>`)
     .join('<span class="jsep">→</span>');
   const n = JOURNEY.legs.length;
   const f = readFilters();
@@ -1391,6 +1414,9 @@ async function init() {
     if (e.target.closest("#journeyAddBtn")) { addStopByTerminal($("journeyAddStop").value); return; }
     const sug = e.target.closest(".jstop-suggest");
     if (sug) { addStopByTerminal(sug.dataset.label); return; }
+    // Retirer un arrêt (✕ sur une étape) -> reconnexion des voisins.
+    const del = e.target.closest(".jstep-del");
+    if (del) { removeJourneyStop(Number(del.dataset.i)); return; }
     // Parcours interactif : clic sur une étape (⦿) = « je suis ici » -> recale les vues.
     const step = e.target.closest(".jstep");
     if (step && JOURNEY) {

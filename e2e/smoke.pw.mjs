@@ -267,3 +267,16 @@ test("Compagnon de voyage : ajouter un arrêt (suggestion) étend le parcours", 
   await page.locator("#journeyCard .jstop-suggest").first().click();
   await expect(page.locator("#journeyCard .jstep")).toHaveCount(stopsBefore + 1);
 });
+
+test("Compagnon de voyage : retirer un arrêt du milieu reconnecte le parcours", async ({ page }) => {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jstop-suggest").first()).toBeVisible({ timeout: 8000 });
+  await page.locator("#journeyCard .jstop-suggest").first().click();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(3); // 3 arrêts
+  const first = (await page.locator("#journeyCard .jstep").nth(0).innerText()).trim();
+  const last = (await page.locator("#journeyCard .jstep").nth(2).innerText()).trim();
+  await page.locator("#journeyCard .jstep-del").nth(1).click(); // retire le milieu
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2); // reconnecté A->C
+  expect((await page.locator("#journeyCard .jstep").nth(0).innerText()).trim()).toBe(first);
+  expect((await page.locator("#journeyCard .jstep").nth(1).innerText()).trim()).toBe(last);
+});

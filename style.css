@@ -281,6 +281,9 @@ input::placeholder { color: #4d5670; }
 .jstep.here { border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc), 0 0 10px rgba(255, 176, 32, 0.25); }
 .jstep.here::after { content: " ⦿"; color: var(--acc); font-size: 10px; }
 .jsep { color: var(--acc-2); font-size: 13px; }
+.jstep-wrap { display: inline-flex; align-items: center; gap: 2px; }
+.jstep-del { background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 9px; padding: 0 2px; opacity: 0.5; }
+.jstep-del:hover { color: var(--bad); opacity: 1; }
 .journey-meta { margin-top: 9px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
 /* Manifeste optimal par jambe (cargaison entre 2 arrêts). */
 .journey-legs { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
