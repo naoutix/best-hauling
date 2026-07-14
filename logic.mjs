@@ -174,3 +174,41 @@ export function addableUnits(it, rem) {
   if (isFinite(rem.budgetLeft)) u = Math.min(u, Math.floor(rem.budgetLeft / it.buyPrice));
   return Math.max(0, u);
 }
+
+// ---------- Corrections locales : opérations sur un store injectable ----------
+// Le store est un objet { "commodité|terminal|side": { price?, vol?, base } }.
+export const ovKey = (commodity, terminal, side) => `${commodity}|${terminal}|${side}`;
+
+// Valeur effective (corrigée si besoin) + suppression de la correction périmée du store.
+// Renvoie { price, vol, oprice, ovol, stale }. Seul effet de bord : delete store[key] si périmé.
+export function effFromStore(store, key, price, vol, dataUpdated) {
+  const r = effValue(store[key], price, vol, dataUpdated);
+  if (r.stale) delete store[key];
+  return r;
+}
+
+// Enregistre/efface une correction. field = "price"|"vol". value null/"" efface ce champ.
+// baseUpdated = date UEX du point (ancre de fraîcheur). Supprime la clé si plus rien de corrigé.
+export function setInStore(store, key, field, value, baseUpdated) {
+  const o = store[key] || {};
+  const n = value == null || value === "" ? NaN : Math.max(0, Math.round(Number(value)));
+  if (Number.isFinite(n)) o[field] = n;
+  else delete o[field];
+  if (o.price != null || o.vol != null) { o.base = Number(baseUpdated) || 0; store[key] = o; }
+  else delete store[key];
+  return store;
+}
+
+// ---------- État partageable (URL / localStorage) ----------
+export const safeKey = (k) => typeof k === "string" && /^[a-zA-Z]+$/.test(k); // anti-injection de sélecteur
+
+// Encode un objet d'état en query-string (ignore les valeurs vides/nulles).
+export function encodeState(obj) {
+  const p = new URLSearchParams();
+  Object.entries(obj).forEach(([k, v]) => { if (v !== "" && v != null) p.set(k, v); });
+  return p.toString();
+}
+// Décode une query-string en objet (null si vide).
+export function decodeState(str) {
+  return str ? Object.fromEntries(new URLSearchParams(str)) : null;
+}

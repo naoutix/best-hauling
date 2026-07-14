@@ -11,7 +11,12 @@
   },
   "scripts": {
     "build": "node scripts/build-data.mjs",
-    "test": "node --test"
+    "serve": "node scripts/serve.mjs",
+    "test": "node --test",
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
   },
   "repository": {
     "type": "git",
