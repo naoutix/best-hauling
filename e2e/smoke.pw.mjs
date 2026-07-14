@@ -156,13 +156,16 @@ test("En route : destination forçable + ajout/retrait libre au manifeste", asyn
 });
 
 test("Compagnon de voyage : sélectionner un trajet affiche le parcours", async ({ page }) => {
-  await expect(page.locator("#journeyCard")).toBeHidden();
+  // Avant sélection : l'invite « démarrer un voyage » est affichée (plus d'étapes).
+  await expect(page.locator("#journeyStartBtn")).toBeVisible();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(0);
   await page.locator("#rows tr").first().locator(".journey-pick").click();
   await expect(page.locator("#journeyCard")).toBeVisible();
   await expect(page.locator("#journeyCard .jstep")).toHaveCount(2); // 2 stations pour 1 saut
   await expect(page.locator("#journeyCard .jstep.here")).toHaveCount(1);
   await page.locator("#journeyClear").click();
-  await expect(page.locator("#journeyCard")).toBeHidden();
+  // Après effacement : retour à l'invite de démarrage.
+  await expect(page.locator("#journeyStartBtn")).toBeVisible();
 });
 
 test("Compagnon de voyage : sélectionner un trajet pré-remplit En route (départ/arrivée)", async ({ page }) => {
@@ -309,4 +312,28 @@ test("Compagnon de voyage : on peut ajouter n'importe quel arrêt (même sans fr
   await page.fill("#journeyAddStop", notSuggested.split(" — ")[0]);
   await page.click("#journeyAddBtn");
   await expect(page.locator("#journeyCard .jstep")).toHaveCount(3); // ajouté quoi qu'il arrive
+});
+
+test("Compagnon de voyage : démarrer un voyage « de zéro » (sans passer par un trajet)", async ({ page }) => {
+  // L'invite « Nouveau voyage » est visible dès le départ, sans avoir cliqué ▶.
+  await expect(page.locator("#journeyStartBtn")).toBeVisible();
+  await expect(page.locator("#journeyCard .journey-title")).toHaveText(/Nouveau voyage/);
+  // Focus le champ -> précharge le marché -> le datalist se peuple.
+  await page.locator("#journeyStart").focus();
+  await expect
+    .poll(async () => page.locator("#stationList option").count(), { timeout: 8000 })
+    .toBeGreaterThan(0);
+  const first = await page.locator("#stationList option").first().getAttribute("value");
+  // Démarre depuis ce terminal (par nom seul).
+  await page.fill("#journeyStart", first.split(" — ")[0]);
+  await page.click("#journeyStartBtn");
+  // Voyage « de zéro » : une seule station, pas encore de jambe, champ d'ajout présent.
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(1);
+  await expect(page.locator("#journeyCard .jleg")).toHaveCount(0);
+  await expect(page.locator("#journeyAddStop")).toBeVisible();
+  // Ajoute un arrêt -> le parcours s'étend à 2 stations.
+  const opts = await page.locator("#stationList option").evaluateAll((els) => els.map((e) => e.value));
+  await page.fill("#journeyAddStop", opts.find((o) => o !== first));
+  await page.click("#journeyAddBtn");
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2);
 });

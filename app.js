@@ -8,7 +8,7 @@ import {
   routePasses, loopPasses,
   routeMetrics, loopMetrics, enRouteDeals, bestManifest, buildChainAdjacency,
   commoditySummaries, commodityPoints, compactValue,
-  legFromRoute, legsFromLoop, legsFromChain, startJourney, journeyStations, journeyEnd,
+  legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   encodeJourney, decodeJourney,
 } from "./logic.mjs";
@@ -884,6 +884,21 @@ function addStopByTerminal(label) {
   pickJourney([bestLegTo(fromIdx, toIdx) || emptyLeg(fromIdx, toIdx)]);
 }
 
+// Démarre un voyage « de zéro » depuis un terminal de départ (sans passer par un trajet ▶).
+// On pose juste le point de départ ; l'utilisateur construit ensuite avec « + Arrêt ».
+function beginJourney(label) {
+  const v = (label || "").trim();
+  if (!v) return;
+  if (!stationMap.size) { loadMarket().then(() => { setupEnRoute(); beginJourney(v); }); return; } // marché requis pour résoudre
+  const startIdx = resolveStationLabel(v);
+  if (startIdx == null) return; // terminal inconnu
+  const t = MARKET.terminals[startIdx];
+  JOURNEY = startJourneyAt({ name: t.name, system: t.system });
+  syncViewsToJourney();
+  renderJourney();
+  refresh();
+}
+
 // Retire un arrêt (index de station) et RECONNECTE les voisins (recalcule la jambe A->C).
 function removeJourneyStop(stopIndex) {
   if (!JOURNEY) return;
@@ -910,7 +925,18 @@ function removeJourneyStop(stopIndex) {
 function renderJourney() {
   const card = $("journeyCard");
   if (!card) return;
-  if (!JOURNEY || !JOURNEY.legs.length) { card.hidden = true; card.innerHTML = ""; return; }
+  // Aucun voyage -> invite à en démarrer un : depuis un trajet (▶) OU « de zéro » (point de départ).
+  if (!JOURNEY) {
+    card.hidden = false;
+    card.innerHTML =
+      `<div class="journey-head"><span class="journey-title">◈ Nouveau voyage</span></div>
+       <p class="journey-hint">Choisis un trajet (▶) dans une vue, ou démarre de zéro :</p>
+       <div class="journey-add">
+         <input id="journeyStart" list="stationList" placeholder="Point de départ (terminal)…" autocomplete="off" aria-label="Point de départ du voyage" />
+         <button id="journeyStartBtn" type="button" class="chain-pick">Commencer</button>
+       </div>`;
+    return;
+  }
   card.hidden = false;
   // MARKET nécessaire pour les manifestes par jambe -> charge à la demande puis re-render.
   if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderJourney(); }); }
@@ -960,9 +986,11 @@ function renderJourney() {
     : sugList.length
       ? `<div class="journey-suggest"><span class="suggest-lbl">Suggestions :</span>${sugList.map((s) => `<button class="jstop-suggest" data-label="${esc(s.label)}" title="Ajouter ${esc(s.terminal)} — via ${esc(s.commodity)}, +${fmt(s.margin)} marge/SCU">+ ${esc(s.terminal)} <span class="muted">+${fmt(s.margin)}</span></button>`).join("")}</div>`
       : '<div class="journey-suggest-empty muted">Aucune destination rentable depuis ici — ajoute quand même un arrêt au champ ci-dessus (il aura un manifeste vide, à remplir à la main).</div>';
+  const startHint = n === 0 ? '<p class="journey-hint">Départ posé — ajoute un arrêt pour construire ton parcours.</p>' : "";
   card.innerHTML =
-    `<div class="journey-head"><span class="journey-title">◈ Voyage en cours</span><button id="journeyClear" class="journey-clear" title="Effacer le parcours" aria-label="Effacer">✕</button></div>
+    `<div class="journey-head"><span class="journey-title">◈ ${n === 0 ? "Voyage" : "Voyage en cours"}</span><button id="journeyClear" class="journey-clear" title="Effacer le parcours" aria-label="Effacer">✕</button></div>
      <div class="journey-path">${path}</div>
+     ${startHint}
      <div class="journey-legs">${legsHtml}</div>
      <div class="journey-add">
        <input id="journeyAddStop" list="stationList" placeholder="+ Ajouter un arrêt (terminal)…" autocomplete="off" aria-label="Ajouter un arrêt" />
@@ -1501,6 +1529,8 @@ async function init() {
     }
     if (e.target.closest("#chainToJourney") && shownChain) { pickJourney(legsFromChain(shownChain, MARKET.terminals)); return; }
     if (e.target.closest("#journeyClear")) { clearJourney(); return; }
+    // Démarrer un voyage « de zéro » : bouton « Commencer » depuis l'invite.
+    if (e.target.closest("#journeyStartBtn")) { beginJourney($("journeyStart").value); return; }
     // Ajout d'arrêt : bouton « + Arrêt » ou une suggestion.
     if (e.target.closest("#journeyAddBtn")) { addStopByTerminal($("journeyAddStop").value); return; }
     const sug = e.target.closest(".jstop-suggest");
@@ -1527,8 +1557,16 @@ async function init() {
   });
   // Ajout d'arrêt / de commodité à la touche Entrée.
   document.addEventListener("keydown", (e) => {
-    if (e.target.id === "journeyAddStop" && e.key === "Enter") { e.preventDefault(); addStopByTerminal(e.target.value); }
+    if (e.target.id === "journeyStart" && e.key === "Enter") { e.preventDefault(); beginJourney(e.target.value); }
+    else if (e.target.id === "journeyAddStop" && e.key === "Enter") { e.preventDefault(); addStopByTerminal(e.target.value); }
     else if (e.target.classList && e.target.classList.contains("jman-add-input") && e.key === "Enter") { e.preventDefault(); addLegLine(Number(e.target.dataset.leg), e.target.value); }
+  });
+  // Précharge le marché quand on focus un champ terminal du compagnon -> peuple le datalist.
+  document.addEventListener("focusin", (e) => {
+    if ((e.target.id === "journeyStart" || e.target.id === "journeyAddStop") && !enrouteReady) {
+      if (MARKET) setupEnRoute();
+      else loadMarket().then(() => setupEnRoute());
+    }
   });
   // Édition des SCU d'une ligne de manifeste de jambe (validation au blur/Entrée).
   document.addEventListener("change", (e) => {

@@ -1,7 +1,7 @@
 // Service worker : app installable + consultable hors-ligne.
 // Coquille (html/js/css/icône) en « stale-while-revalidate » ; données en « réseau
 // d'abord, cache en repli » pour rester fraîches en ligne mais disponibles hors-ligne.
-const CACHE = "best-hauling-v2";
+const CACHE = "best-hauling-v3";
 // Coquille précachée. Les woff2 (mêmes-origine depuis fonts/) sont mis en cache au premier
 // rendu par le gestionnaire fetch ci-dessous (stale-while-revalidate) -> hors-ligne complet.
 const SHELL = ["./", "./index.html", "./app.js", "./logic.mjs", "./style.css", "./fonts/fonts.css", "./icon.svg", "./manifest.webmanifest"];

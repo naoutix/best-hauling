@@ -299,7 +299,8 @@ input::placeholder { color: #4d5670; }
 .jcargo-item b { color: var(--text); font-family: var(--mono); }
 /* Ajout d'arrêt : champ libre + suggestions rentables. */
 .journey-add { display: flex; gap: 6px; margin-top: 10px; }
-#journeyAddStop { flex: 1; min-width: 0; padding: 6px 9px; background: rgba(8, 11, 20, 0.9); border: 1px solid var(--line2); color: var(--text); border-radius: 3px; font-family: var(--font); font-size: 11px; }
+.journey-hint { margin: 6px 0 0; font-size: 10.5px; line-height: 1.45; color: var(--muted); }
+#journeyAddStop, #journeyStart { flex: 1; min-width: 0; padding: 6px 9px; background: rgba(8, 11, 20, 0.9); border: 1px solid var(--line2); color: var(--text); border-radius: 3px; font-family: var(--font); font-size: 11px; }
 .journey-suggest { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 7px; }
 .suggest-lbl { font-size: 10px; color: var(--muted); }
 .journey-suggest-empty { margin-top: 7px; font-size: 10.5px; line-height: 1.4; }
