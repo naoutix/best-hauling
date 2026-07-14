@@ -7,6 +7,7 @@ import {
   normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits, scuBoxes, bestChain,
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
   profitPerHour, rawScoreOf, routePasses, loopPasses,
+  routeMetrics, loopMetrics, dealFrom, enRouteDeals, bestManifest, buildChainAdjacency,
 } from "./logic.mjs";
 
 // ---------- Temps de trajet ----------
@@ -485,4 +486,162 @@ test("encodeState/decodeState : round-trip fidèle", () => {
 test("decodeState : chaîne vide -> null", () => {
   assert.equal(decodeState(""), null);
   assert.equal(decodeState(undefined), null);
+});
+
+// ---------- routeMetrics / loopMetrics (cœurs de calcul dérivés) ----------
+test("routeMetrics : borné par la soute -> units/profit/investment/temps", () => {
+  const m = { buyPrice: 100, buyStock: 500, sellDemand: 300, margin: 50, distance: 0, sameSystem: true, buyUpdated: NOW, sellUpdated: NOW };
+  const r = routeMetrics(m, F({ useCargo: true, cargo: 96 }));
+  assert.equal(r.units, 96);
+  assert.equal(r.investment, 96 * 100);
+  assert.equal(r.profit, 96 * 50);
+  assert.equal(r.minutes, 6);              // tripMinutes(0, false)
+  assert.equal(r.profitHour, (96 * 50 * 60) / 6);
+  assert.ok(r.rawScore > 0);
+});
+
+test("routeMetrics : non borné (aucune contrainte) -> units/profit/investment null", () => {
+  const m = { buyPrice: 100, buyStock: 500, sellDemand: 300, margin: 50, distance: 0, sameSystem: true, buyUpdated: NOW, sellUpdated: NOW };
+  const r = routeMetrics(m, F());
+  assert.equal(r.units, null);
+  assert.equal(r.profit, null);
+  assert.equal(r.investment, null);
+  assert.equal(r.profitHour, null);
+  assert.ok(r.rawScore > 0); // score sur la marge quand non borné
+});
+
+test("routeMetrics : saut inter-système ajoute du temps de trajet", () => {
+  const base = { buyPrice: 100, buyStock: 500, sellDemand: 300, margin: 50, distance: 100, buyUpdated: NOW, sellUpdated: NOW };
+  const same = routeMetrics({ ...base, sameSystem: true }, F({ useCargo: true, cargo: 10 }));
+  const cross = routeMetrics({ ...base, sameSystem: false }, F({ useCargo: true, cargo: 10 }));
+  assert.ok(cross.minutes > same.minutes);
+});
+
+test("loopMetrics : bornée -> units aller+retour, investment = max des deux jambes", () => {
+  const out = { buyPrice: 100, stock: 500, demand: 300, margin: 50, updated: NOW };
+  const back = { buyPrice: 80, stock: 400, demand: 200, margin: 30, updated: NOW };
+  const r = loopMetrics(out, back, 0, false, F({ useCargo: true, cargo: 100 }));
+  assert.equal(r.loopMargin, 80);
+  assert.equal(r.unitsOut, 100);
+  assert.equal(r.unitsBack, 100);
+  assert.equal(r.units, 200);
+  assert.equal(r.profit, 100 * 50 + 100 * 30);
+  assert.equal(r.investment, Math.max(100 * 100, 100 * 80)); // 10000
+  assert.equal(r.minutes, 12); // loopMinutes(0, false)
+});
+
+test("loopMetrics : non bornée si une seule jambe l'est -> units null", () => {
+  const out = { buyPrice: 100, stock: 500, demand: 300, margin: 50, updated: NOW };
+  const back = { buyPrice: 80, stock: 400, demand: 200, margin: 30, updated: NOW };
+  const r = loopMetrics(out, back, 0, false, F()); // aucune contrainte -> Infinity
+  assert.equal(r.units, null);
+  assert.equal(r.profit, null);
+  assert.equal(r.investment, null);
+});
+
+// ---------- Marché : dealFrom / enRouteDeals / bestManifest / buildChainAdjacency ----------
+// Marché de test : A,B (Stanton), C (Pyro, avant-poste). Tuples buy/sell = [idx, prix, vol, updated, statut].
+const MKT = () => ({
+  terminals: [
+    { name: "A", system: "Stanton", planet: "Hurston", outpost: false },  // 0
+    { name: "B", system: "Stanton", planet: "Crusader", outpost: false },  // 1
+    { name: "C", system: "Pyro", planet: "Ruin", outpost: true },          // 2
+  ],
+  commodities: [
+    { name: "Gold", kind: "metal", illegal: false,
+      buys: [[0, 100, 500, NOW, 5]],
+      sells: [[1, 150, 300, NOW, 3], [2, 300, 500, NOW, 2]] },
+    { name: "Drug", kind: "drug", illegal: true,
+      buys: [[0, 50, 100, NOW, 5]],
+      sells: [[1, 80, 100, NOW, 3]] },
+  ],
+});
+// Résolveur identité (aucune correction locale).
+const idResolve = (_c, _t, _s, price, vol) => ({ price, vol, ovol: false });
+
+test("dealFrom : construit une route depuis un achat + une vente", () => {
+  const mkt = MKT();
+  const c = mkt.commodities[0];
+  const d = dealFrom(mkt, c, c.buys[0], c.sells[0]);
+  assert.equal(d.commodity, "Gold");
+  assert.equal(d.buy.terminal, "A");
+  assert.equal(d.sell.terminal, "B");
+  assert.equal(d.margin, 50);
+  assert.equal(d.roi, 50);           // (50/100)*100
+  assert.equal(d.same_system, true);
+});
+
+test("enRouteDeals : meilleure vente par commodité depuis l'origine", () => {
+  const deals = enRouteDeals(MKT(), 0, "");
+  assert.equal(deals.length, 2);
+  const gold = deals.find((d) => d.commodity === "Gold");
+  assert.equal(gold.sell.terminal, "C"); // 300 > 150 -> meilleure vente
+  assert.equal(gold.margin, 200);
+});
+
+test("enRouteDeals : filtre par système d'arrivée", () => {
+  const deals = enRouteDeals(MKT(), 0, "Stanton");
+  const gold = deals.find((d) => d.commodity === "Gold");
+  assert.equal(gold.sell.terminal, "B"); // C (Pyro) exclu -> repli sur B
+  assert.equal(gold.margin, 50);
+});
+
+test("enRouteDeals : aucune vente depuis un terminal sans achat", () => {
+  assert.equal(enRouteDeals(MKT(), 1, "").length, 0); // rien ne s'achète en B
+});
+
+test("bestManifest : choisit la destination la plus rentable", () => {
+  const f = F({ useCargo: true, cargo: 100 });
+  const m = bestManifest(MKT(), 0, "", f, idResolve);
+  assert.equal(m.dest.name, "C");         // Gold marge 200 vers C
+  assert.equal(m.profit, 100 * 200);
+  assert.equal(m.lines.length, 1);
+});
+
+test("bestManifest : noOutpost écarte C -> repli sur B", () => {
+  const f = F({ useCargo: true, cargo: 100, noOutpost: true });
+  const m = bestManifest(MKT(), 0, "", f, idResolve);
+  assert.equal(m.dest.name, "B");
+  assert.equal(m.profit, 100 * 50);
+});
+
+test("bestManifest : le budget plafonne les unités chargées", () => {
+  const f = F({ useCargo: true, cargo: 100, useBudget: true, budget: 5000 });
+  const m = bestManifest(MKT(), 0, "", f, idResolve);
+  assert.equal(m.dest.name, "C");
+  assert.equal(m.lines[0].units, 50);     // floor(5000/100)
+  assert.equal(m.profit, 50 * 200);
+});
+
+test("bestManifest : null si la soute n'est pas contrainte", () => {
+  assert.equal(bestManifest(MKT(), 0, "", F(), idResolve), null);
+});
+
+test("buildChainAdjacency : meilleure marge par paire de terminaux", () => {
+  const adj = buildChainAdjacency(MKT(), { legalOnly: false, noOutpost: false }, idResolve);
+  const legs = adj.get(0);
+  assert.equal(legs.length, 2);           // 0->1 et 0->2
+  const to2 = legs.find((l) => l.to === 2);
+  assert.equal(to2.commodity, "Gold");
+  assert.equal(to2.margin, 200);
+  const to1 = legs.find((l) => l.to === 1);
+  assert.equal(to1.commodity, "Gold");    // Gold (marge 50) bat Drug (marge 30) sur 0->1
+  assert.equal(to1.margin, 50);
+});
+
+test("buildChainAdjacency : noOutpost écarte les segments vers/depuis un avant-poste", () => {
+  const adj = buildChainAdjacency(MKT(), { legalOnly: false, noOutpost: true }, idResolve);
+  const legs = adj.get(0);
+  assert.equal(legs.length, 1);           // 0->2 (C avant-poste) retiré
+  assert.equal(legs[0].to, 1);
+});
+
+test("buildChainAdjacency : legalOnly écarte les commodités illégales", () => {
+  // Marché où seule une commodité illégale relie 0->1.
+  const mkt = {
+    terminals: [{ name: "A", system: "S", planet: "", outpost: false }, { name: "B", system: "S", planet: "", outpost: false }],
+    commodities: [{ name: "Drug", kind: "drug", illegal: true, buys: [[0, 50, 100, NOW, 5]], sells: [[1, 120, 100, NOW, 3]] }],
+  };
+  assert.equal(buildChainAdjacency(mkt, { legalOnly: true, noOutpost: false }, idResolve).size, 0);
+  assert.equal(buildChainAdjacency(mkt, { legalOnly: false, noOutpost: false }, idResolve).get(0).length, 1);
 });

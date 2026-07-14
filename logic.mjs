@@ -112,6 +112,49 @@ export function computeUnits(price, stock, demand, f, demandKnown = false) {
   return units;
 }
 
+// ---------- Champs dérivés d'un trajet (unités, profit, temps, score) ----------
+// Cœur de calcul PUR d'une route dont les prix/volumes sont déjà résolus (corrections appliquées
+// en amont). m = { buyPrice, buyStock, sellDemand, margin, distance, sameSystem, buyUpdated,
+// sellUpdated, demandKnown }. Renvoie units/investment (null si non bornés) + profit/minutes/
+// profitHour/rawScore. `evaluate` (app.js) applique d'abord les corrections puis délègue ici.
+export function routeMetrics(m, f) {
+  const units = computeUnits(m.buyPrice, m.buyStock, m.sellDemand, f, m.demandKnown);
+  const bounded = isFinite(units);
+  const profit = bounded ? units * m.margin : null;
+  const minutes = tripMinutes(m.distance, !m.sameSystem);
+  const profitHour = profitPerHour(profit, minutes);
+  const rawScore = rawScoreOf(profitHour, m.margin, pairAge(m.buyUpdated, m.sellUpdated), m.buyStock, m.sellDemand);
+  return {
+    units: bounded ? units : null,
+    investment: bounded ? units * m.buyPrice : null,
+    profit, minutes, profitHour, rawScore,
+  };
+}
+
+// Idem pour une boucle A⇄B (deux segments). out/back = { buyPrice, stock, demand, margin,
+// updated, demandKnown }. La boucle n'est bornée que si SES DEUX segments le sont.
+export function loopMetrics(out, back, distance, cross, f) {
+  const loopMargin = out.margin + back.margin;
+  const uOut = computeUnits(out.buyPrice, out.stock, out.demand, f, out.demandKnown);
+  const uBack = computeUnits(back.buyPrice, back.stock, back.demand, f, back.demandKnown);
+  const bounded = isFinite(uOut) && isFinite(uBack);
+  const minutes = loopMinutes(distance, cross);
+  const profit = bounded ? uOut * out.margin + uBack * back.margin : null;
+  const profitHour = profitPerHour(profit, minutes);
+  const rawScore = rawScoreOf(
+    profitHour, loopMargin, pairAge(out.updated, back.updated),
+    Math.min(out.stock, back.stock), Math.min(out.demand, back.demand)
+  );
+  return {
+    loopMargin,
+    unitsOut: bounded ? uOut : null,
+    unitsBack: bounded ? uBack : null,
+    units: bounded ? uOut + uBack : null,
+    investment: bounded ? Math.max(uOut * out.buyPrice, uBack * back.buyPrice) : null,
+    profit, minutes, profitHour, rawScore,
+  };
+}
+
 // ---------- Corrections locales : décision de fraîcheur (pure, sans effet de bord) ----------
 // o = correction { price?, vol?, base } (base = date UEX du point au moment de la correction).
 // Renvoie prix/volume effectifs + drapeaux + `stale` (true = périmée par un relevé plus récent).
@@ -252,4 +295,112 @@ export function encodeState(obj) {
 // Décode une query-string en objet (null si vide).
 export function decodeState(str) {
   return str ? Object.fromEntries(new URLSearchParams(str)) : null;
+}
+
+// ---------- Marché interactif : recherche de trajets (En route, manifeste, chaîne) ----------
+// `market` = { terminals:[{name,system,planet,outpost}], commodities:[{name,kind,illegal,buys,sells}] }
+// où chaque buy/sell est un tuple compact [idxTerminal, prix, volume, updated, statut].
+// `resolve(commodity, terminalName, side, price, vol, updated)` applique les corrections locales et
+// renvoie au moins { price, vol, ovol } (identité si aucune correction). PURES si `resolve` l'est.
+
+// Construit un objet « route » (compatible evaluate/routeRowHTML) depuis un achat + une vente bruts.
+export function dealFrom(market, c, b, s) {
+  const bt = market.terminals[b[0]], st = market.terminals[s[0]];
+  const margin = s[1] - b[1];
+  return {
+    commodity: c.name, kind: c.kind, illegal: c.illegal,
+    buy: { terminal: bt.name, system: bt.system, planet: bt.planet, outpost: bt.outpost, price: b[1], stock: b[2], updated: b[3], status: b[4] },
+    sell: { terminal: st.name, system: st.system, planet: st.planet, outpost: st.outpost, price: s[1], demand: s[2], updated: s[3], status: s[4] },
+    margin, roi: Math.round((margin / b[1]) * 1000) / 10,
+    same_system: bt.system === st.system,
+    distance: 0,       // distance exacte indisponible hors routes.json -> estimation grossière
+    refBuy: 0, refSell: 0,
+  };
+}
+
+// Meilleure vente par commodité depuis le terminal `origin`, filtrée par système d'arrivée.
+// Données brutes (les corrections sont appliquées ensuite par evaluate) -> pas de `resolve`.
+export function enRouteDeals(market, origin, destSystem) {
+  const deals = [];
+  market.commodities.forEach((c) => {
+    const b = c.buys.find((x) => x[0] === origin);
+    if (!b) return;
+    let best = null;
+    for (const s of c.sells) {
+      if (s[0] === origin) continue;
+      if (destSystem && market.terminals[s[0]].system !== destSystem) continue;
+      if (!best || s[1] > best[1]) best = s;
+    }
+    if (best && best[1] > b[1]) deals.push(dealFrom(market, c, b, best));
+  });
+  return deals;
+}
+
+// Manifeste : destination (terminal) qui maximise le profit d'un chargement multi-commodité depuis
+// `origin`, soute remplie par marge décroissante (fillCargo). Toujours plafonné par stock/demande
+// (ce qui force à diversifier). Null si la soute n'est pas contrainte.
+export function bestManifest(market, origin, destSystem, f, resolve) {
+  if (!f.useCargo || !(f.cargo > 0)) return null;
+  const ot = market.terminals[origin];
+  const byDest = new Map();
+  market.commodities.forEach((c) => {
+    if (f.legalOnly && c.illegal) return;
+    const b = c.buys.find((x) => x[0] === origin);
+    if (!b) return;
+    const eb = resolve(c.name, ot.name, "buy", b[1], b[2], b[3]); // prix/stock corrigés
+    c.sells.forEach((s) => {
+      if (s[0] === origin) return;
+      const st = market.terminals[s[0]];
+      if (destSystem && st.system !== destSystem) return;
+      if (f.noOutpost && st.outpost) return;
+      const es = resolve(c.name, st.name, "sell", s[1], s[2], s[3]);
+      const margin = es.price - eb.price;
+      if (margin <= 0) return;
+      if (!byDest.has(s[0])) byDest.set(s[0], []);
+      byDest.get(s[0]).push({ name: c.name, kind: c.kind, illegal: c.illegal, buyPrice: eb.price, stock: eb.vol, sellPrice: es.price, demand: es.vol, demandKnown: es.ovol, margin, buyUpdated: b[3], sellUpdated: s[3] });
+    });
+  });
+
+  const budget = f.useBudget && f.budget > 0 ? f.budget : Infinity;
+  let best = null;
+  for (const [dest, items] of byDest) {
+    items.sort((a, b) => b.margin - a.margin);
+    const { lines, profit } = fillCargo(items, f.cargo, budget);
+    if (lines.length && (!best || profit > best.profit)) {
+      const dt = market.terminals[dest];
+      best = { origin: ot, dest: dt, destIdx: dest, cross: ot.system !== dt.system, lines, profit, cargo: f.cargo };
+    }
+  }
+  return best;
+}
+
+// Graphe des meilleurs segments : pour chaque paire (départ -> arrivée), la commodité de marge
+// maximale (corrections comprises). Renvoie Map<idxTerminal, leg[]> pour bestChain.
+export function buildChainAdjacency(market, f, resolve) {
+  const best = new Map(); // Map<u, Map<v, leg>>
+  market.commodities.forEach((c) => {
+    if (f.legalOnly && c.illegal) return;
+    c.buys.forEach((b) => {
+      const bt = market.terminals[b[0]];
+      if (f.noOutpost && bt.outpost) return;
+      const eb = resolve(c.name, bt.name, "buy", b[1], b[2], b[3]);
+      c.sells.forEach((s) => {
+        if (s[0] === b[0]) return;
+        const st = market.terminals[s[0]];
+        if (f.noOutpost && st.outpost) return;
+        const es = resolve(c.name, st.name, "sell", s[1], s[2], s[3]);
+        const margin = es.price - eb.price;
+        if (margin <= 0) return;
+        let m = best.get(b[0]);
+        if (!m) { m = new Map(); best.set(b[0], m); }
+        const cur = m.get(s[0]);
+        if (!cur || margin > cur.margin) {
+          m.set(s[0], { to: s[0], commodity: c.name, kind: c.kind, illegal: c.illegal, margin, buyPrice: eb.price, sellPrice: es.price, stock: eb.vol, demand: es.vol, demandKnown: es.ovol });
+        }
+      });
+    });
+  });
+  const adj = new Map();
+  for (const [u, m] of best) adj.set(u, [...m.values()]);
+  return adj;
 }

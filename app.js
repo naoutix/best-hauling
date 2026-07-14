@@ -2,10 +2,11 @@
 
 // Fonctions de calcul pures (testées par logic.test.mjs).
 import {
-  tripMinutes, loopMinutes, ageDays, pairAge,
-  normalizeScores, bySort, computeUnits, fillCargo, addableUnits, scuBoxes, bestChain,
+  tripMinutes, ageDays, pairAge,
+  normalizeScores, bySort, addableUnits, scuBoxes, bestChain,
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
-  profitPerHour, rawScoreOf, routePasses, loopPasses,
+  routePasses, loopPasses,
+  routeMetrics, loopMetrics, enRouteDeals, bestManifest, buildChainAdjacency,
 } from "./logic.mjs";
 
 // Libellé compact des caisses SCU standard, ex. « 8×32 · 1×16 · 1×4 · 1×2 · 1×1 ».
@@ -70,7 +71,7 @@ function illegalTag(isIllegal) {
 }
 
 // ---------- Fiabilité : fraîcheur, statut de stock, aberrations ----------
-// (tripMinutes/loopMinutes/ageDays/pairAge viennent de logic.mjs)
+// (ageDays/pairAge et les calculs de temps/score viennent de logic.mjs)
 // Petite pastille colorée « il y a Xj/Xh » selon l'âge.
 function freshChip(updated) {
   const d = ageDays(updated);
@@ -175,27 +176,17 @@ function applyOverrides(commodity, buy, sell) {
   return { buy: nb, sell: ns, margin, roi };
 }
 
-// Calcule les champs dérivés d'une route selon les entrées utilisateur (corrections comprises).
+// Calcule les champs dérivés d'une route selon les entrées utilisateur : applique les corrections
+// locales (impur, globales OVERRIDES) puis délègue le calcul pur à routeMetrics (logic.mjs).
 function evaluate(r, f) {
   const { buy, sell, margin, roi } = applyOverrides(r.commodity, r.buy, r.sell);
-  const units = computeUnits(buy.price, buy.stock, sell.demand, f, sell.ovVol); // ovVol = demande corrigée = fiable
-  const bounded = isFinite(units);
-  const profit = bounded ? units * margin : null;
-  const minutes = tripMinutes(r.distance, !r.same_system);
-  const profitHour = profitPerHour(profit, minutes);
-  const rawScore = rawScoreOf(profitHour, margin, pairAge(buy.updated, sell.updated), buy.stock, sell.demand);
-  return {
-    ...r,
-    buy, sell, margin, roi,
-    buyPrice: buy.price,
-    sellPrice: sell.price,
-    units: bounded ? units : null,
-    investment: bounded ? units * buy.price : null,
-    profit,
-    minutes,
-    profitHour,
-    rawScore,
-  };
+  const metrics = routeMetrics({
+    buyPrice: buy.price, buyStock: buy.stock, sellDemand: sell.demand, margin,
+    distance: r.distance, sameSystem: r.same_system,
+    buyUpdated: buy.updated, sellUpdated: sell.updated,
+    demandKnown: sell.ovVol, // ovVol = demande corrigée par l'utilisateur = fiable
+  }, f);
+  return { ...r, buy, sell, margin, roi, buyPrice: buy.price, sellPrice: sell.price, ...metrics };
 }
 
 // Cellule visuelle du score : mini-barre + valeur.
@@ -295,31 +286,9 @@ function effLeg(leg, buyT, sellT) {
 function evaluateLoop(l, f) {
   const out = effLeg(l.out, l.a.terminal, l.b.terminal);
   const back = effLeg(l.back, l.b.terminal, l.a.terminal);
-  const loopMargin = out.margin + back.margin;
-  const uOut = computeUnits(out.buyPrice, out.stock, out.demand, f, out.demandKnown);
-  const uBack = computeUnits(back.buyPrice, back.stock, back.demand, f, back.demandKnown);
-  const bounded = isFinite(uOut) && isFinite(uBack);
   const cross = l.a.system !== l.b.system;
-  const minutes = loopMinutes(l.distance, cross);
-  const profit = bounded ? uOut * out.margin + uBack * back.margin : null;
-  const profitHour = profitPerHour(profit, minutes);
-  const rawScore = rawScoreOf(
-    profitHour, loopMargin, pairAge(out.updated, back.updated),
-    Math.min(out.stock, back.stock), Math.min(out.demand, back.demand)
-  );
-  return {
-    ...l,
-    out, back, loopMargin,
-    cross,
-    unitsOut: bounded ? uOut : null,
-    unitsBack: bounded ? uBack : null,
-    units: bounded ? uOut + uBack : null,
-    investment: bounded ? Math.max(uOut * out.buyPrice, uBack * back.buyPrice) : null,
-    profit,
-    minutes,
-    profitHour,
-    rawScore,
-  };
+  const metrics = loopMetrics(out, back, l.distance, cross, f); // calcul pur (logic.mjs)
+  return { ...l, out, back, cross, ...metrics };
 }
 
 function renderLoops() {
@@ -408,75 +377,8 @@ function resolveOrigin() {
   enrouteOrigin = originMap.has(v) ? originMap.get(v) : null;
 }
 
-// Construit un objet « route » (compatible evaluate/routeRowHTML) depuis un achat + une vente.
-function dealFrom(c, b, s) {
-  const bt = MARKET.terminals[b[0]], st = MARKET.terminals[s[0]];
-  const margin = s[1] - b[1];
-  return {
-    commodity: c.name, kind: c.kind, illegal: c.illegal,
-    buy: { terminal: bt.name, system: bt.system, planet: bt.planet, outpost: bt.outpost, price: b[1], stock: b[2], updated: b[3], status: b[4] },
-    sell: { terminal: st.name, system: st.system, planet: st.planet, outpost: st.outpost, price: s[1], demand: s[2], updated: s[3], status: s[4] },
-    margin, roi: Math.round((margin / b[1]) * 1000) / 10,
-    same_system: bt.system === st.system,
-    distance: 0,       // distance exacte indisponible hors routes.json -> estimation grossière
-    refBuy: 0, refSell: 0,
-  };
-}
-
-// Meilleure vente par commodité depuis le terminal `origin`, filtrée par système d'arrivée.
-function enRouteDeals(origin, destSystem) {
-  const deals = [];
-  MARKET.commodities.forEach((c) => {
-    const b = c.buys.find((x) => x[0] === origin);
-    if (!b) return;
-    let best = null;
-    for (const s of c.sells) {
-      if (s[0] === origin) continue;
-      if (destSystem && MARKET.terminals[s[0]].system !== destSystem) continue;
-      if (!best || s[1] > best[1]) best = s;
-    }
-    if (best && best[1] > b[1]) deals.push(dealFrom(c, b, best));
-  });
-  return deals;
-}
-
-// Manifeste : destination (terminal) qui maximise le profit d'un chargement multi-commodité
-// depuis `origin`, soute remplie par marge décroissante. Toujours plafonné par stock/demande
-// (c'est justement ce qui force à diversifier). Null si la soute n'est pas contrainte.
-function bestManifest(origin, destSystem, f) {
-  if (!f.useCargo || !(f.cargo > 0)) return null;
-  const ot = MARKET.terminals[origin];
-  const byDest = new Map();
-  MARKET.commodities.forEach((c) => {
-    if (f.legalOnly && c.illegal) return;
-    const b = c.buys.find((x) => x[0] === origin);
-    if (!b) return;
-    const eb = effVals(c.name, ot.name, "buy", b[1], b[2], b[3]); // prix/stock corrigés
-    c.sells.forEach((s) => {
-      if (s[0] === origin) return;
-      const st = MARKET.terminals[s[0]];
-      if (destSystem && st.system !== destSystem) return;
-      if (f.noOutpost && st.outpost) return;
-      const es = effVals(c.name, st.name, "sell", s[1], s[2], s[3]);
-      const margin = es.price - eb.price;
-      if (margin <= 0) return;
-      if (!byDest.has(s[0])) byDest.set(s[0], []);
-      byDest.get(s[0]).push({ name: c.name, kind: c.kind, illegal: c.illegal, buyPrice: eb.price, stock: eb.vol, sellPrice: es.price, demand: es.vol, demandKnown: es.ovol, margin, buyUpdated: b[3], sellUpdated: s[3] });
-    });
-  });
-
-  const budget = f.useBudget && f.budget > 0 ? f.budget : Infinity;
-  let best = null;
-  for (const [dest, items] of byDest) {
-    items.sort((a, b) => b.margin - a.margin);
-    const { lines, profit } = fillCargo(items, f.cargo, budget); // remplissage glouton (logic.mjs)
-    if (lines.length && (!best || profit > best.profit)) {
-      const dt = MARKET.terminals[dest];
-      best = { origin: ot, dest: dt, destIdx: dest, cross: ot.system !== dt.system, lines, profit, cargo: f.cargo };
-    }
-  }
-  return best;
-}
+// dealFrom / enRouteDeals / bestManifest / buildChainAdjacency vivent dans logic.mjs (fonctions
+// pures) ; on leur passe MARKET et le résolveur de corrections effVals depuis les vues.
 
 let currentManifest = null; // manifeste courant, mutable (édition SCU + suggestions ajoutées)
 
@@ -632,7 +534,7 @@ function renderManifest(origin, destSystem, f) {
     card.innerHTML = `<div class="manifest-hint">Active la <b>soute (SCU)</b> pour calculer un manifeste de remplissage.</div>`;
     return;
   }
-  const man = bestManifest(origin, destSystem, f);
+  const man = bestManifest(MARKET, origin, destSystem, f, effVals);
   if (!man) {
     card.hidden = false;
     card.innerHTML = `<div class="manifest-hint">Aucun chargement rentable depuis ce terminal vers cette destination.</div>`;
@@ -662,7 +564,7 @@ function renderEnRoute() {
   const destSystem = $("destSystem").value;
   // sysFilter:"" — le système d'arrivée est filtré par destSystem, pas par le menu « système d'achat ».
   const ef = { ...f, sysFilter: "" };
-  let deals = enRouteDeals(enrouteOrigin, destSystem)
+  let deals = enRouteDeals(MARKET, enrouteOrigin, destSystem)
     .filter((r) => routePasses(r, ef))
     .map((r) => evaluate(r, f));
 
@@ -683,36 +585,7 @@ function resolveChainOrigin() {
   chainOrigin = originMap.has(v) ? originMap.get(v) : null;
 }
 
-// Graphe des meilleurs segments : pour chaque paire (départ -> arrivée), la commodité de
-// marge maximale (corrections comprises). Renvoie Map<terminal, leg[]>.
-function buildChainAdjacency(f) {
-  const best = new Map(); // Map<u, Map<v, leg>>
-  MARKET.commodities.forEach((c) => {
-    if (f.legalOnly && c.illegal) return;
-    c.buys.forEach((b) => {
-      const bt = MARKET.terminals[b[0]];
-      if (f.noOutpost && bt.outpost) return;
-      const eb = effVals(c.name, bt.name, "buy", b[1], b[2], b[3]);
-      c.sells.forEach((s) => {
-        if (s[0] === b[0]) return;
-        const st = MARKET.terminals[s[0]];
-        if (f.noOutpost && st.outpost) return;
-        const es = effVals(c.name, st.name, "sell", s[1], s[2], s[3]);
-        const margin = es.price - eb.price;
-        if (margin <= 0) return;
-        let m = best.get(b[0]);
-        if (!m) { m = new Map(); best.set(b[0], m); }
-        const cur = m.get(s[0]);
-        if (!cur || margin > cur.margin) {
-          m.set(s[0], { to: s[0], commodity: c.name, kind: c.kind, illegal: c.illegal, margin, buyPrice: eb.price, sellPrice: es.price, stock: eb.vol, demand: es.vol, demandKnown: es.ovol });
-        }
-      });
-    });
-  });
-  const adj = new Map();
-  for (const [u, m] of best) adj.set(u, [...m.values()]);
-  return adj;
-}
+// buildChainAdjacency vit dans logic.mjs (fonction pure) ; appelée avec MARKET + effVals.
 
 function chainCardHTML(chain) {
   const T = (idx) => MARKET.terminals[idx];
@@ -752,7 +625,7 @@ function renderChain() {
   if (chainOrigin == null) return hint("Choisis un <b>terminal de départ</b> pour calculer une chaîne rentable.");
   if (!f.useCargo || !(f.cargo > 0)) return hint("Active la <b>soute (SCU)</b> pour dimensionner la chaîne.");
   const hops = Number($("hops").value) || 3;
-  const chain = bestChain(buildChainAdjacency(f), chainOrigin, hops, { cargo: f.cargo });
+  const chain = bestChain(buildChainAdjacency(MARKET, f, effVals), chainOrigin, hops, { cargo: f.cargo });
   if (!chain || !chain.legs.length) return hint("Aucune chaîne rentable depuis ce terminal avec ces filtres.");
   box.innerHTML = chainCardHTML(chain);
   notifySuperseded();
