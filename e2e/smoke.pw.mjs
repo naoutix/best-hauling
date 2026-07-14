@@ -232,3 +232,14 @@ test("Compagnon de voyage : étendre le parcours avec une boucle depuis l'arriv�
   await page.locator("#loopRows tr.from-here").first().locator(".journey-pick").click();
   await expect(page.locator("#journeyCard .jstep")).toHaveCount(4); // + boucle (2 sauts) = 3 sauts, 4 stations
 });
+
+test("Compagnon de voyage : le parcours survit au rechargement (persistance)", async ({ page }) => {
+  const row = page.locator("#rows tr").first();
+  const sellTerminal = (await row.locator(".term-name").nth(1).innerText()).trim();
+  await row.locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard")).toBeVisible();
+  await page.reload();
+  await expect(page.locator("#rows tr").first()).toBeVisible();
+  await expect(page.locator("#journeyCard")).toBeVisible();             // restauré
+  await expect(page.locator("#journeyCard")).toContainText(sellTerminal);
+});

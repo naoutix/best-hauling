@@ -11,6 +11,7 @@ import {
   commoditySummaries, commodityPoints, compactValue,
   legFromRoute, legsFromLoop, legsFromChain, startJourney, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
+  encodeJourney, decodeJourney,
 } from "./logic.mjs";
 
 // ---------- Temps de trajet ----------
@@ -836,4 +837,16 @@ test("setJourneyPosition + currentLeg : position bornée, jambe courante = curre
 test("journeyMargin : somme des marges des jambes", () => {
   const j = addToJourney(startJourney([legFromRoute(ROUTE_AB)]), legsFromLoop(LOOP_BC)); // 50 + 30 + 15
   assert.equal(journeyMargin(j), 95);
+});
+
+test("encodeJourney / decodeJourney : aller-retour + robustesse", () => {
+  const j = addToJourney(startJourney([legFromRoute(ROUTE_AB)]), legsFromLoop(LOOP_BC));
+  const round = decodeJourney(encodeJourney(j));
+  assert.deepEqual(journeyStations(round).map((s) => s.name), ["A", "B", "C", "B"]);
+  assert.equal(round.current, j.current);
+  assert.equal(round.legs[0].margin, 50);
+  assert.equal(encodeJourney(null), "");          // vide
+  assert.equal(encodeJourney({ legs: [] }), "");   // pas de jambe
+  assert.equal(decodeJourney(""), null);           // vide
+  assert.equal(decodeJourney("pas du json"), null); // malformé -> null (pas d'exception)
 });

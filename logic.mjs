@@ -527,3 +527,25 @@ export function currentLeg(journey) {
 export function journeyMargin(journey) {
   return journey ? journey.legs.reduce((a, l) => a + (l.margin || 0), 0) : 0;
 }
+
+// Encode un parcours en chaîne compacte auto-suffisante (pour localStorage / URL partageable).
+// Chaque jambe -> tuple [from, fromSystem, to, toSystem, commodity, buyPrice, sellPrice, margin].
+export function encodeJourney(journey) {
+  if (!journey || !journey.legs.length) return "";
+  return JSON.stringify({
+    c: journey.current,
+    l: journey.legs.map((g) => [g.from, g.fromSystem, g.to, g.toSystem, g.commodity, g.buyPrice, g.sellPrice, g.margin]),
+  });
+}
+// Reconstruit un parcours depuis la chaîne (null si vide/invalide). Robuste aux entrées malformées.
+export function decodeJourney(str) {
+  if (!str) return null;
+  try {
+    const p = JSON.parse(str);
+    if (!p || !Array.isArray(p.l) || !p.l.length) return null;
+    const legs = p.l.map((a) => ({ from: a[0], fromSystem: a[1], to: a[2], toSystem: a[3], commodity: a[4], buyPrice: a[5], sellPrice: a[6], margin: a[7] }));
+    return { legs, current: Math.max(0, Math.min(legs.length, p.c | 0)) };
+  } catch {
+    return null;
+  }
+}

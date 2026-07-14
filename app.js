@@ -10,6 +10,7 @@ import {
   commoditySummaries, commodityPoints, compactValue,
   legFromRoute, legsFromLoop, legsFromChain, startJourney, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
+  encodeJourney, decodeJourney,
 } from "./logic.mjs";
 
 // Libellé compact des caisses SCU standard, ex. « 8×32 · 1×16 · 1×4 · 1×2 · 1×1 ».
@@ -967,6 +968,7 @@ function collectState() {
   const s = { v: view, sk: sortKey, sd: sortDir, lk: loopSortKey, ld: loopSortDir };
   STATE_FIELDS.forEach((id) => (s[id] = $(id).value));
   STATE_CHECKS.forEach((id) => (s[id] = $(id).checked ? 1 : 0));
+  if (JOURNEY) s.j = encodeJourney(JOURNEY); // compagnon de voyage (partageable)
   return s;
 }
 
@@ -1004,6 +1006,7 @@ function applyState(s) {
   if (safeKey(s.sk)) { sortKey = s.sk; sortDir = Number(s.sd) === 1 ? 1 : -1; }
   if (safeKey(s.lk)) { loopSortKey = s.lk; loopSortDir = Number(s.ld) === 1 ? 1 : -1; }
   if (["routes", "loops", "enroute", "chain", "corrections", "commodities"].includes(s.v)) view = s.v;
+  if (s.j) JOURNEY = decodeJourney(s.j); // compagnon de voyage restauré (les champs sont déjà repris ci-dessus)
   applySortIndicators();
   syncToggles();
   restoring = false;
@@ -1374,6 +1377,7 @@ async function init() {
     // Applique l'état restauré une fois le menu système peuplé, puis affiche la bonne vue.
     applyState(saved);
     showShipCard(); // ré-affiche la carte du vaisseau restauré (image comprise)
+    renderJourney(); // ré-affiche le parcours restauré (compagnon de voyage)
     switchView(view);
   } catch (e) {
     $("meta").textContent = "Erreur de chargement des données.";
