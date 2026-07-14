@@ -116,11 +116,16 @@
             <datalist id="originList"></datalist>
           </div>
           <div class="field">
-            <label for="destSystem">Destination</label>
+            <label for="destSystem">Destination (système)</label>
             <select id="destSystem"><option value="">N'importe où</option></select>
           </div>
-          <p class="enroute-hint">Le fret rentable depuis ton terminal, plus un <b>manifeste optimal</b> qui remplit ta soute avec plusieurs commodités vers une même destination.</p>
+          <div class="field">
+            <label for="destTerminal">…ou un terminal précis</label>
+            <input id="destTerminal" list="stationList" type="text" placeholder="Forcer une destination (ex : Port Olisar)" autocomplete="off" />
+          </div>
+          <p class="enroute-hint">Le fret rentable depuis ton terminal, plus un <b>manifeste optimal</b> vers une destination. Laisse « n'importe où » pour la meilleure, ou <b>force un terminal d'arrivée</b> précis.</p>
         </section>
+        <datalist id="commodityList"></datalist>
 
         <section id="chainControls" class="enroute-controls" hidden>
           <div class="field">

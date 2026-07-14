@@ -318,9 +318,10 @@ export function dealFrom(market, c, b, s) {
   };
 }
 
-// Meilleure vente par commodité depuis le terminal `origin`, filtrée par système d'arrivée.
+// Meilleure vente par commodité depuis le terminal `origin`. `destTerminal` (index) force un
+// terminal d'arrivée précis ; sinon `destSystem` filtre par système ("" = n'importe où).
 // Données brutes (les corrections sont appliquées ensuite par evaluate) -> pas de `resolve`.
-export function enRouteDeals(market, origin, destSystem) {
+export function enRouteDeals(market, origin, destSystem, destTerminal = null) {
   const deals = [];
   market.commodities.forEach((c) => {
     const b = c.buys.find((x) => x[0] === origin);
@@ -328,7 +329,8 @@ export function enRouteDeals(market, origin, destSystem) {
     let best = null;
     for (const s of c.sells) {
       if (s[0] === origin) continue;
-      if (destSystem && market.terminals[s[0]].system !== destSystem) continue;
+      if (destTerminal != null) { if (s[0] !== destTerminal) continue; }
+      else if (destSystem && market.terminals[s[0]].system !== destSystem) continue;
       if (!best || s[1] > best[1]) best = s;
     }
     if (best && best[1] > b[1]) deals.push(dealFrom(market, c, b, best));
@@ -339,7 +341,8 @@ export function enRouteDeals(market, origin, destSystem) {
 // Manifeste : destination (terminal) qui maximise le profit d'un chargement multi-commodité depuis
 // `origin`, soute remplie par marge décroissante (fillCargo). Toujours plafonné par stock/demande
 // (ce qui force à diversifier). Null si la soute n'est pas contrainte.
-export function bestManifest(market, origin, destSystem, f, resolve) {
+// `destTerminal` (index) force un terminal d'arrivée précis ; sinon `destSystem` filtre par système.
+export function bestManifest(market, origin, destSystem, f, resolve, destTerminal = null) {
   if (!f.useCargo || !(f.cargo > 0)) return null;
   const ot = market.terminals[origin];
   const byDest = new Map();
@@ -351,7 +354,8 @@ export function bestManifest(market, origin, destSystem, f, resolve) {
     c.sells.forEach((s) => {
       if (s[0] === origin) return;
       const st = market.terminals[s[0]];
-      if (destSystem && st.system !== destSystem) return;
+      if (destTerminal != null) { if (s[0] !== destTerminal) return; }
+      else if (destSystem && st.system !== destSystem) return;
       if (f.noOutpost && st.outpost) return;
       const es = resolve(c.name, st.name, "sell", s[1], s[2], s[3]);
       const margin = es.price - eb.price;

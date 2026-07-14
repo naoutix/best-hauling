@@ -130,3 +130,27 @@ test("Chaîne : le filtre « même système » contraint la chaîne (régression
   const systems = await page.locator("#chainOut .chain-leg .sys").allInnerTexts();
   expect(new Set(systems.map((s) => s.trim())).size).toBeLessThanOrEqual(1);
 });
+
+test("En route : destination forçable + ajout/retrait libre au manifeste", async ({ page }) => {
+  await page.click("#viewEnroute");
+  await expect(page.locator("#destTerminal")).toBeVisible(); // Feature 1 : champ « terminal d'arrivée »
+  const origin = await page.locator("#originList option").first().getAttribute("value");
+  await page.fill("#origin", origin);
+  await expect(page.locator("#manifest")).toBeVisible();
+  // Si un manifeste avec lignes existe, teste l'ajout LIBRE d'une commodité + le retrait (Feature 2).
+  if (await page.locator("#manifestAddInput").count()) {
+    const have = await page.locator("#manifest .mname").allInnerTexts();
+    const opts = await page.locator("#commodityList option").evaluateAll((els) => els.map((e) => e.value));
+    const toAdd = opts.find((o) => !have.some((h) => h.includes(o)));
+    const before = await page.locator("#manifest .mline").count();
+    await page.fill("#manifestAddInput", toAdd);
+    await page.click("#manifestAddBtn");
+    await expect(page.locator("#manifest .mline")).toHaveCount(before + 1);
+    await page.locator("#manifest .mline-del").last().click();
+    await expect(page.locator("#manifest .mline")).toHaveCount(before);
+  }
+  // Forcer un terminal d'arrivée précis ne casse pas le rendu du manifeste.
+  const term = await page.locator("#stationList option").first().getAttribute("value");
+  await page.fill("#destTerminal", term);
+  await expect(page.locator("#manifest")).toBeVisible();
+});
