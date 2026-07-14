@@ -314,9 +314,9 @@ function renderLoops() {
 
   normalizeScores(rows);
   rows.sort(bySort(loopSortKey, loopSortDir));
-  // Compagnon : remonte en tête (sans filtrer) les boucles qui partent de l'arrivée courante du parcours.
-  const leg = currentLeg(JOURNEY);
-  const hereArrival = leg ? leg.to : JOURNEY ? journeyEnd(JOURNEY)?.name : null;
+  // Compagnon : remonte en tête (sans filtrer) les boucles qui partent de la FIN du parcours —
+  // c'est le point d'extension (une boucle depuis là s'enchaîne au parcours). Cohérent avec addToJourney.
+  const hereArrival = JOURNEY ? journeyEnd(JOURNEY)?.name : null;
   if (hereArrival) {
     rows.forEach((l) => { l._fromHere = l.a.terminal === hereArrival || l.b.terminal === hereArrival; });
     rows.sort((a, b) => (b._fromHere ? 1 : 0) - (a._fromHere ? 1 : 0)); // tri stable : pertinentes d'abord
@@ -329,6 +329,7 @@ function renderLoops() {
       <tr data-row="${i}"${l._fromHere ? ' class="from-here"' : ""}>
         <td class="loc loop-cell">
           <button class="route-toggle" data-row="${i}" title="Voir le trajet" aria-label="Voir le trajet">🗺</button>
+          <button class="journey-pick" data-row="${i}" title="Ajouter cette boucle au voyage" aria-label="Ajouter au voyage">▶</button>
           <div class="loop-ends">
             <div class="loop-end"><span class="term-name">${esc(l.a.terminal)}</span>${sysBadge(l.a.system)}${outpostTag(l.a.outpost)}</div>
             <div class="loop-mid"><span class="loop-arrow">⇄</span>${l.cross ? '<span class="cross">⚡ inter-système</span>' : ""}</div>
@@ -668,6 +669,7 @@ function renderEnRoute() {
 
 // ---------- Vue « Chaîne » (multi-sauts A -> B -> C ...) ----------
 let chainOrigin = null; // index du terminal de départ de la chaîne
+let shownChain = null;  // chaîne actuellement affichée (pour l'ajout au voyage)
 
 function resolveChainOrigin() {
   const v = $("chainOrigin").value.trim();
@@ -699,6 +701,7 @@ function chainCardHTML(chain) {
       <div class="chain-head">
         <span class="chain-path">${nodes}</span>
         <span class="chain-tot">Profit <b class="profit">${fmt(chain.profit)}</b> aUEC · ${chain.legs.length} saut${chain.legs.length > 1 ? "s" : ""} · capital de départ ${fmt(invest)} · ~${Math.round(minutes)} min</span>
+        <button id="chainToJourney" class="chain-pick" title="Ajouter cette chaîne au voyage en cours">▶ Ajouter au voyage</button>
       </div>
       <div class="chain-legs">${legs}</div>
     </div>`;
@@ -710,12 +713,14 @@ function renderChain() {
   resolveChainOrigin();
   const box = $("chainOut");
   const f = readFilters();
+  shownChain = null;
   const hint = (msg) => { box.innerHTML = `<div class="manifest-hint">${msg}</div>`; notifySuperseded(); };
   if (chainOrigin == null) return hint("Choisis un <b>terminal de départ</b> pour calculer une chaîne rentable.");
   if (!f.useCargo || !(f.cargo > 0)) return hint("Active la <b>soute (SCU)</b> pour dimensionner la chaîne.");
   const hops = Number($("hops").value) || 3;
   const chain = bestChain(buildChainAdjacency(MARKET, f, effVals), chainOrigin, hops, { cargo: f.cargo });
   if (!chain || !chain.legs.length) return hint("Aucune chaîne rentable depuis ce terminal avec ces filtres.");
+  shownChain = chain;
   box.innerHTML = chainCardHTML(chain);
   notifySuperseded();
 }
@@ -1285,10 +1290,12 @@ async function init() {
     const pick = e.target.closest(".journey-pick");
     if (pick) {
       const tableId = pick.closest("table").id;
-      const r = (tableId === "enroute" ? shownEnroute : shownRoutes)[Number(pick.dataset.row)];
-      if (r) pickJourney([legFromRoute(r)]);
+      const i = Number(pick.dataset.row);
+      if (tableId === "loops") { const l = shownLoops[i]; if (l) pickJourney(legsFromLoop(l)); }
+      else { const r = (tableId === "enroute" ? shownEnroute : shownRoutes)[i]; if (r) pickJourney([legFromRoute(r)]); }
       return;
     }
+    if (e.target.closest("#chainToJourney") && shownChain) { pickJourney(legsFromChain(shownChain, MARKET.terminals)); return; }
     if (e.target.closest("#journeyClear")) { clearJourney(); return; }
     // Parcours interactif : clic sur une étape (⦿) = « je suis ici » -> recale les vues.
     const step = e.target.closest(".jstep");

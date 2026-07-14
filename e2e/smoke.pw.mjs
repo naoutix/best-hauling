@@ -214,3 +214,21 @@ test("Compagnon de voyage : cliquer une étape recale En route (position interac
   await expect(page.locator("#journeyCard .jstep").nth(1)).toHaveClass(/here/);
   expect(await page.inputValue("#origin")).toContain(sellTerminal);
 });
+
+test("Compagnon de voyage : étendre le parcours avec une boucle depuis l'arrivée", async ({ page }) => {
+  await page.click("#viewLoops");
+  const loopSet = new Set((await page.locator("#loopRows .term-name").allInnerTexts()).map((t) => t.trim()));
+  await page.click("#viewRoutes");
+  const routes = page.locator("#rows tr");
+  const count = Math.min(await routes.count(), 60);
+  let matched = false;
+  for (let i = 0; i < count; i++) {
+    const sell = (await routes.nth(i).locator(".term-name").nth(1).innerText()).trim();
+    if (loopSet.has(sell)) { await routes.nth(i).locator(".journey-pick").click(); matched = true; break; }
+  }
+  test.skip(!matched, "aucune route vers un terminal de boucle dans le jeu de données");
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2); // 1 saut = 2 stations
+  await page.click("#viewLoops");
+  await page.locator("#loopRows tr.from-here").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(4); // + boucle (2 sauts) = 3 sauts, 4 stations
+});
