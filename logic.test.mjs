@@ -793,6 +793,30 @@ test("legsFromLoop : boucle -> aller + retour", () => {
   assert.equal(legs[0].commodity, "Iron");
 });
 
+test("legsFromLoop : startAt == b -> on entre par b (cycle inversé)", () => {
+  const legs = legsFromLoop(LOOP_BC, "C"); // le parcours finit en C, pas en B
+  assert.deepEqual([legs[0].from, legs[0].to], ["C", "B"]);
+  assert.deepEqual([legs[1].from, legs[1].to], ["B", "C"]);
+  assert.equal(legs[0].commodity, "Wood"); // le retour devient l'aller
+});
+
+test("legsFromLoop : startAt inconnu ou == a -> orientation par défaut", () => {
+  for (const s of [undefined, null, "B", "ZZZ"]) {
+    const legs = legsFromLoop(LOOP_BC, s);
+    assert.deepEqual([legs[0].from, legs[0].to], ["B", "C"], `startAt=${s}`);
+  }
+});
+
+// Régression : une boucle raccordée au parcours par son `b` doit ÉTENDRE, pas remplacer.
+// Sans orientation, legsFromLoop partait toujours de `a` -> journeyConnects false -> voyage écrasé.
+test("addToJourney : une boucle orientée sur la fin du parcours étend (régression)", () => {
+  const j = startJourney([legFromRoute(ROUTE_AB)]); // A->B, finit en B
+  const loopCB = { ...LOOP_BC, a: { terminal: "C", system: "Pyro" }, b: { terminal: "B", system: "Stanton" } };
+  const legs = legsFromLoop(loopCB, journeyEnd(j).name); // se raccorde par b == "B"
+  assert.equal(journeyConnects(j, legs), true);
+  assert.deepEqual(journeyStations(addToJourney(j, legs)).map((s) => s.name), ["A", "B", "C", "B"]);
+});
+
 test("legsFromChain : chaîne (index) -> jambes nommées", () => {
   const terminals = [{ name: "A", system: "Stanton" }, { name: "B", system: "Stanton" }, { name: "D", system: "Pyro" }];
   const chain = { path: [0, 1, 2], legs: [{ commodity: "X", buyPrice: 1, sellPrice: 3, margin: 2 }, { commodity: "Y", buyPrice: 2, sellPrice: 8, margin: 6 }] };
