@@ -562,6 +562,22 @@ input.mqty-input.over-stock { color: var(--warn); border-color: var(--warn); box
 .suggest-add { font-family: var(--font); font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--good); background: rgba(70, 229, 160, 0.08); border: 1px solid rgba(70, 229, 160, 0.35); border-radius: 3px; padding: 5px 11px; cursor: pointer; transition: background 0.12s, color 0.12s; }
 .suggest-add:hover { color: #04120a; background: var(--good); border-color: var(--good); }
 
+/* Mêmes suggestions de remplissage dans l'éditeur de jambe du compagnon qu'« En route ».
+   Seul le padding de carte (20px) saute : l'éditeur `.jman` n'a pas de retrait horizontal. */
+.jman-suggest:not(:empty) { margin-top: 4px; }
+.jman-suggest .suggest-head { padding: 8px 0 4px; }
+.jman-suggest .sline { gap: 10px; padding: 6px 0; font-size: 11px; }
+/* Écran étroit : la carte du compagnon rétrécit et les 5 colonnes déborderaient (stock/prix sont
+   en nowrap) -> nom/stock/prix empilés à côté du bouton. */
+@media (max-width: 820px) {
+  .jman-suggest .sline { grid-template-columns: auto 1fr auto; gap: 1px 8px; }
+  .jman-suggest .cicon { grid-column: 1; grid-row: 1 / span 3; }
+  .jman-suggest .mname { grid-column: 2; grid-row: 1; }
+  .jman-suggest .mstock { grid-column: 2; grid-row: 2; }
+  .jman-suggest .mprice { grid-column: 2; grid-row: 3; }
+  .jman-suggest .suggest-add { grid-column: 3; grid-row: 1 / span 3; align-self: center; }
+}
+
 /* Retrait d'une ligne (petit ✕ dans le nom). */
 .mname .mline-del { margin-left: 8px; padding: 0 5px; font-size: 11px; line-height: 1.4; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 3px; cursor: pointer; vertical-align: middle; }
 .mname .mline-del:hover { color: var(--bad); border-color: var(--bad); }

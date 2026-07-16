@@ -449,8 +449,9 @@ function manifestTotalsHTML(profit, scu, cargo, invest, cross) {
 }
 
 // Espace/budget restants d'après les SCU actuellement affectés.
-function manifestRemaining() {
-  const m = currentManifest;
+// m = contexte de manifeste { lines, cargo, f, originIdx, destIdx, origin, dest } ; par défaut
+// celui d'« En route », mais une jambe de voyage passe le sien (cf. legSuggestCtx).
+function manifestRemaining(m = currentManifest) {
   const scu = m.lines.reduce((a, l) => a + l.units, 0);
   const invest = m.lines.reduce((a, l) => a + l.units * l.buyPrice, 0);
   const budgetLeft = m.f.useBudget && m.f.budget > 0 ? m.f.budget - invest : Infinity;
@@ -458,8 +459,7 @@ function manifestRemaining() {
 }
 
 // Commodités qui pourraient remplir l'espace libre (même origine -> même destination), non chargées.
-function suggestionsFor() {
-  const m = currentManifest;
+function suggestionsFor(m = currentManifest) {
   const have = new Set(m.lines.map((l) => l.name));
   const out = [];
   MARKET.commodities.forEach((c) => {
@@ -478,25 +478,27 @@ function suggestionsFor() {
 
 // addableUnits vient de logic.mjs.
 
-function renderSuggestions() {
-  const box = $("manifestSuggest");
-  if (!box || !currentManifest) return;
-  const rem = manifestRemaining();
-  if (rem.cargoLeft <= 0) { box.innerHTML = ""; return; }
-  const sugg = suggestionsFor().map((it) => ({ it, u: addableUnits(it, rem) })).filter((x) => x.u >= 1).slice(0, 6);
-  if (!sugg.length) {
-    box.innerHTML = `<div class="suggest-head">${fmt(rem.cargoLeft)} SCU libres — aucune autre commodité rentable vers cette destination.</div>`;
-    return;
-  }
-  box.innerHTML =
-    `<div class="suggest-head">Remplir les ${fmt(rem.cargoLeft)} SCU libres — suggestions :</div>` +
+// HTML des suggestions de remplissage pour un contexte de manifeste (En route ou jambe de voyage).
+// `addAttrs` = attributs data-* posés sur le bouton d'ajout, propres à l'appelant.
+function suggestionsHTML(m, addAttrs = "") {
+  const rem = manifestRemaining(m);
+  if (rem.cargoLeft <= 0) return "";
+  const sugg = suggestionsFor(m).map((it) => ({ it, u: addableUnits(it, rem) })).filter((x) => x.u >= 1).slice(0, 6);
+  if (!sugg.length) return `<div class="suggest-head">${fmt(rem.cargoLeft)} SCU libres — aucune autre commodité rentable vers cette destination.</div>`;
+  return `<div class="suggest-head">Remplir les ${fmt(rem.cargoLeft)} SCU libres — suggestions :</div>` +
     sugg.map(({ it, u }) =>
       `<div class="sline">${commodityIcon(it.kind)}` +
       `<span class="mname">${esc(it.name)}${illegalTag(it.illegal)}</span>` +
       `<span class="mstock">stock ${fmt(it.stock)} · dem. ${fmt(it.demand)}</span>` +
       `<span class="mprice">${fmt(it.buyPrice)} → ${fmt(it.sellPrice)} · marge ${fmt(it.margin)}</span>` +
-      `<button class="suggest-add" data-name="${esc(it.name)}" title="Ajouter au manifeste">+ ${fmt(u)} SCU</button></div>`
+      `<button class="suggest-add" data-name="${esc(it.name)}"${addAttrs} title="Ajouter au manifeste">+ ${fmt(u)} SCU</button></div>`
     ).join("");
+}
+
+function renderSuggestions() {
+  const box = $("manifestSuggest");
+  if (!box || !currentManifest) return;
+  box.innerHTML = suggestionsHTML(currentManifest);
 }
 
 function addSuggestion(name) {
@@ -814,11 +816,64 @@ function materializeLeg(leg, f) {
 }
 const legProfit = (lines) => lines.reduce((a, l) => a + l.units * (l.margin || 0), 0);
 
+// Contexte de manifeste d'une jambe, à la forme attendue par suggestionsFor/manifestRemaining
+// (mêmes suggestions de remplissage qu'« En route »). null si le terminal ou la soute manque.
+function legSuggestCtx(leg, lines, f) {
+  if (!MARKET || !stationMap.size) return null;
+  if (!f.useCargo || !(f.cargo > 0)) return null; // sans soute bornée, « SCU libres » n'a pas de sens
+  const originIdx = stationMap.get(`${leg.from} — ${leg.fromSystem}`);
+  const destIdx = stationMap.get(`${leg.to} — ${leg.toSystem}`);
+  if (originIdx == null || destIdx == null) return null;
+  return {
+    lines, originIdx, destIdx,
+    origin: { name: leg.from, system: leg.fromSystem },
+    dest: { name: leg.to, system: leg.toSystem },
+    cargo: f.cargo, f,
+  };
+}
+
 // Actions d'édition d'une jambe (i = index de jambe).
 function toggleLegEditor(i) { journeyExpandedLeg = journeyExpandedLeg === i ? -1 : i; renderJourney(); }
 function editLegQty(i, li, val) {
   const lines = materializeLeg(JOURNEY.legs[i], readFilters());
   if (lines[li]) { let u = Math.floor(Number(val)); lines[li].units = Number.isFinite(u) && u > 0 ? u : 0; }
+  saveJourneyEdits(); renderJourney();
+}
+// Saisie en direct : met à jour la ligne + repeint profit/caisses/suggestions SANS re-render global
+// (un renderJourney() à chaque frappe ferait perdre le focus de l'input).
+function liveLegQty(i, li, inp) {
+  const leg = JOURNEY.legs[i];
+  const lines = materializeLeg(leg, readFilters());
+  const l = lines[li];
+  if (!l) return;
+  let u = Math.floor(Number(inp.value));
+  if (!Number.isFinite(u) || u < 0) u = 0;
+  l.units = u;
+  inp.classList.toggle("over-stock", isFinite(l.cap) && u > l.cap);
+  const row = inp.closest(".jman-line");
+  const prof = row && row.querySelector(".jman-profit");
+  if (prof) prof.textContent = l.sellPrice == null ? "—" : "+" + fmt(u * (l.margin || 0));
+  renderLegSuggestions(i, lines);
+}
+// Repeint la boîte de suggestions d'une jambe dépliée.
+function renderLegSuggestions(i, lines) {
+  const box = document.querySelector(`.jman-suggest[data-leg="${i}"]`);
+  if (!box) return;
+  const ctx = legSuggestCtx(JOURNEY.legs[i], lines, readFilters());
+  box.innerHTML = ctx ? suggestionsHTML(ctx, ` data-leg="${i}"`) : "";
+}
+// Ajoute une commodité suggérée à une jambe, remplie au max possible.
+function addLegSuggestion(i, name) {
+  const leg = JOURNEY.legs[i];
+  const f = readFilters();
+  const lines = materializeLeg(leg, f);
+  const ctx = legSuggestCtx(leg, lines, f);
+  if (!ctx) return;
+  const it = suggestionsFor(ctx).find((x) => x.name === name);
+  if (!it) return;
+  const u = addableUnits(it, manifestRemaining(ctx));
+  if (u <= 0) return;
+  lines.push({ ...it, units: u, cap: u });
   saveJourneyEdits(); renderJourney();
 }
 function delLegLine(i, name) {
@@ -842,7 +897,7 @@ function addLegLine(i, name) {
   const buyPrice = eb ? eb.price : 0, stock = eb ? eb.vol : Infinity;
   lines.push({
     name: c.name, kind: c.kind, illegal: c.illegal, buyPrice, stock,
-    sellPrice: es ? es.price : null, demand: es ? es.vol : null,
+    sellPrice: es ? es.price : null, demand: es ? es.vol : null, demandKnown: es ? es.ovol : false,
     margin: es ? es.price - buyPrice : 0, buyUpdated: b ? b[3] : 0, sellUpdated: s ? s[3] : 0,
     units: isFinite(stock) ? Math.max(1, Math.min(stock, 1)) : 1, cap: isFinite(stock) ? stock : 1, carry: !es,
   });
@@ -987,8 +1042,10 @@ function renderJourney() {
         `<span class="jman-profit profit">${l.sellPrice == null ? "—" : "+" + fmt(l.units * (l.margin || 0))}</span>` +
         `<button class="jman-del" data-leg="${i}" data-name="${esc(l.name)}" title="Retirer">✕</button></div>`
       ).join("") || '<div class="muted jman-empty">Aucune commodité.</div>';
+      const sctx = legSuggestCtx(leg, lines, f);
       editor = `<div class="jman">${rows}
         <div class="jman-add"><input class="jman-add-input" list="commodityList" data-leg="${i}" placeholder="+ commodité (même non vendable)…" autocomplete="off"><button class="jman-add-btn" data-leg="${i}">+</button>${edited ? `<button class="jman-reset" data-leg="${i}" title="Revenir au manifeste optimal">↺ optimal</button>` : ""}</div>
+        <div class="jman-suggest manifest-suggest" data-leg="${i}">${sctx ? suggestionsHTML(sctx, ` data-leg="${i}"`) : ""}</div>
       </div>`;
     }
     return `<div class="jleg${i === JOURNEY.current ? " current" : ""}${expanded ? " expanded" : ""}">
@@ -1585,6 +1642,8 @@ async function init() {
     const del = e.target.closest(".jstep-del");
     if (del) { removeJourneyStop(Number(del.dataset.i)); return; }
     // Édition du manifeste d'une jambe : déplier / retirer / ajouter / réinitialiser.
+    const legSug = e.target.closest(".jman-suggest .suggest-add");
+    if (legSug) { addLegSuggestion(Number(legSug.dataset.leg), legSug.dataset.name); return; }
     const legDel = e.target.closest(".jman-del");
     if (legDel) { delLegLine(Number(legDel.dataset.leg), legDel.dataset.name); return; }
     if (e.target.closest(".jman-reset")) { resetLeg(Number(e.target.closest(".jman-reset").dataset.leg)); return; }
@@ -1614,7 +1673,10 @@ async function init() {
       else loadMarket().then(() => setupEnRoute());
     }
   });
-  // Édition des SCU d'une ligne de manifeste de jambe (validation au blur/Entrée).
+  // SCU d'une ligne de jambe : suggestions/profit en direct à la frappe, persistance au blur/Entrée.
+  document.addEventListener("input", (e) => {
+    if (e.target.classList && e.target.classList.contains("jman-qty")) liveLegQty(Number(e.target.dataset.leg), Number(e.target.dataset.i), e.target);
+  });
   document.addEventListener("change", (e) => {
     if (e.target.classList && e.target.classList.contains("jman-qty")) editLegQty(Number(e.target.dataset.leg), Number(e.target.dataset.i), e.target.value);
   });
