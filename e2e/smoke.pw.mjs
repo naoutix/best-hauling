@@ -309,6 +309,74 @@ test("Compagnon de voyage : éditer le manifeste d'une jambe (SCU) persiste hors
   await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(1);  // édits restaurés
 });
 
+// Déplie l'éditeur de la 1re jambe et vide les SCU de chaque ligne (1 SCU) pour libérer la soute,
+// quel que soit le manifeste optimal du jour -> il reste forcément de la place à suggérer.
+async function openLegEditorWithFreeSpace(page) {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jcargo-item").first()).toBeVisible({ timeout: 8000 });
+  await page.locator("#journeyCard .jleg-head").first().click();
+  await expect(page.locator("#journeyCard .jman")).toBeVisible();
+  const qty = page.locator("#journeyCard .jman-qty");
+  for (let i = 0; i < (await qty.count()); i++) await qty.nth(i).fill("1");
+  await qty.first().blur();
+}
+
+test("Compagnon de voyage : libérer des SCU dans une jambe propose de quoi remplir", async ({ page }) => {
+  await openLegEditorWithFreeSpace(page);
+  // Même sans commodité rentable, l'en-tête annonce les SCU libres (le message diffère).
+  const box = page.locator("#journeyCard .jman-suggest");
+  await expect(box.locator(".suggest-head")).toContainText(/SCU libres/);
+
+  const add = box.locator(".suggest-add").first();
+  test.skip(!(await box.locator(".suggest-add").count()), "aucune commodité rentable à suggérer sur cette jambe");
+
+  // Le bouton annonce combien de SCU il ajoute -> la ligne créée porte ce tonnage.
+  const units = (await add.innerText()).replace(/\D/g, "");
+  const before = await page.locator("#journeyCard .jman-line").count();
+  const name = await add.getAttribute("data-name");
+  await add.click();
+  await expect(page.locator("#journeyCard .jman-line")).toHaveCount(before + 1);
+  const added = page.locator("#journeyCard .jman-line").last();
+  await expect(added.locator(".jman-name")).toContainText(name);
+  await expect(added.locator(".jman-qty")).toHaveValue(units);
+  // La cargaison de la jambe (repliée) reflète l'ajout, et l'édit est persisté hors URL.
+  await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(1);
+  expect(await page.evaluate(() => localStorage.getItem("best-hauling-journey-edits"))).toContain(name);
+});
+
+// Encode la décision de conception : le rafraîchissement est incrémental (handler `input`), pas un
+// renderJourney() — sinon l'input perdrait le focus à chaque caractère saisi.
+test("Compagnon de voyage : les suggestions d'une jambe suivent la frappe sans voler le focus", async ({ page }) => {
+  await openLegEditorWithFreeSpace(page);
+  const box = page.locator("#journeyCard .jman-suggest");
+  const qty = page.locator("#journeyCard .jman-qty").first();
+  await expect(box.locator(".suggest-head")).toContainText(/SCU libres/);
+  const avant = await box.locator(".suggest-head").innerText();
+
+  // Saisie au clavier, sans blur : les SCU libres doivent suivre AVANT validation.
+  await qty.focus();
+  await qty.press("Control+a");
+  await qty.pressSequentially("42");
+  await expect(box.locator(".suggest-head")).not.toHaveText(avant);
+  expect(await page.evaluate(() => document.activeElement?.classList.contains("jman-qty"))).toBe(true);
+});
+
+test("En route : les suggestions de remplissage restent rendues (non-régression du partage avec le voyage)", async ({ page }) => {
+  // Passe par ▶ : ça pré-remplit départ/arrivée avec une route réelle -> manifeste garanti,
+  // là où le 1er terminal du datalist n'a pas forcément de chargement rentable.
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await page.click("#viewEnroute");
+  await expect(page.locator("#manifest .mqty-input").first()).toBeVisible({ timeout: 8000 });
+
+  await page.locator("#manifest .mqty-input").first().fill("1");
+  const box = page.locator("#manifestSuggest");
+  await expect(box.locator(".suggest-head")).toContainText(/SCU libres/);
+  test.skip(!(await box.locator(".suggest-add").count()), "aucune commodité rentable à suggérer");
+  const before = await page.locator("#manifest .mline").count();
+  await box.locator(".suggest-add").first().click();
+  await expect(page.locator("#manifest .mline")).toHaveCount(before + 1);
+});
+
 test("Compagnon de voyage : on peut ajouter n'importe quel arrêt (même sans fret rentable)", async ({ page }) => {
   await page.locator("#rows tr").first().locator(".journey-pick").click();
   await expect(page.locator("#journeyCard .jstep")).toHaveCount(2);
