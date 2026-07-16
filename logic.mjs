@@ -475,11 +475,13 @@ export function legFromRoute(r) {
   };
 }
 // Deux jambes depuis une boucle évaluée (aller puis retour).
-export function legsFromLoop(l) {
-  return [
-    { from: l.a.terminal, fromSystem: l.a.system, to: l.b.terminal, toSystem: l.b.system, commodity: l.out.commodity, buyPrice: l.out.buyPrice, sellPrice: l.out.sellPrice, margin: l.out.margin },
-    { from: l.b.terminal, fromSystem: l.b.system, to: l.a.terminal, toSystem: l.a.system, commodity: l.back.commodity, buyPrice: l.back.buyPrice, sellPrice: l.back.sellPrice, margin: l.back.margin },
-  ];
+// `startAt` = terminal par lequel entrer dans le cycle : une boucle A⇄B se parcourt aussi bien
+// B->A->B que A->B->A. Sans lui, on partirait toujours de `a`, et une boucle raccordée au parcours
+// par son `b` ne s'enchaînerait pas -> addToJourney REMPLACERAIT le voyage au lieu de l'étendre.
+export function legsFromLoop(l, startAt) {
+  const out = { from: l.a.terminal, fromSystem: l.a.system, to: l.b.terminal, toSystem: l.b.system, commodity: l.out.commodity, buyPrice: l.out.buyPrice, sellPrice: l.out.sellPrice, margin: l.out.margin };
+  const back = { from: l.b.terminal, fromSystem: l.b.system, to: l.a.terminal, toSystem: l.a.system, commodity: l.back.commodity, buyPrice: l.back.buyPrice, sellPrice: l.back.sellPrice, margin: l.back.margin };
+  return startAt === l.b.terminal && startAt !== l.a.terminal ? [back, out] : [out, back];
 }
 // N jambes depuis une chaîne (bestChain) : `terminals` résout les index -> noms/systèmes.
 export function legsFromChain(chain, terminals) {

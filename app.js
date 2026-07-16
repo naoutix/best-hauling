@@ -1626,7 +1626,9 @@ async function init() {
     if (pick) {
       const tableId = pick.closest("table").id;
       const i = Number(pick.dataset.row);
-      if (tableId === "loops") { const l = shownLoops[i]; if (l) pickJourney(legsFromLoop(l)); }
+      // Boucle : on entre dans le cycle par la fin du parcours (elle est marquée « from-here » si
+      // l'un OU l'autre de ses bouts y touche) -> elle étend le voyage au lieu de le remplacer.
+      if (tableId === "loops") { const l = shownLoops[i]; if (l) pickJourney(legsFromLoop(l, JOURNEY ? journeyEnd(JOURNEY)?.name : null)); }
       else { const r = (tableId === "enroute" ? shownEnroute : shownRoutes)[i]; if (r) pickJourney([legFromRoute(r)]); }
       return;
     }
