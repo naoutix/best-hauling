@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import {
   tripMinutes, loopMinutes, ageDays, pairAge, freshnessFactor, availabilityFactor,
   normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits, scuBoxes, bestChain,
+  manifestTotals, freeAddUnits, manifestLine, stationLabel, parseStationLabel,
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
   profitPerHour, rawScoreOf, routePasses, loopPasses,
   routeMetrics, loopMetrics, dealFrom, enRouteDeals, bestManifest, buildChainAdjacency,
@@ -899,4 +900,95 @@ test("encodeJourney / decodeJourney : aller-retour d'un voyage « de zéro »", 
   assert.equal(round.start.name, "A");
   assert.equal(round.start.system, "Stanton");
   assert.deepEqual(journeyStations(round).map((s) => s.name), ["A"]);
+});
+
+// ---------- Manifeste : totaux (source unique) ----------
+test("manifestTotals : somme profit/investissement/SCU sur les lignes", () => {
+  const lines = [
+    { units: 10, buyPrice: 5, margin: 3 },   // profit 30, invest 50
+    { units: 4, buyPrice: 20, margin: 7 },   // profit 28, invest 80
+  ];
+  assert.deepEqual(manifestTotals(lines), { profit: 58, invest: 130, scu: 14 });
+});
+
+test("manifestTotals : liste vide -> zéros", () => {
+  assert.deepEqual(manifestTotals([]), { profit: 0, invest: 0, scu: 0 });
+});
+
+test("manifestTotals : tolère units/margin/buyPrice manquants (carry-only)", () => {
+  // Ligne « carry » : pas vendable ici -> margin null ; unité définie mais buyPrice absent.
+  const lines = [{ units: 8, margin: null }, { units: 3, buyPrice: 10, margin: 2 }];
+  assert.deepEqual(manifestTotals(lines), { profit: 6, invest: 30, scu: 11 });
+});
+
+// ---------- Manifeste : unités d'un ajout libre ----------
+test("freeAddUnits : remplit l'espace libre, plafonné par le stock", () => {
+  assert.equal(freeAddUnits(100, 40), 40);  // borné par la soute restante
+  assert.equal(freeAddUnits(12, 40), 12);   // borné par le stock
+});
+
+test("freeAddUnits : au moins 1 SCU (ajout volontaire), même sans place", () => {
+  assert.equal(freeAddUnits(0, 40), 1);     // stock nul -> quand même 1 (dépassement assumé)
+  assert.equal(freeAddUnits(100, 0), 1);    // plus de place -> quand même 1
+});
+
+test("freeAddUnits : soute non bornée -> 1 SCU (pas de remplissage massif)", () => {
+  assert.equal(freeAddUnits(Infinity, Infinity), 1);
+  assert.equal(freeAddUnits(50, NaN), 1);   // cargoLeft inconnu (soute désactivée)
+});
+
+// ---------- Manifeste : assemblage d'une ligne ----------
+test("manifestLine : ligne vendable (achat + vente résolus)", () => {
+  const c = { name: "Gold", kind: "metal", illegal: false };
+  const buy = { price: 100, vol: 500, ovol: false };
+  const sell = { price: 160, vol: 300, ovol: true };
+  const l = manifestLine(c, buy, sell, 111, 222, 25, 25);
+  assert.equal(l.name, "Gold");
+  assert.equal(l.buyPrice, 100);
+  assert.equal(l.stock, 500);
+  assert.equal(l.sellPrice, 160);
+  assert.equal(l.demand, 300);
+  assert.equal(l.demandKnown, true);   // ovol de la vente
+  assert.equal(l.margin, 60);          // 160 - 100
+  assert.equal(l.buyUpdated, 111);
+  assert.equal(l.sellUpdated, 222);
+  assert.equal(l.units, 25);
+  assert.equal(l.cap, 25);
+  assert.equal(l.carry, false);        // vendable -> pas carry
+});
+
+test("manifestLine : sans vente -> carry-only (margin 0, sellPrice null)", () => {
+  const c = { name: "Waste", kind: "waste", illegal: false };
+  const buy = { price: 8, vol: 40, ovol: false };
+  const l = manifestLine(c, buy, null, 111, 0, 40, 40);
+  assert.equal(l.sellPrice, null);
+  assert.equal(l.demand, null);
+  assert.equal(l.margin, 0);           // pas vendable ici -> profit ailleurs
+  assert.equal(l.carry, true);
+  assert.equal(l.stock, 40);
+});
+
+test("manifestLine : sans achat -> prix 0, stock Infinity (chargé d'ailleurs)", () => {
+  const c = { name: "Loot", kind: "other", illegal: false };
+  const l = manifestLine(c, null, { price: 50, vol: 10, ovol: false }, 0, 5, 1, 1);
+  assert.equal(l.buyPrice, 0);
+  assert.equal(l.stock, Infinity);
+  assert.equal(l.margin, 50);          // 50 - 0
+  assert.equal(l.carry, false);
+});
+
+// ---------- Libellé de station « Nom — Système » ----------
+test("stationLabel / parseStationLabel : aller-retour", () => {
+  assert.equal(stationLabel("Area18", "Stanton"), "Area18 — Stanton");
+  assert.deepEqual(parseStationLabel("Area18 — Stanton"), { name: "Area18", system: "Stanton" });
+});
+
+test("parseStationLabel : coupe au PREMIER séparateur (nom prioritaire, comme l'ancien split[0])", () => {
+  // Un nom contenant « — » : la partie avant le 1er séparateur reste le nom résolu.
+  assert.equal(parseStationLabel("A — B — Pyro").name, "A");
+});
+
+test("parseStationLabel : sans séparateur -> system vide", () => {
+  assert.deepEqual(parseStationLabel("JustAName"), { name: "JustAName", system: "" });
+  assert.deepEqual(parseStationLabel(""), { name: "", system: "" });
 });
