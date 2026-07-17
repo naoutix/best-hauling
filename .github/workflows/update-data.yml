@@ -8,7 +8,9 @@ on:
     branches: [ main ]       # redéploie le site à chaque changement de code
 
 # Le site (données fraîches incluses) est publié via l'artefact GitHub Pages —
-# on ne commite plus les JSON dans le dépôt (l'historique ne gonfle plus).
+# la CI ne RE-commite jamais les JSON reconstruits (pas de bruit dans l'historique).
+# Les data/*.json versionnés sont un INSTANTANÉ de démarrage : ils font tourner `npm run serve`
+# et une nouvelle clone hors-ligne sans rejouer un build contre l'API UEX (cf. README « Données »).
 permissions:
   contents: read
   pages: write

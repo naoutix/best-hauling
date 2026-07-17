@@ -8,6 +8,7 @@ import {
   routePasses, loopPasses,
   routeMetrics, loopMetrics, enRouteDeals, bestManifest, buildChainAdjacency,
   commoditySummaries, commodityPoints, compactValue,
+  manifestTotals, freeAddUnits, manifestLine, stationLabel, parseStationLabel,
   legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   encodeJourney, decodeJourney,
@@ -397,7 +398,7 @@ function setupEnRoute() {
     if (!seen.has(b[0])) {
       seen.add(b[0]);
       const t = MARKET.terminals[b[0]];
-      const label = `${t.name} — ${t.system}`;
+      const label = stationLabel(t.name, t.system);
       originMap.set(label, b[0]);
       opts.push(label);
     }
@@ -406,7 +407,7 @@ function setupEnRoute() {
   $("originList").innerHTML = opts.map((l) => `<option value="${esc(l)}"></option>`).join("");
 
   // Datalist de TOUTES les stations (achat ou vente) pour la vue Corrections.
-  const stations = MARKET.terminals.map((t, i) => ({ label: `${t.name} — ${t.system}`, i }));
+  const stations = MARKET.terminals.map((t, i) => ({ label: stationLabel(t.name, t.system), i }));
   stations.forEach((s) => stationMap.set(s.label, s.i));
   stations.sort((a, b) => a.label.localeCompare(b.label, "fr"));
   $("stationList").innerHTML = stations.map((s) => `<option value="${esc(s.label)}"></option>`).join("");
@@ -452,8 +453,7 @@ function manifestTotalsHTML(profit, scu, cargo, invest, cross) {
 // m = contexte de manifeste { lines, cargo, f, originIdx, destIdx, origin, dest } ; par défaut
 // celui d'« En route », mais une jambe de voyage passe le sien (cf. legSuggestCtx).
 function manifestRemaining(m = currentManifest) {
-  const scu = m.lines.reduce((a, l) => a + l.units, 0);
-  const invest = m.lines.reduce((a, l) => a + l.units * l.buyPrice, 0);
+  const { scu, invest } = manifestTotals(m.lines);
   const budgetLeft = m.f.useBudget && m.f.budget > 0 ? m.f.budget - invest : Infinity;
   return { scu, invest, cargoLeft: m.cargo - scu, budgetLeft };
 }
@@ -510,32 +510,25 @@ function addSuggestion(name) {
   paintManifest();
 }
 
+// Trouve une commodité par nom OU code (insensible à la casse/espaces). Partagé par les ajouts libres.
+const findCommodity = (name) => {
+  const q = (name || "").trim().toLowerCase();
+  return q ? MARKET.commodities.find((x) => x.name.toLowerCase() === q || (x.code && x.code.toLowerCase() === q)) : null;
+};
+
 // Ajout LIBRE : n'importe quelle commodité (par nom ou code), même si elle n'est pas vendable à
 // destination — on la charge pour l'écouler ailleurs (ligne « carry-only », marge nulle ici).
 function addManifestCommodity(name) {
   const m = currentManifest;
-  if (!m || !name) return;
-  const q = name.trim().toLowerCase();
-  const c = MARKET.commodities.find((x) => x.name.toLowerCase() === q || (x.code && x.code.toLowerCase() === q));
+  if (!m) return;
+  const c = findCommodity(name);
   if (!c || m.lines.some((l) => l.name === c.name)) return; // inconnue ou déjà dans le manifeste
   const b = c.buys.find((x) => x[0] === m.originIdx);   // achat au terminal de départ (si dispo)
   const s = c.sells.find((x) => x[0] === m.destIdx);    // vente à destination (peut ne pas exister)
   const eb = b ? effVals(c.name, m.origin.name, "buy", b[1], b[2], b[3]) : null;
   const es = s ? effVals(c.name, m.dest.name, "sell", s[1], s[2], s[3]) : null;
-  const buyPrice = eb ? eb.price : 0;
-  const stock = eb ? eb.vol : Infinity;
-  const rem = manifestRemaining();
-  let u = Math.max(0, rem.cargoLeft);
-  if (isFinite(stock)) u = Math.min(u, stock);
-  if (u <= 0) u = isFinite(stock) ? Math.max(1, Math.min(stock, 1)) : 1; // au moins 1 SCU
-  m.lines.push({
-    name: c.name, kind: c.kind, illegal: c.illegal,
-    buyPrice, stock,
-    sellPrice: es ? es.price : null, demand: es ? es.vol : null, demandKnown: es ? es.ovol : false,
-    margin: es ? es.price - buyPrice : 0, // pas vendable ici -> 0 (profit ailleurs)
-    buyUpdated: b ? b[3] : 0, sellUpdated: s ? s[3] : 0,
-    units: u, cap: u, carry: !es,
-  });
+  const u = freeAddUnits(eb ? eb.vol : Infinity, manifestRemaining().cargoLeft);
+  m.lines.push(manifestLine(c, eb, es, b ? b[3] : 0, s ? s[3] : 0, u, u));
   paintManifest();
 }
 
@@ -551,8 +544,7 @@ function removeManifestLine(name) {
 function paintManifest() {
   const m = currentManifest;
   const card = $("manifest");
-  let profit = 0, invest = 0, scu = 0;
-  m.lines.forEach((l) => { profit += l.units * l.margin; invest += l.units * l.buyPrice; scu += l.units; });
+  const { profit, invest, scu } = manifestTotals(m.lines);
   card.hidden = false;
   card.innerHTML =
     `<div class="manifest-head">
@@ -586,7 +578,6 @@ function paintManifest() {
 // Recalcule totaux + profit par ligne d'après les SCU saisis, et rafraîchit les suggestions.
 function updateManifestTotals() {
   if (!currentManifest) return;
-  let profit = 0, invest = 0, scu = 0;
   document.querySelectorAll("#manifest .mqty-input").forEach((inp) => {
     const i = Number(inp.dataset.i);
     const cap = Number(inp.dataset.cap);
@@ -596,13 +587,11 @@ function updateManifestTotals() {
     // plus à `cap`, on le signale visuellement pour que ce soit un choix conscient.
     inp.classList.toggle("over-stock", u > cap);
     if (currentManifest.lines[i]) currentManifest.lines[i].units = u;
-    profit += u * Number(inp.dataset.margin);
-    invest += u * Number(inp.dataset.buy);
-    scu += u;
     const line = inp.closest(".mline");
     line.querySelector(".mprofit").textContent = "+" + fmt(u * Number(inp.dataset.margin));
     line.querySelector(".mboxes").textContent = "📦 " + scuBoxesLabel(u);
   });
+  const { profit, invest, scu } = manifestTotals(currentManifest.lines); // unités déjà synchronisées ci-dessus
   $("manifestTot").innerHTML = manifestTotalsHTML(profit, scu, currentManifest.cargo, invest, currentManifest.cross);
   renderSuggestions();
 }
@@ -611,8 +600,7 @@ function updateManifestTotals() {
 function copyManifest() {
   const m = currentManifest;
   if (!m) return;
-  let profit = 0, invest = 0, scu = 0;
-  m.lines.forEach((l) => { profit += l.units * l.margin; invest += l.units * l.buyPrice; scu += l.units; });
+  const { profit, invest, scu } = manifestTotals(m.lines);
   const rows = m.lines.map(
     (l) => `${fmt(l.units)} SCU  ${l.name}  @ ${fmt(l.buyPrice)} -> ${fmt(l.sellPrice)}  (+${fmt(l.units * l.margin)} aUEC)  [${scuBoxesLabel(l.units)}]`
   );
@@ -758,12 +746,12 @@ function syncViewsToJourney() {
   if (!JOURNEY) return;
   const here = journeyStations(JOURNEY)[JOURNEY.current]; // station où l'on se trouve
   if (!here) return;
-  const originLabel = `${here.name} — ${here.system}`;
+  const originLabel = stationLabel(here.name, here.system);
   $("origin").value = originLabel;    // En route : départ = station courante
   $("chainOrigin").value = originLabel; // Chaîne : départ = station courante
   const leg = currentLeg(JOURNEY);
   if (leg) {
-    $("destTerminal").value = `${leg.to} — ${leg.toSystem}`; // arrivée forcée = jambe courante
+    $("destTerminal").value = stationLabel(leg.to, leg.toSystem); // arrivée forcée = jambe courante
     $("destSystem").value = "";
   } else {
     $("destTerminal").value = ""; // au bout du parcours : on cherche le fret onward, pas d'arrivée imposée
@@ -786,8 +774,8 @@ function journeyCarriedCommodities() {
 // Manifeste optimal d'une jambe (from -> to) : remplissage multi-commodité, terminal d'arrivée forcé.
 function legManifest(leg, f) {
   if (!MARKET || !stationMap.size) return null;
-  const fromIdx = stationMap.get(`${leg.from} — ${leg.fromSystem}`);
-  const toIdx = stationMap.get(`${leg.to} — ${leg.toSystem}`);
+  const fromIdx = stationMap.get(stationLabel(leg.from, leg.fromSystem));
+  const toIdx = stationMap.get(stationLabel(leg.to, leg.toSystem));
   if (fromIdx == null || toIdx == null) return null;
   return bestManifest(MARKET, fromIdx, "", f, effVals, toIdx); // { lines, profit, … } ou null
 }
@@ -814,15 +802,15 @@ function materializeLeg(leg, f) {
   if (!JOURNEY_EDITS[k]) JOURNEY_EDITS[k] = (legManifest(leg, f)?.lines || []).map((l) => ({ ...l }));
   return JOURNEY_EDITS[k];
 }
-const legProfit = (lines) => lines.reduce((a, l) => a + l.units * (l.margin || 0), 0);
+const legProfit = (lines) => manifestTotals(lines).profit;
 
 // Contexte de manifeste d'une jambe, à la forme attendue par suggestionsFor/manifestRemaining
 // (mêmes suggestions de remplissage qu'« En route »). null si le terminal ou la soute manque.
 function legSuggestCtx(leg, lines, f) {
   if (!MARKET || !stationMap.size) return null;
   if (!f.useCargo || !(f.cargo > 0)) return null; // sans soute bornée, « SCU libres » n'a pas de sens
-  const originIdx = stationMap.get(`${leg.from} — ${leg.fromSystem}`);
-  const destIdx = stationMap.get(`${leg.to} — ${leg.toSystem}`);
+  const originIdx = stationMap.get(stationLabel(leg.from, leg.fromSystem));
+  const destIdx = stationMap.get(stationLabel(leg.to, leg.toSystem));
   if (originIdx == null || destIdx == null) return null;
   return {
     lines, originIdx, destIdx,
@@ -883,31 +871,28 @@ function delLegLine(i, name) {
 }
 function resetLeg(i) { delete JOURNEY_EDITS[legKey(JOURNEY.legs[i])]; saveJourneyEdits(); renderJourney(); }
 // Ajout LIBRE d'une commodité à une jambe (même non vendable à l'arrivée -> ligne « carry-only »).
+// Même comportement qu'« En route » (cf. addManifestCommodity) : remplit l'espace libre, ≥ 1 SCU.
 function addLegLine(i, name) {
   const leg = JOURNEY.legs[i];
-  const q = (name || "").trim().toLowerCase();
-  const c = MARKET.commodities.find((x) => x.name.toLowerCase() === q || (x.code && x.code.toLowerCase() === q));
+  const c = findCommodity(name);
   if (!c) return;
-  const lines = materializeLeg(leg, readFilters());
+  const f = readFilters();
+  const lines = materializeLeg(leg, f);
   if (lines.some((l) => l.name === c.name)) return;
-  const fromIdx = stationMap.get(`${leg.from} — ${leg.fromSystem}`), toIdx = stationMap.get(`${leg.to} — ${leg.toSystem}`);
+  const fromIdx = stationMap.get(stationLabel(leg.from, leg.fromSystem)), toIdx = stationMap.get(stationLabel(leg.to, leg.toSystem));
   const b = c.buys.find((x) => x[0] === fromIdx), s = c.sells.find((x) => x[0] === toIdx);
   const eb = b ? effVals(c.name, leg.from, "buy", b[1], b[2], b[3]) : null;
   const es = s ? effVals(c.name, leg.to, "sell", s[1], s[2], s[3]) : null;
-  const buyPrice = eb ? eb.price : 0, stock = eb ? eb.vol : Infinity;
-  lines.push({
-    name: c.name, kind: c.kind, illegal: c.illegal, buyPrice, stock,
-    sellPrice: es ? es.price : null, demand: es ? es.vol : null, demandKnown: es ? es.ovol : false,
-    margin: es ? es.price - buyPrice : 0, buyUpdated: b ? b[3] : 0, sellUpdated: s ? s[3] : 0,
-    units: isFinite(stock) ? Math.max(1, Math.min(stock, 1)) : 1, cap: isFinite(stock) ? stock : 1, carry: !es,
-  });
+  const ctx = legSuggestCtx(leg, lines, f); // null si soute non bornée -> freeAddUnits met 1 SCU
+  const u = freeAddUnits(eb ? eb.vol : Infinity, ctx ? manifestRemaining(ctx).cargoLeft : NaN);
+  lines.push(manifestLine(c, eb, es, b ? b[3] : 0, s ? s[3] : 0, u, u));
   saveJourneyEdits(); renderJourney();
 }
 
 // Index du terminal de FIN de parcours (point d'extension), ou null.
 function journeyEndIndex() {
   const end = journeyEnd(JOURNEY);
-  return end && stationMap.size ? stationMap.get(`${end.name} — ${end.system}`) : null;
+  return end && stationMap.size ? stationMap.get(stationLabel(end.name, end.system)) : null;
 }
 // Meilleure jambe (commodité de marge max) entre deux terminaux, ou null si aucun fret rentable.
 function bestLegTo(fromIdx, toIdx) {
@@ -928,7 +913,7 @@ function resolveStationLabel(input) {
   if (!v) return null;
   if (stationMap.has(v)) return stationMap.get(v);
   const lc = v.toLowerCase();
-  for (const [label, idx] of stationMap) if (label.split(" — ")[0].toLowerCase() === lc) return idx;
+  for (const [label, idx] of stationMap) if (parseStationLabel(label).name.toLowerCase() === lc) return idx;
   return null;
 }
 // Suggestions d'arrêts : meilleures destinations rentables depuis la fin du parcours (top 4).
@@ -937,7 +922,7 @@ function journeyStopSuggestions() {
   if (fromIdx == null) return [];
   const byDest = new Map();
   enRouteDeals(MARKET, fromIdx, "").forEach((d) => {
-    const label = `${d.sell.terminal} — ${d.sell.system}`;
+    const label = stationLabel(d.sell.terminal, d.sell.system);
     const cur = byDest.get(label);
     if (!cur || d.margin > cur.margin) byDest.set(label, { label, terminal: d.sell.terminal, commodity: d.commodity, margin: d.margin });
   });
@@ -977,8 +962,8 @@ function removeJourneyStop(stopIndex) {
   else {
     // arrêt du milieu : reconnecte stops[i-1] -> stops[i+1].
     const prev = legs[stopIndex - 1], next = legs[stopIndex];
-    const fromIdx = stationMap.get(`${prev.from} — ${prev.fromSystem}`);
-    const toIdx = stationMap.get(`${next.to} — ${next.toSystem}`);
+    const fromIdx = stationMap.get(stationLabel(prev.from, prev.fromSystem));
+    const toIdx = stationMap.get(stationLabel(next.to, next.toSystem));
     const bridge = bestLegTo(fromIdx, toIdx) || // si aucun fret rentable A->C, jambe « à vide » (contiguïté préservée)
       { from: prev.from, fromSystem: prev.fromSystem, to: next.to, toSystem: next.toSystem, commodity: "", buyPrice: 0, sellPrice: 0, margin: 0 };
     newLegs = [...legs.slice(0, stopIndex - 1), bridge, ...legs.slice(stopIndex + 1)];

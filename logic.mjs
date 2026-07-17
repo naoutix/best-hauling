@@ -195,6 +195,46 @@ export function fillCargo(items, cargo, budget) {
   return { lines, profit };
 }
 
+// ---------- Manifeste : totaux, unités d'ajout libre, assemblage d'une ligne ----------
+// Totaux d'un manifeste (liste de lignes { units, buyPrice, margin }). Source unique de vérité
+// pour profit/investissement/SCU — utilisée par toutes les vues (En route + jambes de voyage).
+export function manifestTotals(lines) {
+  let profit = 0, invest = 0, scu = 0;
+  for (const l of lines) {
+    const u = l.units || 0;
+    profit += u * (l.margin || 0);
+    invest += u * (l.buyPrice || 0);
+    scu += u;
+  }
+  return { profit, invest, scu };
+}
+
+// Unités pour un ajout LIBRE au manifeste (commodité choisie à la main, éventuellement carry-only) :
+// remplit l'espace restant, plafonné par le stock connu, mais AU MOINS 1 SCU (ajout volontaire).
+// cargoLeft non fini (soute non bornée) -> 1 SCU. Comportement partagé En route / jambe de voyage.
+export function freeAddUnits(stock, cargoLeft) {
+  let u = Number.isFinite(cargoLeft) ? Math.max(0, cargoLeft) : 0;
+  if (Number.isFinite(stock)) u = Math.min(u, stock);
+  return Math.max(1, u);
+}
+
+// Assemble une ligne de manifeste depuis une commodité `c` et ses valeurs résolues (corrections
+// comprises). `buy`/`sell` = { price, vol, ovol } résolus, ou null si le point n'existe pas de ce
+// côté. Sans vente (`sell` null) -> ligne « carry-only » : chargée pour être écoulée ailleurs.
+export function manifestLine(c, buy, sell, buyUpdated, sellUpdated, units, cap) {
+  const buyPrice = buy ? buy.price : 0;
+  return {
+    name: c.name, kind: c.kind, illegal: c.illegal,
+    buyPrice, stock: buy ? buy.vol : Infinity,
+    sellPrice: sell ? sell.price : null,
+    demand: sell ? sell.vol : null,
+    demandKnown: sell ? sell.ovol : false,
+    margin: sell ? sell.price - buyPrice : 0,
+    buyUpdated: buyUpdated || 0, sellUpdated: sellUpdated || 0,
+    units, cap, carry: !sell,
+  };
+}
+
 // ---------- Décomposition en caisses SCU standard ----------
 // Répartit N SCU en conteneurs standard (plus grand d'abord). Renvoie [{size, count}, ...].
 export const SCU_BOX_SIZES = [32, 24, 16, 8, 4, 2, 1];
@@ -458,6 +498,18 @@ export function compactValue(n) {
   if (a >= 1e6) return Math.round(n / 1e5) / 10 + "M";
   if (a >= 1e3) return Math.round(n / 100) / 10 + "K";
   return String(Math.round(n));
+}
+
+// ---------- Libellé canonique d'une station « Nom — Système » ----------
+// Clé unique des datalists et des maps terminal (originMap/stationMap) côté app. Un seul endroit
+// définit le format -> pas de divergence entre les ~15 sites qui le construisaient à la main.
+export const stationLabel = (name, system) => `${name} — ${system}`;
+// Sépare un libellé en { name, system }. Coupe au PREMIER « — » (le nom prime), cohérent avec
+// l'ancien `label.split(" — ")[0]`. Renvoie system:"" si le séparateur est absent.
+export function parseStationLabel(label) {
+  const s = String(label ?? "");
+  const i = s.indexOf(" — ");
+  return i < 0 ? { name: s, system: "" } : { name: s.slice(0, i), system: s.slice(i + 3) };
 }
 
 // ---------- Compagnon de voyage : modèle de « parcours » (pur, sérialisable) ----------
