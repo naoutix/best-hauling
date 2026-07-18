@@ -378,12 +378,11 @@ export function enRouteDeals(market, origin, destSystem, destTerminal = null) {
   return deals;
 }
 
-// Manifeste : destination (terminal) qui maximise le profit d'un chargement multi-commodité depuis
-// `origin`, soute remplie par marge décroissante (fillCargo). Toujours plafonné par stock/demande
-// (ce qui force à diversifier). Null si la soute n'est pas contrainte.
-// `destTerminal` (index) force un terminal d'arrivée précis ; sinon `destSystem` filtre par système.
-export function bestManifest(market, origin, destSystem, f, resolve, destTerminal = null) {
-  if (!f.useCargo || !(f.cargo > 0)) return null;
+// TOUS les manifestes depuis `origin` : un par destination atteignable, soute remplie par marge
+// décroissante (fillCargo). Trié par profit décroissant. `bestManifest` n'en garde que le premier ;
+// la vue « Trajets » en mode multi-commodité les garde tous. Renvoie [] si la soute n'est pas bornée.
+export function manifestsFrom(market, origin, destSystem, f, resolve, destTerminal = null) {
+  if (!f.useCargo || !(f.cargo > 0)) return [];
   const ot = market.terminals[origin];
   const byDest = new Map();
   market.commodities.forEach((c) => {
@@ -397,6 +396,8 @@ export function bestManifest(market, origin, destSystem, f, resolve, destTermina
       if (destTerminal != null) { if (s[0] !== destTerminal) return; }
       else if (destSystem && st.system !== destSystem) return;
       if (f.noOutpost && st.outpost) return;
+      // Fraîcheur : ignore les relevés trop vieux (0 = filtre inactif -> comportement inchangé).
+      if (f.maxAge) { const a = pairAge(b[3], s[3]); if (a == null || a > f.maxAge) return; }
       const es = resolve(c.name, st.name, "sell", s[1], s[2], s[3]);
       const margin = es.price - eb.price;
       if (margin <= 0) return;
@@ -406,16 +407,90 @@ export function bestManifest(market, origin, destSystem, f, resolve, destTermina
   });
 
   const budget = f.useBudget && f.budget > 0 ? f.budget : Infinity;
-  let best = null;
+  const trips = [];
   for (const [dest, items] of byDest) {
     items.sort((a, b) => b.margin - a.margin);
     const { lines, profit } = fillCargo(items, f.cargo, budget);
-    if (lines.length && (!best || profit > best.profit)) {
-      const dt = market.terminals[dest];
-      best = { origin: ot, dest: dt, destIdx: dest, cross: ot.system !== dt.system, lines, profit, cargo: f.cargo };
+    if (!lines.length) continue;
+    const dt = market.terminals[dest];
+    trips.push({ origin: ot, originIdx: origin, dest: dt, destIdx: dest, cross: ot.system !== dt.system, lines, profit, cargo: f.cargo });
+  }
+  return trips.sort((a, b) => b.profit - a.profit);
+}
+
+// Manifeste : destination (terminal) qui maximise le profit d'un chargement multi-commodité depuis
+// `origin`, soute remplie par marge décroissante (fillCargo). Toujours plafonné par stock/demande
+// (ce qui force à diversifier). Null si la soute n'est pas contrainte.
+// `destTerminal` (index) force un terminal d'arrivée précis ; sinon `destSystem` filtre par système.
+export function bestManifest(market, origin, destSystem, f, resolve, destTerminal = null) {
+  return manifestsFrom(market, origin, destSystem, f, resolve, destTerminal)[0] || null;
+}
+
+// ---------- Trajets MULTI-COMMODITÉ (vue « Trajets », coche « Multi commodité ») ----------
+// Champs dérivés d'un trajet multi-commodité, à la forme attendue par bySort/normalizeScores et
+// les colonnes du tableau. La marge est la marge MOYENNE pondérée par SCU (profit / SCU chargés).
+// Distance exacte indisponible hors routes.json -> tripMinutes(0, cross), comme « En route ».
+export function tripMetrics(trip) {
+  const { profit, invest, scu } = manifestTotals(trip.lines);
+  const minutes = tripMinutes(0, trip.cross);
+  const profitHour = profitPerHour(profit, minutes);
+  const margin = scu > 0 ? profit / scu : 0;
+  const roi = invest > 0 ? Math.round((profit / invest) * 1000) / 10 : 0;
+  // Fiabilité : le relevé le PLUS VIEUX du chargement et les volumes les plus contraints.
+  let age = null, stock = Infinity, demand = Infinity;
+  for (const l of trip.lines) {
+    const a = pairAge(l.buyUpdated, l.sellUpdated);
+    if (a != null && (age == null || a > age)) age = a;
+    stock = Math.min(stock, l.stock == null ? Infinity : l.stock);
+    demand = Math.min(demand, l.demand == null ? Infinity : l.demand);
+  }
+  const rawScore = rawScoreOf(profitHour, margin, age, Number.isFinite(stock) ? stock : 0, Number.isFinite(demand) ? demand : 0);
+  // commodity/buyPrice/sellPrice : valeurs représentatives pour que le tri par colonne du tableau
+  // « Trajets » reste utilisable en mode multi (ligne de tête = plus grosse marge, prix moyens/SCU).
+  const buyPrice = scu > 0 ? invest / scu : 0;
+  return {
+    units: scu, investment: invest, profit, margin, roi, minutes, profitHour, rawScore,
+    nLines: trip.lines.length, commodity: trip.lines[0] ? trip.lines[0].name : "",
+    buyPrice, sellPrice: buyPrice + margin,
+  };
+}
+
+// Jambe de voyage depuis un trajet multi-commodité (le manifeste de la jambe est recalculé par la
+// vue Voyage, donc on ne retient que la commodité de tête comme libellé).
+export function legFromTrip(t) {
+  const top = t.lines[0] || {};
+  return {
+    from: t.origin.name, fromSystem: t.origin.system, to: t.dest.name, toSystem: t.dest.system,
+    commodity: top.name || "", buyPrice: top.buyPrice || 0, sellPrice: top.sellPrice || 0,
+    margin: t.margin || 0,
+  };
+}
+
+// Balaye TOUT le marché : pour chaque terminal d'achat, tous les remplissages multi-commodité vers
+// chaque destination atteignable. Filtres appliqués : sysFilter/noOutpost sur le terminal de départ,
+// sameOnly sur le saut, q sur les commodités chargées (legalOnly/noOutpost-arrivée/maxAge le sont
+// déjà par manifestsFrom).
+// `minLines` = nombre minimum de commodités par chargement (2 par défaut) : un trajet dont le
+// remplissage optimal tient en UNE commodité est déjà couvert par la vue « Trajets » normale, on
+// ne garde donc ici que les chargements réellement combinés. minLines:1 rend tout.
+// Trié par profit décroissant puis TRONQUÉ à `limit` (garde-fou de perf : un tri utilisateur
+// ultérieur ne réordonne que ces `limit` meilleurs trajets par profit).
+export function multiTrips(market, f, resolve, limit = 300, minLines = 2) {
+  const origins = new Set();
+  market.commodities.forEach((c) => c.buys.forEach((b) => origins.add(b[0])));
+  const out = [];
+  for (const origin of origins) {
+    const ot = market.terminals[origin];
+    if (f.sysFilter && ot.system !== f.sysFilter) continue; // filtre système = système d'ACHAT
+    if (f.noOutpost && ot.outpost) continue;
+    for (const trip of manifestsFrom(market, origin, "", f, resolve)) {
+      if (trip.lines.length < minLines) continue;
+      if (f.sameOnly && trip.cross) continue;
+      if (f.q && !trip.lines.some((l) => l.name.toLowerCase().includes(f.q))) continue;
+      out.push(trip);
     }
   }
-  return best;
+  return out.sort((a, b) => b.profit - a.profit).slice(0, limit);
 }
 
 // Graphe des meilleurs segments : pour chaque paire (départ -> arrivée), la commodité de marge

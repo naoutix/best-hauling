@@ -727,3 +727,18 @@ input.mqty-input.over-stock { color: var(--warn); border-color: var(--warn); box
   .rail-nav .vbtn { flex: 1 1 auto; }
   .grid-overlay, .scanbar { display: none; } /* décor coûteux masqué sur petit écran */
 }
+
+/* ---------- Trajets « Multi commodité » ---------- */
+/* Coche grisée quand la soute est désactivée (le remplissage multi n'a alors pas de sens). */
+.field.checks label.disabled { opacity: 0.45; cursor: not-allowed; }
+/* Petit badge « Trajets » sur la coche : rappelle que l'option ne joue que dans cette vue. */
+.hint-tag {
+  font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: var(--acc);
+  border: 1px solid var(--line); border-radius: 3px; padding: 1px 4px; margin-left: 2px; vertical-align: middle;
+}
+/* Icônes des commodités chargées, dans la cellule de gauche du tableau. */
+.multi-icons { display: inline-flex; align-items: center; gap: 2px; margin-right: 4px; }
+.multi-icons .muted { font-size: 10px; }
+/* Chargement détaillé (dépliage 🗺) : même grille que les suggestions, + une colonne caisses. */
+.multi-cargo { margin-top: 10px; border-top: 1px solid var(--line); }
+.multi-cargo .sline { grid-template-columns: auto 1fr auto auto auto auto; }

@@ -9,6 +9,7 @@ import {
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
   profitPerHour, rawScoreOf, routePasses, loopPasses,
   routeMetrics, loopMetrics, dealFrom, enRouteDeals, bestManifest, buildChainAdjacency,
+  manifestsFrom, multiTrips, tripMetrics, legFromTrip,
   commoditySummaries, commodityPoints, compactValue,
   legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
@@ -991,4 +992,108 @@ test("parseStationLabel : coupe au PREMIER séparateur (nom prioritaire, comme l
 test("parseStationLabel : sans séparateur -> system vide", () => {
   assert.deepEqual(parseStationLabel("JustAName"), { name: "JustAName", system: "" });
   assert.deepEqual(parseStationLabel(""), { name: "", system: "" });
+});
+
+// ---------- Trajets MULTI-COMMODITÉ : manifestsFrom / multiTrips / tripMetrics / legFromTrip ----------
+// Soute 400 : Gold sature à 300 (demande en B) -> Drug complète les 100 SCU restants = vrai multi.
+test("manifestsFrom : un manifeste par destination, trié par profit décroissant", () => {
+  const trips = manifestsFrom(MKT(), 0, "", F({ useCargo: true, cargo: 400 }), idResolve);
+  assert.equal(trips.length, 2);
+  assert.equal(trips[0].dest.name, "C");            // 400 × 200 = 80 000
+  assert.equal(trips[0].profit, 80_000);
+  assert.equal(trips[1].dest.name, "B");            // 300 × 50 + 100 × 30 = 18 000
+  assert.equal(trips[1].profit, 18_000);
+});
+
+test("manifestsFrom : la soute se remplit avec PLUSIEURS commodités quand la 1re sature", () => {
+  const trips = manifestsFrom(MKT(), 0, "", F({ useCargo: true, cargo: 400 }), idResolve);
+  const toB = trips.find((t) => t.dest.name === "B");
+  assert.equal(toB.lines.length, 2);                       // Gold puis Drug
+  assert.deepEqual(toB.lines.map((l) => l.name), ["Gold", "Drug"]); // marge décroissante
+  assert.equal(toB.lines[0].units, 300);                   // plafonné par la demande en B
+  assert.equal(toB.lines[1].units, 100);                   // complète les SCU restants
+});
+
+test("manifestsFrom : [] si la soute n'est pas bornée (rien à remplir)", () => {
+  assert.deepEqual(manifestsFrom(MKT(), 0, "", F(), idResolve), []);
+});
+
+test("bestManifest reste le 1er de manifestsFrom (comportement inchangé)", () => {
+  const f = F({ useCargo: true, cargo: 400 });
+  assert.equal(bestManifest(MKT(), 0, "", f, idResolve).dest.name, manifestsFrom(MKT(), 0, "", f, idResolve)[0].dest.name);
+});
+
+test("multiTrips : ne garde que les chargements COMBINÉS (≥ 2 commodités)", () => {
+  // Vers C, Gold seul sature les 400 SCU -> chargement à 1 commodité, déjà couvert par la vue
+  // « Trajets » normale, donc écarté du mode multi.
+  const trips = multiTrips(MKT(), F({ useCargo: true, cargo: 400 }), idResolve);
+  assert.deepEqual(trips.map((t) => t.dest.name), ["B"]);
+  assert.equal(trips[0].lines.length, 2);
+});
+
+test("multiTrips : minLines:1 rend aussi les chargements à une seule commodité", () => {
+  const trips = multiTrips(MKT(), F({ useCargo: true, cargo: 400 }), idResolve, 300, 1);
+  assert.equal(trips.length, 2);                    // seul A a des achats
+  assert.equal(trips[0].dest.name, "C");            // trié par profit décroissant
+  assert.ok(trips[0].profit >= trips[1].profit);
+});
+
+test("multiTrips : sameOnly écarte les sauts inter-système", () => {
+  const trips = multiTrips(MKT(), F({ useCargo: true, cargo: 400, sameOnly: true }), idResolve, 300, 1);
+  assert.deepEqual(trips.map((t) => t.dest.name), ["B"]); // C est dans Pyro
+});
+
+test("multiTrips : sysFilter s'applique au système d'ACHAT", () => {
+  assert.equal(multiTrips(MKT(), F({ useCargo: true, cargo: 400, sysFilter: "Pyro" }), idResolve, 300, 1).length, 0);
+  assert.equal(multiTrips(MKT(), F({ useCargo: true, cargo: 400, sysFilter: "Stanton" }), idResolve, 300, 1).length, 2);
+});
+
+test("multiTrips : q ne garde que les trajets contenant la commodité cherchée", () => {
+  const trips = multiTrips(MKT(), F({ useCargo: true, cargo: 400, q: "drug" }), idResolve);
+  assert.deepEqual(trips.map((t) => t.dest.name), ["B"]); // seul le chargement vers B contient Drug
+});
+
+test("multiTrips : legalOnly exclut les commodités illégales du chargement", () => {
+  const f = F({ useCargo: true, cargo: 400, legalOnly: true });
+  const toB = multiTrips(MKT(), f, idResolve, 300, 1).find((t) => t.dest.name === "B");
+  assert.deepEqual(toB.lines.map((l) => l.name), ["Gold"]);   // Drug (illégal) écarté
+  assert.equal(multiTrips(MKT(), f, idResolve).length, 0);    // réduit à 1 commodité -> hors mode multi
+});
+
+test("multiTrips : limit tronque la liste (garde-fou de perf)", () => {
+  assert.equal(multiTrips(MKT(), F({ useCargo: true, cargo: 400 }), idResolve, 1, 1).length, 1);
+});
+
+test("tripMetrics : totaux, marge moyenne pondérée par SCU et ROI", () => {
+  const toB = manifestsFrom(MKT(), 0, "", F({ useCargo: true, cargo: 400 }), idResolve)
+    .find((t) => t.dest.name === "B");
+  const m = tripMetrics(toB);
+  assert.equal(m.units, 400);                        // 300 Gold + 100 Drug
+  assert.equal(m.investment, 300 * 100 + 100 * 50);  // 35 000
+  assert.equal(m.profit, 18_000);
+  assert.equal(m.margin, 45);                        // 18 000 / 400 SCU
+  assert.equal(m.roi, 51.4);                         // arrondi à 0,1 %
+  assert.equal(m.nLines, 2);
+  assert.equal(m.commodity, "Gold");                 // ligne de tête = plus grosse marge
+  assert.equal(m.buyPrice, 87.5);                    // 35 000 / 400
+  assert.equal(m.sellPrice, 132.5);                  // 87,5 + 45
+});
+
+test("tripMetrics : profit/heure intra-système (tripMinutes(0,false) = 6 min)", () => {
+  const toB = manifestsFrom(MKT(), 0, "", F({ useCargo: true, cargo: 400 }), idResolve)
+    .find((t) => t.dest.name === "B");
+  const m = tripMetrics(toB);
+  assert.equal(m.minutes, 6);
+  assert.equal(m.profitHour, 18_000 * 60 / 6);
+});
+
+test("legFromTrip : jambe de voyage depuis un trajet multi (commodité de tête)", () => {
+  const toB = manifestsFrom(MKT(), 0, "", F({ useCargo: true, cargo: 400 }), idResolve)
+    .find((t) => t.dest.name === "B");
+  const leg = legFromTrip({ ...toB, ...tripMetrics(toB) });
+  assert.equal(leg.from, "A");
+  assert.equal(leg.fromSystem, "Stanton");
+  assert.equal(leg.to, "B");
+  assert.equal(leg.commodity, "Gold");
+  assert.equal(leg.margin, 45);            // marge moyenne du chargement
 });
