@@ -25,7 +25,7 @@ Six vues, un même moteur de calcul (soute SCU + budget aUEC → unités, coût,
 
 | Vue | Ce qu'elle fait |
 |-----|-----------------|
-| **Trajets simples** | Meilleures routes A→B, triables, avec un **score de fiabilité** composite (rentabilité × fraîcheur × disponibilité) par défaut |
+| **Trajets simples** | Meilleures routes A→B, triables, avec un **score de fiabilité** composite (rentabilité × fraîcheur × disponibilité) par défaut. Coche **Multi commodité** : liste plutôt les **chargements combinés** (plusieurs commodités d'un même A vers un même B), dépliables (🗺) pour voir le détail par commodité |
 | **Boucles ⇄** | Meilleures boucles A⇄B (une commodité à l'aller, une autre au retour) pour ne jamais repartir à vide |
 | **En route 🧭** | Depuis un terminal de départ : le fret rentable + un **manifeste optimal** qui remplit la soute avec **plusieurs commodités** vers une même destination (avec suggestions pour combler l'espace libre) |
 | **Chaîne ⛓️** | Trajets **multi-sauts A→B→C…** (2 à 4 sauts) : achète, vends, rachète sur place, revends plus loin — recherche par faisceau du circuit le plus rentable |
@@ -36,6 +36,7 @@ Autres éléments :
 
 - **Vaisseau** : autocomplétion par sous-chaîne (128 modèles UEX), remplit la soute automatiquement, affiche la photo.
 - **Contraintes désactivables** : couper le budget → meilleure route pour la soute ; couper la soute → meilleure route pour le budget.
+- **Multi commodité** (vue Trajets) : balaie tout le marché et propose les **chargements combinés** A→B — la soute se remplit par marge décroissante, plafonnée par le stock et la demande. Seuls les chargements d'**au moins 2 commodités** sont listés (un trajet qui tient en une seule commodité est déjà dans la liste normale). Nécessite la soute activée ; la coche est grisée sinon.
 - **Décomposition SCU en caisses** (32/24/16/8/4/2/1) sur le manifeste et en infobulle.
 - **Manifeste ajustable** : chaque ligne se modifie à la main — tu peux **dépasser le stock UEX** (vol de fret, relevé périmé…) ; le champ passe en ambre pour le signaler.
 - **Schéma de trajet** dépliable (🗺) : système › planète › terminal, type de saut, temps estimé.

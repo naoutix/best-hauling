@@ -9,6 +9,7 @@ import {
   routeMetrics, loopMetrics, enRouteDeals, bestManifest, buildChainAdjacency,
   commoditySummaries, commodityPoints, compactValue,
   manifestTotals, freeAddUnits, manifestLine, stationLabel, parseStationLabel,
+  multiTrips, tripMetrics, legFromTrip,
   legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   encodeJourney, decodeJourney,
@@ -29,7 +30,7 @@ let sortDir = -1; // -1 = décroissant, 1 = croissant
 let loopSortKey = "score";
 let loopSortDir = -1;
 // Lignes actuellement affichées (dans l'ordre du DOM) pour déplier le schéma de trajet.
-let shownRoutes = [], shownEnroute = [], shownLoops = [];
+let shownRoutes = [], shownEnroute = [], shownLoops = [], shownMulti = [];
 // Vue « Commodités » : mode de tri (margin|code|kind|custom), clé/sens custom, sélection.
 let commMode = "margin", commSortKey = "margin", commSortDir = -1, commSelected = null, shownCommodities = [];
 let commMaxMargin = 0; // marge max de la liste courante (pour colorer la heatmap en relatif)
@@ -241,11 +242,16 @@ function readFilters() {
     sysFilter: $("system").value,
     maxAge: Number($("freshness").value) || 0,
     q: $("search").value.trim().toLowerCase(),
+    multi: $("multiCommodity").checked,
   };
 }
 
+// Mode « Multi commodité » actif (uniquement pertinent dans la vue Trajets).
+const isMultiRoutes = () => view === "routes" && $("multiCommodity").checked;
+
 function render() {
   const f = readFilters();
+  if (f.multi) return renderMulti(f);
 
   let rows = ROUTES.filter((r) => routePasses(r, f)).map((r) => evaluate(r, f));
 
@@ -256,6 +262,83 @@ function render() {
   $("rows").innerHTML = rows.map(routeRowHTML).join("");
   $("empty").hidden = rows.length > 0;
   notifySuperseded();
+}
+
+// ---------- Vue « Trajets » en mode MULTI-COMMODITÉ ----------
+// Même tableau, mais chaque ligne est un chargement A->B composé de PLUSIEURS commodités
+// (remplissage par marge décroissante, plafonné par stock/demande et budget).
+function renderMulti(f) {
+  const empty = $("empty");
+  // Sans soute bornée, « remplir la soute » n'a pas de sens (cf. manifeste d'« En route »).
+  if (!f.useCargo || !(f.cargo > 0)) {
+    shownMulti = [];
+    $("rows").innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = "Active la soute (SCU) pour calculer des trajets multi-commodité.";
+    return;
+  }
+  if (!MARKET) { loadMarket().then(() => { setupEnRoute(); render(); }); return; } // graphe requis
+  const trips = multiTrips(MARKET, f, effVals).map((t) => ({ ...t, ...tripMetrics(t) }));
+  normalizeScores(trips);
+  trips.sort(bySort(sortKey, sortDir));
+  shownMulti = trips;
+  $("rows").innerHTML = trips.map(multiRowHTML).join("");
+  empty.hidden = trips.length > 0;
+  // Rappel : seuls les chargements COMBINÉS (≥ 2 commodités) sont listés ici — un trajet dont le
+  // remplissage optimal tient en une seule commodité est déjà dans la vue « Trajets » normale.
+  if (!trips.length) empty.textContent = "Aucun chargement combinant plusieurs commodités avec ces filtres — agrandis la soute, ou décoche « Multi commodité » pour les trajets à une commodité.";
+  notifySuperseded();
+}
+
+// Ligne de tableau d'un trajet multi-commodité (mêmes colonnes que les trajets simples).
+function multiRowHTML(t, i) {
+  const n = t.lines.length;
+  const cross = t.cross ? '<span class="cross">⚡ saut inter-système</span>' : "";
+  const icons = t.lines.slice(0, 6).map((l) => commodityIcon(l.kind)).join("");
+  const more = n > 6 ? `<span class="muted">+${n - 6}</span>` : "";
+  const names = t.lines.map((l) => `${l.name} (${fmt(l.units)} SCU)`).join(" · ");
+  const oldest = t.lines.reduce((m, l) => { const u = lineFreshUpdated(l); return m && u ? Math.min(m, u) : m || u; }, 0);
+  return `
+      <tr data-row="${i}">
+        <td class="loc">
+          <div class="commodity-cell"><button class="route-toggle" data-row="${i}" title="Voir le chargement" aria-label="Voir le chargement">🗺</button><button class="journey-pick" data-row="${i}" title="Faire ce trajet — compagnon de voyage" aria-label="Sélectionner ce trajet">▶</button><span class="multi-icons" title="${esc(names)}">${icons}${more}</span><span class="cname">${n} commodité${n > 1 ? "s" : ""}</span></div>
+          <div class="loc-badges">${t.lines.some((l) => l.illegal) ? illegalTag(true) : ""}${cross}</div>
+        </td>
+        <td class="loc">
+          <div class="term-name">${esc(t.origin.name)}</div>
+          <div class="loc-badges">${sysBadge(t.origin.system)}${outpostTag(t.origin.outpost)}</div>
+          <div class="loc-sub">${esc(t.origin.planet)}</div>
+          <div class="loc-fresh">${freshChip(oldest)}</div>
+        </td>
+        <td class="loc">
+          <div class="term-name">${esc(t.dest.name)}</div>
+          <div class="loc-badges">${sysBadge(t.dest.system)}${outpostTag(t.dest.outpost)}</div>
+          <div class="loc-sub">${esc(t.dest.planet)}</div>
+        </td>
+        <td>${scoreCell(t.score)}</td>
+        <td class="num" title="Marge moyenne pondérée par SCU chargé">${fmt(t.margin)}</td>
+        <td class="num roi-badge">${t.roi}%</td>
+        <td class="num"${t.units ? ` title="Caisses : ${scuBoxesLabel(t.units)}"` : ""}>${fmt(t.units)}</td>
+        <td class="num">${fmt(t.investment)}</td>
+        <td class="num profit">${fmt(t.profit)}</td>
+        <td class="num profit" title="Estimation ${Math.round(t.minutes)} min/voyage (distance approchée)">${fmt(t.profitHour)}</td>
+      </tr>`;
+}
+
+// Détail déplié d'un trajet multi-commodité : schéma départ→arrivée + chargement ligne par ligne.
+function multiSchemaHTML(t) {
+  const info = `${t.cross ? "⚡ saut inter-système" : "même système"} · ~${Math.round(t.minutes)} min`;
+  const end = (x) => ({ system: x.system, planet: x.planet, terminal: x.name, outpost: x.outpost });
+  const schema = `<div class="schema">${schemaLeg("Départ", end(t.origin))}<div class="schema-arrow"><span class="al">⟶</span><span class="ai">${info}</span></div>${schemaLeg("Arrivée", end(t.dest))}</div>`;
+  const lines = t.lines.map((l) =>
+    `<div class="sline">${commodityIcon(l.kind)}` +
+    `<span class="mname">${esc(l.name)}${illegalTag(l.illegal)}</span>` +
+    `<span class="mstock">stock ${fmt(l.stock)} · dem. ${fmt(l.demand)}</span>` +
+    `<span class="mprice">${fmt(l.buyPrice)} → ${fmt(l.sellPrice)} · marge ${fmt(l.margin)}</span>` +
+    `<span class="mprofit profit">+${fmt(l.units * l.margin)}</span>` +
+    `<span class="mboxes" title="Caisses SCU standard à charger">📦 ${fmt(l.units)} SCU · ${scuBoxesLabel(l.units)}</span></div>`
+  ).join("");
+  return `${schema}<div class="multi-cargo"><div class="suggest-head">Chargement — ${t.lines.length} commodité${t.lines.length > 1 ? "s" : ""}, ${fmt(t.units)}/${fmt(t.cargo)} SCU</div>${lines}</div>`;
 }
 
 // Un « nœud » du schéma (système › planète › terminal), réutilisé départ/arrivée.
@@ -1275,7 +1358,7 @@ async function loadShips() {
 // L'état (filtres, tri, vue, vaisseau) est sauvé dans localStorage ET encodé dans le
 // hash de l'URL, pour reprendre là où on s'est arrêté et partager une vue précise.
 const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem", "destTerminal", "chainOrigin", "hops", "station"];
-const STATE_CHECKS = ["useCargo", "useBudget", "sameSystem", "noOutpost", "legalOnly", "capStock"];
+const STATE_CHECKS = ["useCargo", "useBudget", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiCommodity"];
 // safeKey / encodeState / decodeState viennent de logic.mjs.
 
 let restoring = false; // évite de resauver pendant qu'on applique un état
@@ -1532,12 +1615,15 @@ function syncToggles() {
   $("cargo").disabled = cargoOff;
   $("ship").disabled = cargoOff;
   $("budget").disabled = budgetOff;
+  // Multi-commodité : remplir la soute n'a pas de sens sans soute bornée -> coche grisée.
+  $("multiCommodity").disabled = cargoOff;
+  $("multiCommodityLabel").classList.toggle("disabled", cargoOff);
 }
 
 async function init() {
   setupSort();
   setupLoopSort();
-  ["cargo", "budget", "search", "system", "freshness", "sameSystem", "noOutpost", "legalOnly", "capStock"].forEach((id) =>
+  ["cargo", "budget", "search", "system", "freshness", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiCommodity"].forEach((id) =>
     $(id).addEventListener("input", refresh)
   );
   ["useCargo", "useBudget"].forEach((id) =>
@@ -1600,10 +1686,11 @@ async function init() {
     const next = tr.nextElementSibling;
     if (next && next.classList.contains("schema-row")) { next.remove(); btn.classList.remove("open"); return; }
     const tableId = btn.closest("table").id;
-    const arr = tableId === "loops" ? shownLoops : tableId === "enroute" ? shownEnroute : shownRoutes;
+    const multi = tableId === "routes" && isMultiRoutes();
+    const arr = tableId === "loops" ? shownLoops : tableId === "enroute" ? shownEnroute : multi ? shownMulti : shownRoutes;
     const item = arr[Number(btn.dataset.row)];
     if (!item) return;
-    const html = tableId === "loops" ? loopSchemaHTML(item) : routeSchemaHTML(item);
+    const html = tableId === "loops" ? loopSchemaHTML(item) : multi ? multiSchemaHTML(item) : routeSchemaHTML(item);
     tr.insertAdjacentHTML("afterend", `<tr class="schema-row"><td colspan="${tr.children.length}">${html}</td></tr>`);
     btn.classList.add("open");
   });
@@ -1616,6 +1703,7 @@ async function init() {
       // Boucle : on entre dans le cycle par la fin du parcours (elle est marquée « from-here » si
       // l'un OU l'autre de ses bouts y touche) -> elle étend le voyage au lieu de le remplacer.
       if (tableId === "loops") { const l = shownLoops[i]; if (l) pickJourney(legsFromLoop(l, JOURNEY ? journeyEnd(JOURNEY)?.name : null)); }
+      else if (tableId === "routes" && isMultiRoutes()) { const t = shownMulti[i]; if (t) pickJourney([legFromTrip(t)]); }
       else { const r = (tableId === "enroute" ? shownEnroute : shownRoutes)[i]; if (r) pickJourney([legFromRoute(r)]); }
       return;
     }
