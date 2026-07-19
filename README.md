@@ -186,6 +186,28 @@ jamais partagé ni mis dans l'URL) et **intelligent** :
 ## Sources de données
 
 - **UEX Corp** (utilisée) — la plus complète, API publique, données communautaires.
+
+### Sémantique des volumes UEX (piège)
+
+Les champs de volume ne sont **pas symétriques** entre l'achat et la vente :
+
+| Côté | Champ UEX | Signification |
+|------|-----------|---------------|
+| Achat | `scu_buy` | SCU **disponibles à l'achat** — utilisable tel quel |
+| Vente | `scu_sell` | **Capacité totale** du terminal pour cette commodité |
+| Vente | `scu_sell_stock` | Ce que le terminal **détient déjà** (son stock) |
+
+La **demande exploitable** — ce qu'on peut encore écouler — vaut donc `scu_sell - scu_sell_stock`
+(capacité restante), et **jamais** `scu_sell_stock`, qui en est l'inverse. `status_sell` n'est que le
+ratio des deux : les paliers 1→7 tombent exactement sur les septièmes (1 = quasi vide, forte demande ;
+7 = plein, saturé), et `scu_sell_stock <= scu_sell` sur 100 % des relevés.
+
+UEX ne renseigne `scu_sell` que sur **~11 %** des points de vente. Le pipeline encode donc :
+
+- `demand: null` → capacité inconnue, **aucun plafond** de volume à la vente ;
+- `demand: 0` → terminal **saturé**, il ne prend plus rien → plafonne à 0 ;
+- `demand: n` → capacité restante réelle.
+
 - **SC Trade Tools** (`sc-trade.tools`) — routes optimisées, pas d'API publique documentée.
 - **Regolith Co** — plutôt minage/raffinage.
 - **API RSI officielle** — pas de marché exposé.

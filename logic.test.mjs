@@ -223,8 +223,16 @@ test("computeUnits : plafonné par stock ET demande quand capStock actif", () =>
 
 test("computeUnits : stock d'achat à 0 = terminal vide -> 0 unité (bug Levski)", () => {
   const f = F({ useCargo: true, cargo: 1000, capStock: true });
-  assert.equal(computeUnits(100, 0, 120, f), 0);   // stock 0 = vide -> rien à acheter
-  assert.equal(computeUnits(100, 300, 0, f), 300); // demande 0 BRUTE = quantité inconnue -> non plafonnée
+  assert.equal(computeUnits(100, 0, 120, f), 0);      // stock 0 = vide -> rien à acheter
+  assert.equal(computeUnits(100, 300, null, f), 300); // demande null = capacité inconnue -> non plafonnée
+});
+
+test("computeUnits : demande 0 CONNUE = terminal saturé -> 0 unité", () => {
+  const f = F({ useCargo: true, cargo: 1000, capStock: true });
+  // Depuis la correction de sémantique UEX, la demande est la capacité RESTANTE : un 0 issu des
+  // données signifie « le terminal est plein, il ne prend plus rien » (statut_sell 7).
+  assert.equal(computeUnits(100, 300, 0, f), 0);
+  assert.equal(computeUnits(100, 300, 40, f), 40);  // capacité restante 40 -> plafonne à 40
 });
 
 test("computeUnits : demande corrigée par l'utilisateur est fiable (0 -> 0)", () => {
@@ -275,9 +283,9 @@ test("effValue : compat ascendante — legacy ts, et sans date jamais périmé",
 
 // ---------- fillCargo (remplissage glouton du manifeste) ----------
 test("fillCargo : remplit par marge décroissante, plafonné par la soute", () => {
-  const items = [
-    { name: "A", buyPrice: 100, stock: 999, demand: 0, margin: 50 },
-    { name: "B", buyPrice: 100, stock: 999, demand: 0, margin: 30 },
+  const items = [ // demand null = capacité UEX inconnue -> aucun plafond de volume à la vente
+    { name: "A", buyPrice: 100, stock: 999, demand: null, margin: 50 },
+    { name: "B", buyPrice: 100, stock: 999, demand: null, margin: 30 },
   ];
   const { lines, profit } = fillCargo(items, 60, Infinity);
   assert.equal(lines.length, 1);         // A remplit toute la soute
@@ -992,6 +1000,39 @@ test("parseStationLabel : coupe au PREMIER séparateur (nom prioritaire, comme l
 test("parseStationLabel : sans séparateur -> system vide", () => {
   assert.deepEqual(parseStationLabel("JustAName"), { name: "JustAName", system: "" });
   assert.deepEqual(parseStationLabel(""), { name: "", system: "" });
+});
+
+// ---------- Sémantique UEX de la demande (capacité restante, pas le stock détenu) ----------
+// UEX : `scu_sell` = capacité totale du terminal, `scu_sell_stock` = ce qu'il détient déjà.
+// La demande exploitable = capacité restante. null = capacité inconnue ; 0 = saturé.
+test("fillCargo : demande null (inconnue) ne plafonne pas, 0 (saturé) exclut la ligne", () => {
+  const items = [
+    { name: "Sature", buyPrice: 100, stock: 999, demand: 0, margin: 99 },    // meilleure marge mais plein
+    { name: "Inconnu", buyPrice: 100, stock: 999, demand: null, margin: 10 },
+  ];
+  const { lines } = fillCargo(items, 50, Infinity);
+  assert.deepEqual(lines.map((l) => l.name), ["Inconnu"]);
+  assert.equal(lines[0].units, 50);      // non plafonné par la demande
+});
+
+test("addableUnits : demande null non plafonnante, 0 bloquante", () => {
+  const rem = { cargoLeft: 80, budgetLeft: Infinity };
+  assert.equal(addableUnits({ buyPrice: 10, stock: 999, demand: null }, rem), 80);
+  assert.equal(addableUnits({ buyPrice: 10, stock: 999, demand: 0 }, rem), 0);
+  assert.equal(addableUnits({ buyPrice: 10, stock: 999, demand: 30 }, rem), 30);
+});
+
+test("bestChain : un saut vers un terminal saturé (demande 0) est écarté", () => {
+  const adj = new Map([
+    [0, [
+      { to: 1, commodity: "Sature", margin: 500, stock: 999, demand: 0 },   // plein -> inutilisable
+      { to: 2, commodity: "Ok", margin: 10, stock: 999, demand: null },     // capacité inconnue -> ok
+    ]],
+  ]);
+  const chain = bestChain(adj, 0, 1, { cargo: 100 });
+  assert.equal(chain.legs.length, 1);
+  assert.equal(chain.legs[0].commodity, "Ok"); // malgré une marge 50× plus faible
+  assert.equal(chain.profit, 100 * 10);
 });
 
 // ---------- Trajets MULTI-COMMODITÉ : manifestsFrom / multiTrips / tripMetrics / legFromTrip ----------
