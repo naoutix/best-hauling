@@ -1,14 +1,15 @@
 {
-  "generated_at": 1783942479,
+  "generated_at": 1784461593,
   "source": "UEX Corp API 2.0",
   "source_url": "https://uexcorp.space",
-  "commodities": 120,
-  "terminals": 134,
+  "commodities": 123,
+  "terminals": 115,
   "routes": 313,
   "loops": 160,
   "systems": [
     "Nyx",
     "Pyro",
     "Stanton"
-  ]
+  ],
+  "data_signature": "2596:1784450779"
 }

@@ -222,7 +222,9 @@ function scoreCell(score) {
 // Valeur éditable (clic pour corriger localement). side = "buy"|"sell", field = "price"|"vol".
 // updated = date UEX du point (mémorisée comme base de fraîcheur de la correction).
 function editv(commodity, terminal, side, field, value, ov, updated) {
-  return `<span class="editv${ov ? " ov" : ""}" data-c="${esc(commodity)}" data-t="${esc(terminal)}" data-s="${side}" data-f="${field}" data-v="${value}" data-u="${updated || 0}" role="button" tabindex="0" title="Clic pour corriger localement ce chiffre">${fmt(value)}${ov ? '<span class="ovmark" title="Corrigé localement">✎</span>' : ""}</span>`;
+  // value null = volume inconnu chez UEX (« — ») : on n'injecte pas la chaîne "null" dans data-v,
+  // sinon le champ number la rejette à l'ouverture de l'édition.
+  return `<span class="editv${ov ? " ov" : ""}" data-c="${esc(commodity)}" data-t="${esc(terminal)}" data-s="${side}" data-f="${field}" data-v="${value == null ? "" : value}" data-u="${updated || 0}" role="button" tabindex="0" title="Clic pour corriger localement ce chiffre">${fmt(value)}${ov ? '<span class="ovmark" title="Corrigé localement">✎</span>' : ""}</span>`;
 }
 
 // Lit l'état de tous les contrôles de filtre (partagé par les deux vues).

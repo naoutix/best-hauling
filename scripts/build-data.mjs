@@ -262,7 +262,17 @@ async function main() {
       c.buys.push({ ...loc, price: p.price_buy, stock: p.scu_buy || 0, updated: p.date_modified || 0, status: p.status_buy || 0 });
     }
     if (p.price_sell > 0) {
-      c.sells.push({ ...loc, price: p.price_sell, demand: p.scu_sell_stock || 0, updated: p.date_modified || 0, status: p.status_sell || 0 });
+      // Demande = capacité RESTANTE du terminal, jamais son stock. UEX expose `scu_sell` (capacité
+      // totale pour cette commodité) et `scu_sell_stock` (ce que le terminal détient DÉJÀ) ;
+      // `status_sell` n'est que leur ratio (1 = quasi vide -> forte demande … 7 = plein -> saturé,
+      // vérifié : les paliers tombent sur les septièmes et scu_sell_stock <= scu_sell partout).
+      // Prendre scu_sell_stock pour la « demande » inversait le sens : les meilleurs points de
+      // vente (peu de stock, donc forte demande) paraissaient les plus contraints.
+      // null = capacité inconnue (UEX ne renseigne scu_sell que sur ~11 % des points) -> pas de
+      // plafond de volume, contrairement à 0 qui signifie « saturé, ne prend plus rien ».
+      const cap = p.scu_sell || 0;
+      const demand = cap > 0 ? Math.max(0, cap - (p.scu_sell_stock || 0)) : null;
+      c.sells.push({ ...loc, price: p.price_sell, demand, updated: p.date_modified || 0, status: p.status_sell || 0 });
     }
   }
 
