@@ -44,6 +44,11 @@ const STATE_KEY = "best-hauling-state";
 
 const $ = (id) => document.getElementById(id);
 const fmt = (n) => (n == null || !isFinite(n) ? "—" : Math.round(n).toLocaleString("fr-FR"));
+// Volume dont le null veut dire « capacité non communiquée par UEX » et non « zéro » :
+// `scu_sell` n'est renseigné que sur une minorité de points de vente. Un « — » s'y lisait
+// « aucune demande » alors qu'aucun plafond n'est appliqué dans ce cas — d'où « n.c. ».
+const fmtVol = (n) => (n == null ? "n.c." : fmt(n));
+const VOL_UNKNOWN_HINT = "Capacité non communiquée par UEX : aucun plafond de volume n'est appliqué";
 
 // Échappe toute chaîne insérée dans innerHTML. Les données UEX sont communautaires
 // (nicknames de terminaux, etc. potentiellement soumis par des utilisateurs) : on les
@@ -223,9 +228,11 @@ function scoreCell(score) {
 // Valeur éditable (clic pour corriger localement). side = "buy"|"sell", field = "price"|"vol".
 // updated = date UEX du point (mémorisée comme base de fraîcheur de la correction).
 function editv(commodity, terminal, side, field, value, ov, updated) {
-  // value null = volume inconnu chez UEX (« — ») : on n'injecte pas la chaîne "null" dans data-v,
-  // sinon le champ number la rejette à l'ouverture de l'édition.
-  return `<span class="editv${ov ? " ov" : ""}" data-c="${esc(commodity)}" data-t="${esc(terminal)}" data-s="${side}" data-f="${field}" data-v="${value == null ? "" : value}" data-u="${updated || 0}" role="button" tabindex="0" title="Clic pour corriger localement ce chiffre">${fmt(value)}${ov ? '<span class="ovmark" title="Corrigé localement">✎</span>' : ""}</span>`;
+  // value null = capacité inconnue chez UEX, affichée « n.c. » (cf. fmtVol). On n'injecte pas la
+  // chaîne "null" dans data-v, sinon le champ number la rejette à l'ouverture de l'édition.
+  const unknown = value == null;
+  const hint = unknown ? `${VOL_UNKNOWN_HINT}. Clic pour le corriger localement` : "Clic pour corriger localement ce chiffre";
+  return `<span class="editv${unknown ? " nc" : ""}${ov ? " ov" : ""}" data-c="${esc(commodity)}" data-t="${esc(terminal)}" data-s="${side}" data-f="${field}" data-v="${unknown ? "" : value}" data-u="${updated || 0}" role="button" tabindex="0" title="${hint}">${fmtVol(value)}${ov ? '<span class="ovmark" title="Corrigé localement">✎</span>' : ""}</span>`;
 }
 
 // Lit l'état de tous les contrôles de filtre (partagé par les deux vues).
@@ -333,7 +340,7 @@ function multiSchemaHTML(t) {
   const lines = t.lines.map((l) =>
     `<div class="sline">${commodityIcon(l.kind)}` +
     `<span class="mname">${esc(l.name)}${illegalTag(l.illegal)}</span>` +
-    `<span class="mstock">stock ${fmt(l.stock)} · dem. ${fmt(l.demand)}</span>` +
+    `<span class="mstock">stock ${fmt(l.stock)} · dem. ${fmtVol(l.demand)}</span>` +
     `<span class="mprice">${fmt(l.buyPrice)} → ${fmt(l.sellPrice)} · marge ${fmt(l.margin)}</span>` +
     `<span class="mprofit profit">+${fmt(l.units * l.margin)}</span>` +
     `<span class="mboxes" title="Caisses SCU standard à charger">📦 ${fmt(l.units)} SCU · ${scuBoxesLabel(l.units)}</span></div>`
@@ -379,7 +386,7 @@ function routeRowHTML(r, i) {
         <td class="loc">
           <div class="term-name">${esc(r.sell.terminal)}</div>
           <div class="loc-badges">${sysBadge(r.sell.system)}${outpostTag(r.sell.outpost)}</div>
-          <div class="loc-sub">${esc(r.sell.planet)} · ${editv(r.commodity, r.sell.terminal, "sell", "price", r.sell.price, r.sell.ovPrice, r.sell.updated)} aUEC · ${statusDot(r.sell.status, "sell")}<span class="stock" title="Demande / stock à la vente (relevé UEX)">demande ${editv(r.commodity, r.sell.terminal, "sell", "vol", r.sell.demand, r.sell.ovVol, r.sell.updated)} SCU</span></div>
+          <div class="loc-sub">${esc(r.sell.planet)} · ${editv(r.commodity, r.sell.terminal, "sell", "price", r.sell.price, r.sell.ovPrice, r.sell.updated)} aUEC · ${statusDot(r.sell.status, "sell")}<span class="stock" title="Demande à la vente = capacité restante du terminal (relevé UEX)">demande ${editv(r.commodity, r.sell.terminal, "sell", "vol", r.sell.demand, r.sell.ovVol, r.sell.updated)} SCU</span></div>
           <div class="loc-fresh">${freshChip(r.sell.updated)}</div>
         </td>
         <td>${scoreCell(r.score)}</td>
@@ -574,7 +581,7 @@ function suggestionsHTML(m, addAttrs = "") {
     sugg.map(({ it, u }) =>
       `<div class="sline">${commodityIcon(it.kind)}` +
       `<span class="mname">${esc(it.name)}${illegalTag(it.illegal)}</span>` +
-      `<span class="mstock">stock ${fmt(it.stock)} · dem. ${fmt(it.demand)}</span>` +
+      `<span class="mstock">stock ${fmt(it.stock)} · dem. ${fmtVol(it.demand)}</span>` +
       `<span class="mprice">${fmt(it.buyPrice)} → ${fmt(it.sellPrice)} · marge ${fmt(it.margin)}</span>` +
       `<button class="suggest-add" data-name="${esc(it.name)}"${addAttrs} title="Ajouter au manifeste">+ ${fmt(u)} SCU</button></div>`
     ).join("");
@@ -1574,7 +1581,7 @@ function paintCommodityDetail() {
   const p = commodityPoints(MARKET, commSelected, readFilters()); // exclut les avant-postes si le filtre est actif
   if (!p) { box.innerHTML = ""; return; }
   const buyRow = (b) => `<tr><td class="loc"><div>${esc(b.terminal)}${sysBadge(b.system)}${outpostTag(b.outpost)}</div><div class="loc-sub">${esc(b.planet)}</div></td><td class="num">${fmt(b.price)}</td><td class="num">${statusDot(b.status, "buy")} ${fmt(b.stock)}</td><td>${freshChip(b.updated)}</td></tr>`;
-  const sellRow = (s) => `<tr><td class="loc"><div>${esc(s.terminal)}${sysBadge(s.system)}${outpostTag(s.outpost)}</div><div class="loc-sub">${esc(s.planet)}</div></td><td class="num">${fmt(s.price)}</td><td class="num">${statusDot(s.status, "sell")} ${fmt(s.demand)}</td><td>${freshChip(s.updated)}</td></tr>`;
+  const sellRow = (s) => `<tr><td class="loc"><div>${esc(s.terminal)}${sysBadge(s.system)}${outpostTag(s.outpost)}</div><div class="loc-sub">${esc(s.planet)}</div></td><td class="num">${fmt(s.price)}</td><td class="num">${statusDot(s.status, "sell")} ${fmtVol(s.demand)}</td><td>${freshChip(s.updated)}</td></tr>`;
   const table = (rows, head, mapper) => rows.length
     ? `<table class="comm-points"><thead><tr><th>Terminal</th><th class="num">Prix</th><th class="num">${head}</th><th>Relevé</th></tr></thead><tbody>${rows.map(mapper).join("")}</tbody></table>`
     : '<p class="muted">Aucun point.</p>';
