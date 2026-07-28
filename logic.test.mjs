@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  tripMinutes, loopMinutes, ageDays, pairAge, freshnessFactor, availabilityFactor,
+  tripMinutes, loopMinutes, ageDays, pairAge, freshnessFactor, availabilityFactor, tighterVolume,
   normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits, scuBoxes, bestChain,
   manifestTotals, freeAddUnits, manifestLine, stationLabel, parseStationLabel,
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
@@ -65,6 +65,28 @@ test("availabilityFactor : sature avec le volume, 0.65 si inconnu", () => {
   assert.ok(availabilityFactor(1000, 1000) > availabilityFactor(100, 100));
   // prend le min(stock, demande)
   assert.ok(availabilityFactor(500, 10) < availabilityFactor(500, 500));
+});
+
+test("availabilityFactor : demande inconnue (null) ≠ demande nulle (saturé)", () => {
+  // UEX ne renseigne `scu_sell` que sur une minorité de points -> demande null = capacité
+  // inconnue. La noter comme un terminal saturé pénalisait 4 routes sur 5 sans raison.
+  assert.ok(availabilityFactor(128, null) > availabilityFactor(128, 0));
+  // Demande inconnue -> on ne juge que le stock, exactement comme si la demande ne bornait pas.
+  assert.ok(close(availabilityFactor(128, null), availabilityFactor(128, Infinity)));
+  // Un stock plus fourni reste mieux noté, même sans demande connue…
+  assert.ok(availabilityFactor(500, null) > availabilityFactor(128, null));
+  // …et un terminal d'achat bien approvisionné ne doit pas scorer sous un terminal vide.
+  assert.ok(availabilityFactor(128, null) > availabilityFactor(0, null));
+  // 0 CONNU reste une saturation : pénalité maximale.
+  assert.equal(availabilityFactor(500, 0), 0.3);
+});
+
+test("tighterVolume : ignore les capacités inconnues au lieu de les compter pour 0", () => {
+  assert.equal(tighterVolume(160, 7), 7);
+  assert.equal(tighterVolume(null, 7), 7);       // Math.min(null, 7) vaudrait 0
+  assert.equal(tighterVolume(160, null), 160);
+  assert.equal(tighterVolume(null, null), null); // rien de connu -> inconnu
+  assert.equal(tighterVolume(160, 0), 0);        // 0 connu = saturé, il prime
 });
 
 // ---------- Profit horaire & score brut ----------

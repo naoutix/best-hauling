@@ -28,10 +28,25 @@ export function freshnessFactor(age) {
   return Math.max(0.2, 1 - age / 14);
 }
 // Facteur de disponibilité (saturation sur min(stock, demande)).
+// `demand` null = capacité inconnue chez UEX (`scu_sell` n'est renseigné que sur une minorité
+// de points de vente) : on ne juge alors que le stock, comme le fait déjà `computeUnits` qui
+// n'applique aucun plafond dans ce cas. Un 0 CONNU reste une saturation -> pénalité maximale.
 export function availabilityFactor(stock, demand) {
-  if (!stock && !demand) return 0.65;
-  const m = Math.min(stock || 0, demand || 0);
+  const s = stock || 0;
+  if (demand == null) return s ? volumeFactor(s) : 0.65;
+  if (!s && !demand) return 0.65;
+  return volumeFactor(Math.min(s, demand));
+}
+// Saturation douce d'un volume : 0.3 à vide -> 1.0 asymptotique (0.65 à 120 SCU).
+function volumeFactor(m) {
   return 0.3 + 0.7 * (m / (m + 120));
+}
+// Volume le plus contraignant de deux segments, en ignorant les capacités inconnues
+// (`Math.min(null, x)` vaudrait 0 et ferait passer un segment inconnu pour saturé).
+export function tighterVolume(a, b) {
+  if (a == null) return b ?? null;
+  if (b == null) return a;
+  return Math.min(a, b);
 }
 
 // ---------- Profit horaire & score brut (partagés routes/boucles) ----------
@@ -144,7 +159,7 @@ export function loopMetrics(out, back, distance, cross, f) {
   const profitHour = profitPerHour(profit, minutes);
   const rawScore = rawScoreOf(
     profitHour, loopMargin, pairAge(out.updated, back.updated),
-    Math.min(out.stock, back.stock), Math.min(out.demand, back.demand)
+    Math.min(out.stock, back.stock), tighterVolume(out.demand, back.demand)
   );
   return {
     loopMargin,
@@ -445,7 +460,8 @@ export function tripMetrics(trip) {
     stock = Math.min(stock, l.stock == null ? Infinity : l.stock);
     demand = Math.min(demand, l.demand == null ? Infinity : l.demand);
   }
-  const rawScore = rawScoreOf(profitHour, margin, age, Number.isFinite(stock) ? stock : 0, Number.isFinite(demand) ? demand : 0);
+  // demand resté à Infinity = aucune ligne n'a de capacité connue -> null (inconnu), pas 0 (saturé).
+  const rawScore = rawScoreOf(profitHour, margin, age, Number.isFinite(stock) ? stock : 0, Number.isFinite(demand) ? demand : null);
   // commodity/buyPrice/sellPrice : valeurs représentatives pour que le tri par colonne du tableau
   // « Trajets » reste utilisable en mode multi (ligne de tête = plus grosse marge, prix moyens/SCU).
   const buyPrice = scu > 0 ? invest / scu : 0;
