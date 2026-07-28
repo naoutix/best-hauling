@@ -44,6 +44,24 @@ test("le vaisseau ET sa carte (image) sont restaurés au rechargement (régressi
   await expect(page.locator("#shipImg")).toHaveAttribute("src", /^https:\/\//); // src d'image posé
 });
 
+test("une capacité de vente inconnue s'affiche « n.c. », jamais « — »", async ({ page }) => {
+  // « — » se lisait « aucune demande » alors qu'UEX ne renseigne simplement pas `scu_sell` sur
+  // la plupart des points : aucun plafond n'est appliqué dans ce cas.
+  const vols = page.locator('#rows .editv[data-s="sell"][data-f="vol"]');
+  expect(await vols.count()).toBeGreaterThan(0);
+  const textes = await vols.allTextContents();
+  expect(textes.some((t) => t.trim() === "—")).toBe(false);
+
+  const nc = page.locator("#rows .editv.nc").first();
+  test.skip(!(await nc.count()), "aucune capacité inconnue dans le jeu de données");
+  await expect(nc).toHaveText("n.c.");
+  await expect(nc).toHaveAttribute("title", /non communiquée par UEX/);
+  await expect(nc).toHaveAttribute("data-v", ""); // pas la chaîne "null" : le champ number la rejetterait
+  // …et reste corrigeable comme n'importe quelle autre valeur.
+  await nc.click();
+  await expect(nc.locator("input")).toBeVisible();
+});
+
 test("capStock : une demande corrigée à 0 met les unités à 0 (régression)", async ({ page }) => {
   await page.check("#capStock");
   const result = await page.evaluate(async () => {

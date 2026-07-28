@@ -485,6 +485,10 @@ tbody tr:hover td { border-bottom-color: var(--line2); }
 .editv { cursor: pointer; border-bottom: 1px dashed var(--line2); padding: 0 1px; transition: color 0.1s, border-color 0.1s; }
 .editv:hover, .editv:focus { color: var(--acc); border-bottom-color: var(--acc); outline: none; }
 .editv.ov { color: var(--acc); border-bottom-style: solid; border-bottom-color: var(--acc); }
+/* « n.c. » = capacité non communiquée par UEX. En retrait typographique pour qu'on ne le lise
+   pas comme un chiffre (et surtout pas comme un zéro), tout en restant cliquable/corrigeable. */
+.editv.nc { color: var(--muted); font-style: italic; }
+.editv.nc:hover, .editv.nc:focus { color: var(--acc); }
 .ovmark { font-size: 9px; margin-left: 2px; vertical-align: super; }
 input.editv-input { width: 80px; min-width: 0; padding: 2px 5px; font-size: 12px; font-family: var(--mono); text-align: right; background: rgba(8, 11, 20, 0.95); border: 1px solid var(--acc); color: var(--text); border-radius: 3px; }
 
