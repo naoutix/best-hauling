@@ -6,7 +6,7 @@ import {
   normalizeScores, bySort, addableUnits, scuBoxes, bestChain,
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
   routePasses, loopPasses,
-  routeMetrics, loopMetrics, enRouteDeals, bestManifest, buildChainAdjacency,
+  routeMetrics, loopMetrics, enRouteDeals, bestManifest, buildChainAdjacency, suggestionsFrom,
   commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
   manifestTotals, freeAddUnits, manifestLine, freeManifestLine, hydrateManifestLine, stationLabel, parseStationLabel,
   multiTrips, tripMetrics, legFromTrip,
@@ -580,22 +580,9 @@ function manifestRemaining(m = currentManifest) {
 }
 
 // Commodités qui pourraient remplir l'espace libre (même origine -> même destination), non chargées.
-function suggestionsFor(m = currentManifest) {
-  const have = new Set(m.lines.map((l) => l.name));
-  const out = [];
-  MARKET.commodities.forEach((c) => {
-    if (have.has(c.name) || (m.f.legalOnly && c.illegal)) return;
-    const b = c.buys.find((x) => x[0] === m.originIdx);
-    const s = c.sells.find((x) => x[0] === m.destIdx);
-    if (!b || !s) return;
-    const eb = effVals(c.name, m.origin.name, "buy", b[1], b[2], b[3]);
-    const es = effVals(c.name, m.dest.name, "sell", s[1], s[2], s[3]);
-    const margin = es.price - eb.price;
-    if (margin <= 0) return;
-    out.push({ name: c.name, kind: c.kind, illegal: c.illegal, buyPrice: eb.price, stock: eb.vol, sellPrice: es.price, demand: es.vol, demandKnown: es.ovol, margin, buyUpdated: b[3], sellUpdated: s[3] });
-  });
-  return out.sort((a, b) => b.margin - a.margin);
-}
+// Le calcul vit dans logic.mjs (partagé avec le manifeste optimal, donc éligibilité identique) ;
+// app.js ne fournit que le marché et le résolveur de corrections.
+const suggestionsFor = (m = currentManifest) => suggestionsFrom(MARKET, m, effVals);
 
 // addableUnits vient de logic.mjs.
 

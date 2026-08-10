@@ -2,7 +2,7 @@
 // Lancer : `node --test` (ou `npm test`).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeKind, routesForCommodity, buildBestLegs, buildMarket } from "./build-data.mjs";
+import { normalizeKind, routesForCommodity, buildBestLegs, buildMarket, sellDemand } from "./build-data.mjs";
 import { readFileSync } from "node:fs";
 
 test("normalizeKind corrige la casse, les fautes de frappe et les valeurs vides", () => {
@@ -206,4 +206,21 @@ test("data/market.json : les commodités « vente seule » du mode Butin sont pr
   // Régression de la PR #37 : le pipeline les excluait, le mode Butin n'avait rien à montrer.
   const sellOnly = MARKET.commodities.filter((c) => !c.buys.length);
   assert.ok(sellOnly.length > 0, "aucune commodité sans point d'achat : le mode Butin serait vide");
+});
+
+// ---------- Sémantique des volumes UEX à la source (le piège du projet) ----------
+test("sellDemand : capacité RESTANTE, jamais le stock détenu", () => {
+  assert.equal(sellDemand({}), null);                                    // UEX muet -> inconnu
+  assert.equal(sellDemand({ scu_sell: 0 }), null);                       // idem : 0 = non renseigné
+  assert.equal(sellDemand({ scu_sell: 100 }), 100);                      // rien détenu -> tout dispo
+  assert.equal(sellDemand({ scu_sell: 100, scu_sell_stock: 30 }), 70);
+  assert.equal(sellDemand({ scu_sell: 100, scu_sell_stock: 100 }), 0);   // saturé : 0 CONNU
+  assert.equal(sellDemand({ scu_sell: 100, scu_sell_stock: 140 }), 0);   // jamais négatif
+});
+
+test("sellDemand : `null` (inconnu) et `0` (saturé) ne se confondent pas", () => {
+  // Tout le comportement aval en dépend : null = aucun plafond de volume, 0 = plafonne à 0.
+  assert.equal(sellDemand({ scu_sell: 0, scu_sell_stock: 50 }), null);
+  assert.notEqual(sellDemand({}), 0);
+  assert.equal(sellDemand({ scu_sell: 50, scu_sell_stock: 50 }), 0);
 });
