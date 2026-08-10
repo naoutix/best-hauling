@@ -1212,6 +1212,12 @@ function renderJourneyRecap({ n, totalProfit, totalScu, systems }) {
 }
 
 // Bascule entre les vues et rafraîchit la bonne.
+// Regroupe les appels rapprochés en un seul, à la fin de la salve.
+const debounce = (fn, ms = 150) => {
+  let t;
+  return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+};
+
 function refresh() {
   if (view === "loops") renderLoops();
   else if (view === "enroute") renderEnRoute();
@@ -1221,6 +1227,8 @@ function refresh() {
   else render();
   saveState();
 }
+const refreshDebounced = debounce(refresh);
+
 function switchView(v) {
   view = v;
   $("viewRoutes").classList.toggle("active", v === "routes");
@@ -1471,6 +1479,9 @@ async function copyShareLink() {
 function startEdit(span) {
   if (span.querySelector("input")) return;
   const { c, t, s, f: field, v, u } = span.dataset;
+  // Contenu d'origine (chiffre formaté + éventuel ✎), conservé pour pouvoir annuler l'édition
+  // sans re-render global. `replaceChildren` détache ces nœuds mais ne les détruit pas.
+  const original = [...span.childNodes];
   const inp = document.createElement("input");
   inp.type = "number"; inp.min = "0"; inp.value = v; inp.className = "editv-input";
   span.replaceChildren(inp);
@@ -1478,9 +1489,19 @@ function startEdit(span) {
   let done = false;
   const commit = (save) => {
     if (done) return; done = true;
-    if (save) setOverride(c, t, s, field, inp.value === "" ? null : inp.value, Number(u));
-    updateOvBadge();
-    refresh(); // re-render la vue courante avec la valeur corrigée
+    // CONSULTER un chiffre ne doit rien écrire. Sans cette comparaison, cliquer une valeur puis
+    // cliquer ailleurs créait une correction locale IDENTIQUE au relevé UEX : compteur « ✎
+    // Corrections (n) », marqueur « corrigé localement » sur la cellule, et plus tard un toast
+    // « correction périmée par une mise à jour UEX » à propos d'une correction fantôme.
+    if (save && inp.value !== v) {
+      setOverride(c, t, s, field, inp.value === "" ? null : inp.value, Number(u));
+      updateOvBadge();
+      refresh(); // re-render la vue courante avec la valeur corrigée
+      return;
+    }
+    // Rien n'a changé : on remet l'affichage tel quel. Un refresh() global détruirait le nœud
+    // entre le mousedown et le mouseup, ce qui avalait le clic suivant sur une autre cellule.
+    span.replaceChildren(...original);
   };
   inp.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); commit(true); }
@@ -1723,7 +1744,14 @@ function syncToggles() {
 async function init() {
   setupSort();
   setupLoopSort();
-  ["cargo", "budget", "search", "system", "freshness", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiCommodity"].forEach((id) =>
+  // Les champs à SAISIE LIBRE sont débouncés : sans ça, chaque caractère relançait un cycle
+  // complet calcul + réécriture de #rows par innerHTML. Mesuré à ~142 ms par frappe sur un CPU
+  // throttlé ×4 (le coût dominant est le relayout de la table, pas le calcul : ~2 ms), soit plus
+  // d'une seconde de thread bloqué pour taper « Laranite », et deux recalculs sur des valeurs
+  // absurdes quand on tape « 696 » dans la soute (6 puis 69 SCU).
+  // Menus et cases à cocher restent IMMÉDIATS : ils n'émettent qu'un seul événement.
+  ["cargo", "budget", "search"].forEach((id) => $(id).addEventListener("input", refreshDebounced));
+  ["system", "freshness", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiCommodity"].forEach((id) =>
     $(id).addEventListener("input", refresh)
   );
   ["useCargo", "useBudget"].forEach((id) =>
