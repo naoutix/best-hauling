@@ -600,7 +600,8 @@ export function commodityPoints(market, name, f = {}) {
 // Iron Ore à 1 000) : une échelle relative au maximum, comme `marginTier`, tasserait tout le
 // board dans le palier le plus bas sauf deux tuiles. Le rang, lui, colore toujours.
 // Le classement se fait sur la VALEUR, jamais sur l'ordre d'affichage : trier par code A→Z ne
-// doit pas recolorer le board. À valeur égale, l'ordre est celui du tri (stable).
+// doit pas recolorer le board. Les ex æquo partagent donc le rang du premier d'entre eux
+// (classement « olympique ») : à prix égal, même palier, quel que soit l'ordre reçu.
 export function valueTiers(rows, key = "bestSell") {
   const tiers = new Map();
   const ranked = [];
@@ -610,8 +611,10 @@ export function valueTiers(rows, key = "bestSell") {
   }
   ranked.sort((a, b) => b[key] - a[key]);
   const n = ranked.length;
+  let rang = 0; // indice du premier ex æquo de la valeur courante
   ranked.forEach((r, i) => {
-    const q = i / n; // part des commodités strictement mieux payées
+    if (i > 0 && r[key] !== ranked[i - 1][key]) rang = i;
+    const q = rang / n; // part des commodités strictement mieux payées
     tiers.set(r.name, q < 0.15 ? "t-hot" : q < 0.40 ? "t-warm" : q < 0.70 ? "t-mid" : "t-low");
   });
   return tiers;

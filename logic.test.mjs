@@ -866,6 +866,36 @@ test("valueTiers est indépendant de l'ordre d'affichage (tri par code ≠ recol
   assert.equal(asc.get("C"), desc.get("C"));
 });
 
+test("valueTiers : deux commodités au même prix portent le même palier", () => {
+  // Cas réel du board : Neon et Dymantium se vendent tous deux 25 000 aUEC/SCU et encadrent
+  // la frontière t-warm / t-mid. Deux tuiles de même valeur ne peuvent pas être de deux couleurs.
+  const t = valueTiers([
+    { name: "X", bestSell: 300 },
+    { name: "Neon", bestSell: 200 },
+    { name: "Dymantium", bestSell: 200 },
+    { name: "Y", bestSell: 100 },
+    { name: "Z", bestSell: 50 },
+  ]);
+  assert.equal(t.get("Neon"), t.get("Dymantium"));
+});
+
+test("valueTiers : des ex æquo qui changent d'ordre d'affichage ne recolorent pas le board", () => {
+  // Le tableau reçu est déjà trié pour l'affichage : passer de « Revente » à « Code A→Z »
+  // permute les ex æquo, ce qui ne doit rien changer aux paliers.
+  const rows = (a, b) => [
+    { name: "X", bestSell: 300 },
+    { name: a, bestSell: 200 },
+    { name: b, bestSell: 200 },
+    { name: "Y", bestSell: 100 },
+    { name: "Z", bestSell: 50 },
+  ];
+  const parValeur = valueTiers(rows("Neon", "Dymantium"));
+  const parCode = valueTiers(rows("Dymantium", "Neon"));
+  for (const nom of ["X", "Neon", "Dymantium", "Y", "Z"]) {
+    assert.equal(parCode.get(nom), parValeur.get(nom), nom + " a changé de palier");
+  }
+});
+
 test("valueTiers : valeur absente -> t-none, et elle ne décale pas les rangs", () => {
   const t = valueTiers([{ name: "Vide", bestSell: null }, ...rowsOf([100, 50])]);
   assert.equal(t.get("Vide"), "t-none");
