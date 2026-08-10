@@ -30,13 +30,14 @@ Six vues, un même moteur de calcul (soute SCU + budget aUEC → unités, coût,
 | **En route 🧭** | Depuis un terminal de départ : le fret rentable + un **manifeste optimal** qui remplit la soute avec **plusieurs commodités** vers une même destination (avec suggestions pour combler l'espace libre) |
 | **Chaîne ⛓️** | Trajets **multi-sauts A→B→C…** (2 à 4 sauts) : achète, vends, rachète sur place, revends plus loin — recherche par faisceau du circuit le plus rentable |
 | **Corrections ✎** | Voir/gérer ses corrections locales et en créer en **cherchant une station** (voir plus bas) |
-| **Commodités 📊** | *Big board* type « salle des marchés » : toutes les commodités avec leur **code officiel UEX** (AGRI, QUAN…), triables (marge / code / catégorie), et au clic **tous leurs points d'achat et de vente** — pratique pour trouver **où écouler** une commodité quand une station n'a plus de demande |
+| **Commodités 📊** | *Big board* type « salle des marchés », en deux modes. **◈ Marché** : toutes les commodités échangeables avec leur **code officiel UEX** (AGRI, QUAN…), triables (marge / code / catégorie), et au clic **tous leurs points d'achat et de vente** — pratique pour trouver **où écouler** une commodité quand une station n'a plus de demande. **💰 Butin** : le board bascule sur le **prix de revente au SCU** et fait entrer les commodités qu'on **ne peut pas acheter** (minerais raffinés, salvage, drogues de wreck) — la réponse à « j'ai trouvé ça, ça vaut combien et où je l'écoule ? » |
 
 Autres éléments :
 
 - **Vaisseau** : autocomplétion par sous-chaîne (128 modèles UEX), remplit la soute automatiquement, affiche la photo.
 - **Contraintes désactivables** : couper le budget → meilleure route pour la soute ; couper la soute → meilleure route pour le budget.
 - **Multi commodité** (vue Trajets) : balaie tout le marché et propose les **chargements combinés** A→B — la soute se remplit par marge décroissante, plafonnée par le stock et la demande. Seuls les chargements d'**au moins 2 commodités** sont listés (un trajet qui tient en une seule commodité est déjà dans la liste normale). Nécessite la soute activée ; la coche est grisée sinon.
+- **Mode Butin** (vue Commodités) : quand le coût d'acquisition est nul, la marge n'a plus de sens — seul compte le **prix de revente**. Ce mode liste **tout ce qui se vend** chez UEX, y compris les ~36 commodités sans aucun point d'achat, et n'affiche que **où l'écouler**. Sa heatmap se calcule **par rang** et non par ratio : les prix de revente s'étalent sur cinq ordres de grandeur (34 M aUEC/SCU pour le Saldynium contre 1 000 pour l'Iron Ore), une échelle linéaire écraserait tout le board.
 - **Décomposition SCU en caisses** (32/24/16/8/4/2/1) sur le manifeste et en infobulle.
 - **Manifeste ajustable** : chaque ligne se modifie à la main — tu peux **dépasser le stock UEX** (vol de fret, relevé périmé…) ; le champ passe en ambre pour le signaler.
 - **Schéma de trajet** dépliable (🗺) : système › planète › terminal, type de saut, temps estimé.
@@ -138,7 +139,7 @@ Fichiers de données (dans [`data/`](data/)) :
 |---------|---------|-------|
 | `routes.json` | Top routes A→B (achat le moins cher → meilleures ventes) | Trajets simples |
 | `loops.json` | Meilleures boucles A⇄B | Boucles |
-| `market.json` | Graphe d'échange compact (tous les points d'achat/vente, + **code UEX** par commodité) | En route, Chaîne, Corrections, **Commodités** (chargé à la demande) |
+| `market.json` | Graphe d'échange compact (tous les points d'achat/vente, + **code UEX** par commodité). Contient **tout ce qui est vendable**, y compris les commodités sans point d'achat — inertes pour les vues de trading, exploitées par le mode **Butin** | En route, Chaîne, Corrections, **Commodités** (chargé à la demande) |
 | `ships.json` | Vaisseaux avec soute (nom, SCU, photo) | Champ vaisseau |
 | `meta.json` | Métadonnées (date, compteurs, systèmes, **`data_signature`**) | Bandeau de fraîcheur + rebuild conditionnel |
 

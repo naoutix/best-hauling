@@ -545,12 +545,21 @@ export function buildChainAdjacency(market, f, resolve) {
 
 // ---------- Panneau « Commodités » : résumé global + points d'achat/vente ----------
 // Une ligne de synthèse par commodité (pour le grand tableau triable).
-// f (optionnel) = { legalOnly, noOutpost } — seuls filtres pertinents ici : masque les
-// commodités illégales, et exclut les points en avant-poste du calcul best/compteurs.
+// f (optionnel) = { legalOnly, noOutpost, board } :
+//   - legalOnly / noOutpost : masque les commodités illégales, exclut les points en avant-poste
+//     du calcul best/compteurs ;
+//   - board = "market" (défaut) -> uniquement les commodités ÉCHANGEABLES (achat ET vente) ;
+//     board = "loot" -> mode Butin : tout ce qui se VEND, y compris ce qu'on ne peut acheter
+//     nulle part (minerais raffinés, salvage, drogues de wreck) — le cas « je l'ai trouvé ».
 export function commoditySummaries(market, f = {}) {
+  const loot = f.board === "loot";
   const out = [];
   for (const c of market.commodities) {
     if (f.legalOnly && c.illegal) continue;
+    // « Échangeable » se juge sur les données BRUTES : le juger après `noOutpost` ferait
+    // disparaître du board Marché une commodité achetable seulement en avant-poste.
+    const sellOnly = c.buys.length === 0;
+    if (!loot && sellOnly) continue;
     const buys = f.noOutpost ? c.buys.filter((b) => !market.terminals[b[0]].outpost) : c.buys;
     const sells = f.noOutpost ? c.sells.filter((s) => !market.terminals[s[0]].outpost) : c.sells;
     // Achat le moins cher / vente la plus chère + le statut d'inventaire à ce point.
@@ -558,10 +567,13 @@ export function commoditySummaries(market, f = {}) {
     for (const b of buys) if (bestBuy == null || b[1] < bestBuy) { bestBuy = b[1]; buyStatus = b[4] || 0; }
     let bestSell = null, sellStatus = 0;
     for (const s of sells) if (bestSell == null || s[1] > bestSell) { bestSell = s[1]; sellStatus = s[4] || 0; }
+    // En mode Butin, une commodité sans point de vente restant n'a plus de réponse à offrir.
+    if (loot && bestSell == null) continue;
     const margin = bestBuy != null && bestSell != null ? bestSell - bestBuy : null;
     out.push({
       name: c.name, code: c.code || "", kind: c.kind, illegal: c.illegal,
       nBuy: buys.length, nSell: sells.length, bestBuy, bestSell, buyStatus, sellStatus, margin,
+      sellOnly,
     });
   }
   return out;
@@ -581,6 +593,31 @@ export function commodityPoints(market, name, f = {}) {
   const buys = c.buys.filter(keep).map((b) => point(b, "stock")).sort((a, b) => a.price - b.price);
   const sells = c.sells.filter(keep).map((s) => point(s, "demand")).sort((a, b) => b.price - a.price);
   return { name: c.name, code: c.code || "", kind: c.kind, illegal: c.illegal, buys, sells };
+}
+
+// Paliers de heatmap par RANG, pour le mode « Butin ».
+// Les prix de revente s'étalent sur cinq ordres de grandeur (Saldynium à 34 M aUEC/SCU contre
+// Iron Ore à 1 000) : une échelle relative au maximum, comme `marginTier`, tasserait tout le
+// board dans le palier le plus bas sauf deux tuiles. Le rang, lui, colore toujours.
+// Le classement se fait sur la VALEUR, jamais sur l'ordre d'affichage : trier par code A→Z ne
+// doit pas recolorer le board. Les ex æquo partagent donc le rang du premier d'entre eux
+// (classement « olympique ») : à prix égal, même palier, quel que soit l'ordre reçu.
+export function valueTiers(rows, key = "bestSell") {
+  const tiers = new Map();
+  const ranked = [];
+  for (const r of rows) {
+    if (r[key] == null) tiers.set(r.name, "t-none"); // rien à classer -> hors barème
+    else ranked.push(r);
+  }
+  ranked.sort((a, b) => b[key] - a[key]);
+  const n = ranked.length;
+  let rang = 0; // indice du premier ex æquo de la valeur courante
+  ranked.forEach((r, i) => {
+    if (i > 0 && r[key] !== ranked[i - 1][key]) rang = i;
+    const q = rang / n; // part des commodités strictement mieux payées
+    tiers.set(r.name, q < 0.15 ? "t-hot" : q < 0.40 ? "t-warm" : q < 0.70 ? "t-mid" : "t-low");
+  });
+  return tiers;
 }
 
 // Notation compacte K/M pour les tuiles du board (ex. 9600 -> "9.6K", 1_600_000 -> "1.6M").

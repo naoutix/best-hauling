@@ -168,6 +168,13 @@
 
         <section id="commoditiesControls" class="enroute-controls" hidden>
           <div class="field">
+            <label>Mode</label>
+            <div class="sort-modes" id="commBoardModes">
+              <button type="button" data-board="market" class="active" title="Board de marché : marge achat → vente">◈ Marché</button>
+              <button type="button" data-board="loot" title="Butin : prix de revente d'une ressource trouvée (minage, salvage, wreck)">💰 Butin</button>
+            </div>
+          </div>
+          <div class="field">
             <label>Trier le board par</label>
             <div class="sort-modes" id="commSortModes">
               <button type="button" data-sort="margin" class="active">Marge</button>
@@ -175,7 +182,7 @@
               <button type="button" data-sort="kind">Catégorie</button>
             </div>
           </div>
-          <p class="enroute-hint">Le <b>board de marché</b> : chaque tuile = une commodité (code UEX) et sa <b>marge max</b>, colorée selon son intérêt. Clique une tuile — ou cherche via le champ <b>Commodité</b> — pour voir <b>tous ses points d'achat / vente</b> (stock, demande, prix) et surtout <b>où l'écouler</b> quand une station est saturée.</p>
+          <p class="enroute-hint" id="commHint">Le <b>board de marché</b> : chaque tuile = une commodité (code UEX) et sa <b>marge max</b>, colorée selon son intérêt. Clique une tuile — ou cherche via le champ <b>Commodité</b> — pour voir <b>tous ses points d'achat / vente</b> (stock, demande, prix) et surtout <b>où l'écouler</b> quand une station est saturée.</p>
         </section>
 
         <div id="commodities" class="commodities-wrap" hidden>

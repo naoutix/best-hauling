@@ -680,6 +680,8 @@ input.mqty-input.over-stock { color: var(--warn); border-color: var(--warn); box
 .comm-tile.selected { border: 1px solid var(--acc); border-left: 2px solid var(--acc); background: rgba(255, 176, 32, 0.14); box-shadow: inset 0 0 12px rgba(255, 176, 32, 0.12); }
 .comm-tile.illegal { border-left: 2px solid var(--bad); } /* liseré rouge = commodité illégale */
 .comm-tile.carried { border-color: var(--acc-2); box-shadow: inset 0 0 0 1px var(--acc-2), 0 0 10px rgba(169, 112, 255, 0.15); } /* transportée dans le voyage */
+/* Mode Butin : introuvable à l'achat (minage, salvage, wreck) -> contour pointillé. */
+.comm-tile.sell-only { border-style: dashed; }
 .tile-carried { color: var(--acc-2); font-size: 8px; margin-right: 3px; vertical-align: middle; }
 .tile-code { color: var(--muted); font-weight: 700; letter-spacing: 0.5px; overflow: hidden; text-overflow: ellipsis; }
 .comm-tile.selected .tile-code { color: #fff; }
@@ -697,6 +699,11 @@ input.mqty-input.over-stock { color: var(--warn); border-color: var(--warn); box
 .comm-detail-title { font-family: var(--display); font-size: 15px; font-weight: 700; color: #fff; }
 .comm-detail-title .comm-code { font-family: var(--mono); font-size: 13px; }
 .comm-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+.comm-cols.one { grid-template-columns: 1fr; } /* mode Butin : pas de colonne « où acheter » */
+/* Mode Butin : la réponse directe — combien vaut 1 SCU, et au meilleur endroit. */
+.loot-value { margin-left: auto; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--acc); }
+.loot-value b { font-size: 16px; color: #fff; }
+.loot-where { display: block; font-family: var(--font); font-size: 10.5px; color: var(--muted); letter-spacing: 0.3px; }
 .comm-col h4 { margin: 0 0 8px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--acc); font-weight: 600; }
 .comm-col h4 .muted { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
 .comm-points { width: 100%; border-collapse: collapse; font-size: 12px; }

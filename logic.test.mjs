@@ -10,7 +10,7 @@ import {
   profitPerHour, rawScoreOf, routePasses, loopPasses,
   routeMetrics, loopMetrics, dealFrom, enRouteDeals, bestManifest, buildChainAdjacency,
   manifestsFrom, multiTrips, tripMetrics, legFromTrip,
-  commoditySummaries, commodityPoints, compactValue,
+  commoditySummaries, commodityPoints, compactValue, valueTiers,
   legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   encodeJourney, decodeJourney,
@@ -771,6 +771,60 @@ test("commoditySummaries : noOutpost exclut les points en avant-poste du calcul"
   assert.equal(gold.bestBuy, 90);   // achats non touchés (aucun avant-poste)
 });
 
+// Marché de test : une commodité échangeable, une « vente seule » (butin), une achetable
+// uniquement en avant-poste (piège du filtre noOutpost).
+const MARKET_BUTIN = {
+  terminals: [
+    { name: "Ville", system: "Stanton", planet: "Hurston", outpost: false },
+    { name: "Poste", system: "Stanton", planet: "Hurston", outpost: true },
+  ],
+  commodities: [
+    { name: "Laranite", code: "LARA", kind: "metal", illegal: false,
+      buys: [[0, 100, 50, 1, 3]], sells: [[0, 250, 80, 1, 2]] },
+    { name: "Quantainium", code: "QUAN", kind: "mineral", illegal: false,
+      buys: [], sells: [[0, 170000, 0, 1, 1]] },
+    { name: "Stims", code: "STIM", kind: "drug", illegal: false,
+      buys: [[1, 10, 5, 1, 3]], sells: [[0, 40, 9, 1, 2]] },
+  ],
+};
+
+test("commoditySummaries : mode Marché (défaut) ignore les commodités sans point d'achat", () => {
+  const rows = commoditySummaries(MARKET_BUTIN);
+  assert.deepEqual(rows.map((r) => r.name), ["Laranite", "Stims"]);
+  assert.equal(rows.every((r) => r.sellOnly === false), true);
+});
+
+test("commoditySummaries : mode Butin ajoute le butin et chiffre sa revente", () => {
+  const rows = commoditySummaries(MARKET_BUTIN, { board: "loot" });
+  assert.deepEqual(rows.map((r) => r.name), ["Laranite", "Quantainium", "Stims"]);
+  const quan = rows.find((r) => r.name === "Quantainium");
+  assert.equal(quan.sellOnly, true);
+  assert.equal(quan.bestSell, 170000);
+  assert.equal(quan.bestBuy, null);
+  assert.equal(quan.margin, null); // pas de marge sans achat
+  assert.equal(quan.nBuy, 0);
+});
+
+test("commoditySummaries : `sellOnly` se juge sur les données brutes, pas après le filtre avant-postes", () => {
+  // Stims ne s'achète qu'en avant-poste : exclure les avant-postes ne doit PAS le faire
+  // basculer en « butin » ni le sortir du board Marché (régression évitée).
+  const rows = commoditySummaries(MARKET_BUTIN, { noOutpost: true });
+  const stims = rows.find((r) => r.name === "Stims");
+  assert.ok(stims, "Stims reste listé en mode Marché");
+  assert.equal(stims.sellOnly, false);
+  assert.equal(stims.bestBuy, null); // son seul achat est filtré
+  assert.equal(stims.nBuy, 0);
+});
+
+test("commoditySummaries : mode Butin retire ce qui n'a plus aucun point de vente après filtrage", () => {
+  const market = {
+    terminals: [{ name: "Poste", system: "Pyro", planet: "", outpost: true }],
+    commodities: [{ name: "Riccite", code: "RICC", kind: "mineral", illegal: false, buys: [], sells: [[0, 91000, 0, 1, 1]] }],
+  };
+  assert.equal(commoditySummaries(market, { board: "loot" }).length, 1);
+  assert.equal(commoditySummaries(market, { board: "loot", noOutpost: true }).length, 0);
+});
+
 test("commodityPoints : noOutpost exclut les points en avant-poste", () => {
   const p = commodityPoints(CMKT, "Gold", { noOutpost: true });
   assert.equal(p.sells.length, 1);
@@ -786,6 +840,72 @@ test("compactValue : notation compacte K/M", () => {
   assert.equal(compactValue(540), "540");
   assert.equal(compactValue(0), "0");
   assert.equal(compactValue(null), "—");
+});
+
+// ---------- Heatmap par rang (mode Butin) ----------
+const rowsOf = (vals) => vals.map((v, i) => ({ name: "C" + i, bestSell: v }));
+
+test("valueTiers répartit par rang : 15 % / 25 % / 30 % / reste", () => {
+  const t = valueTiers(rowsOf([100, 90, 80, 70, 60, 50, 40, 30, 20, 10]));
+  assert.deepEqual([...t.values()], [
+    "t-hot", "t-hot", "t-warm", "t-warm", "t-mid", "t-mid", "t-mid", "t-low", "t-low", "t-low",
+  ]);
+});
+
+test("valueTiers résiste aux valeurs extrêmes (Saldynium à 34 M vs Iron Ore à 1 000)", () => {
+  // C'est tout l'intérêt du rang : une échelle linéaire écraserait les trois derniers en t-low.
+  const t = valueTiers(rowsOf([34_000_000, 1000, 900, 800]));
+  assert.deepEqual([...t.values()], ["t-hot", "t-warm", "t-mid", "t-low"]);
+});
+
+test("valueTiers est indépendant de l'ordre d'affichage (tri par code ≠ recoloration)", () => {
+  const desc = valueTiers([{ name: "A", bestSell: 300 }, { name: "B", bestSell: 200 }, { name: "C", bestSell: 100 }]);
+  const asc = valueTiers([{ name: "C", bestSell: 100 }, { name: "B", bestSell: 200 }, { name: "A", bestSell: 300 }]);
+  assert.equal(asc.get("A"), desc.get("A"));
+  assert.equal(asc.get("B"), desc.get("B"));
+  assert.equal(asc.get("C"), desc.get("C"));
+});
+
+test("valueTiers : deux commodités au même prix portent le même palier", () => {
+  // Cas réel du board : Neon et Dymantium se vendent tous deux 25 000 aUEC/SCU et encadrent
+  // la frontière t-warm / t-mid. Deux tuiles de même valeur ne peuvent pas être de deux couleurs.
+  const t = valueTiers([
+    { name: "X", bestSell: 300 },
+    { name: "Neon", bestSell: 200 },
+    { name: "Dymantium", bestSell: 200 },
+    { name: "Y", bestSell: 100 },
+    { name: "Z", bestSell: 50 },
+  ]);
+  assert.equal(t.get("Neon"), t.get("Dymantium"));
+});
+
+test("valueTiers : des ex æquo qui changent d'ordre d'affichage ne recolorent pas le board", () => {
+  // Le tableau reçu est déjà trié pour l'affichage : passer de « Revente » à « Code A→Z »
+  // permute les ex æquo, ce qui ne doit rien changer aux paliers.
+  const rows = (a, b) => [
+    { name: "X", bestSell: 300 },
+    { name: a, bestSell: 200 },
+    { name: b, bestSell: 200 },
+    { name: "Y", bestSell: 100 },
+    { name: "Z", bestSell: 50 },
+  ];
+  const parValeur = valueTiers(rows("Neon", "Dymantium"));
+  const parCode = valueTiers(rows("Dymantium", "Neon"));
+  for (const nom of ["X", "Neon", "Dymantium", "Y", "Z"]) {
+    assert.equal(parCode.get(nom), parValeur.get(nom), nom + " a changé de palier");
+  }
+});
+
+test("valueTiers : valeur absente -> t-none, et elle ne décale pas les rangs", () => {
+  const t = valueTiers([{ name: "Vide", bestSell: null }, ...rowsOf([100, 50])]);
+  assert.equal(t.get("Vide"), "t-none");
+  assert.equal(t.get("C0"), "t-hot");
+  assert.equal(t.get("C1"), "t-mid"); // 2 valeurs : rangs 0 (0 %) et 1 (50 %)
+});
+
+test("valueTiers : une seule commodité est en tête", () => {
+  assert.equal(valueTiers(rowsOf([42])).get("C0"), "t-hot");
+  assert.equal(valueTiers([]).size, 0);
 });
 
 test("enRouteDeals : destTerminal force le terminal d'arrivée", () => {

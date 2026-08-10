@@ -116,3 +116,42 @@ test("buildMarket déduplique les terminaux et compacte achats/ventes en tuples"
   assert.deepEqual(c.sells[0], [1, 250, 80, 222, 2]); // [idxTerminal, prix, demande, maj, statut]
   assert.equal(m.terminals[c.sells[0][0]].system, "Pyro");
 });
+
+test("buildMarket garde les commodités « vente seule » (butin : minage, salvage, wreck)", () => {
+  const term = new Map([
+    [10, { name: "A", system: "Stanton", planet: "Hurston", outpost: false }],
+    [20, { name: "B", system: "Pyro", planet: "", outpost: true }],
+  ]);
+  const byCommodity = new Map([
+    // Quantainium : on le mine, on ne l'achète nulle part -> aucun point d'achat.
+    [1, {
+      name: "Quantainium", code: "QUAN", kind: "mineral", illegal: false,
+      buys: [],
+      sells: [buy({ id: 20, price: 170000, demand: 0, updated: 333, status: 1 })],
+    }],
+  ]);
+  const m = buildMarket(byCommodity, term);
+  assert.equal(m.commodities.length, 1);
+  assert.deepEqual(m.commodities[0].buys, []);
+  assert.deepEqual(m.commodities[0].sells[0], [0, 170000, 0, 333, 1]);
+  assert.equal(m.commodities[0].code, "QUAN");
+});
+
+test("une commodité sans vente reste écartée (rien à en faire)", () => {
+  const term = new Map([[10, { name: "A", system: "Stanton", planet: "", outpost: false }]]);
+  const byCommodity = new Map([
+    [1, { name: "X", kind: "gas", illegal: false, buys: [buy({ id: 10, price: 10 })], sells: [] }],
+  ]);
+  assert.equal(buildMarket(byCommodity, term).commodities.length, 0);
+});
+
+test("une commodité « vente seule » ne produit ni route ni segment (inerte pour le trading)", () => {
+  const c = {
+    name: "Quantainium", kind: "mineral", illegal: false, refBuy: 0, refSell: 170000,
+    buys: [],
+    sells: [buy({ id: 20, name: "B", system: "Pyro", price: 170000 })],
+  };
+  assert.deepEqual(routesForCommodity(c), []);
+  const legs = buildBestLegs(new Map([[1, c]]));
+  assert.equal(legs.size, 0);
+});
