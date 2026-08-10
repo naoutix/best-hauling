@@ -14,7 +14,7 @@ import {
   commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
   legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
-  encodeJourney, decodeJourney,
+  encodeJourney, decodeJourney, removeJourneyStop, freeManifestLine, hydrateManifestLine,
 } from "./logic.mjs";
 
 // ---------- Temps de trajet ----------
@@ -1370,4 +1370,97 @@ test("resolveCommodity : sur les vraies données, un code résout SSI il est uni
     if (n === 1) assert.equal(got && got.code, code, `code unique ${code} non résolu`);
     else assert.equal(got, null, `code ambigu ${code} (${n} commodités) a désigné « ${got && got.name} »`);
   }
+});
+
+// ---------- Retrait d'un arrêt : le décalage de « je suis ici » ----------
+const jambe = (from, to) => ({ from, fromSystem: "S", to, toSystem: "S", commodity: "X", buyPrice: 1, sellPrice: 2, margin: 1 });
+const parcours = (names, current) => ({ legs: names.slice(0, -1).map((n, i) => jambe(n, names[i + 1])), current });
+
+test("removeJourneyStop : retirer le PREMIER arrêt décale la position d'un cran", () => {
+  // A→B→C, « je suis à B » (station 1). On retire A : stations = [B, C], B est maintenant l'index 0.
+  const r = removeJourneyStop(parcours(["A", "B", "C"], 1), 0);
+  assert.deepEqual(r.legs.map((l) => l.from + "→" + l.to), ["B→C"]);
+  assert.equal(r.current, 0); // avant le correctif : 1, donc « je suis à C » — le saut n'était pas fait
+  assert.deepEqual([r.removedFrom, r.removedCount, r.insertedCount], [0, 1, 0]);
+});
+
+test("removeJourneyStop : retirer un arrêt du MILIEU décale aussi", () => {
+  // A→B→C→D, « je suis à C » (station 2). On retire B : stations = [A, C, D], C passe à l'index 1.
+  const r = removeJourneyStop(parcours(["A", "B", "C", "D"], 2), 1, jambe("A", "C"));
+  assert.deepEqual(r.legs.map((l) => l.from + "→" + l.to), ["A→C", "C→D"]);
+  assert.equal(r.current, 1); // avant le correctif : 2, donc « je suis à D »
+  assert.deepEqual([r.removedFrom, r.removedCount, r.insertedCount], [0, 2, 1]);
+});
+
+test("removeJourneyStop : un arrêt situé APRÈS la position ne la déplace pas", () => {
+  const r = removeJourneyStop(parcours(["A", "B", "C", "D"], 1), 3);
+  assert.equal(r.current, 1); // toujours à B
+  assert.deepEqual(r.legs.map((l) => l.from + "→" + l.to), ["A→B", "B→C"]);
+});
+
+test("removeJourneyStop : retirer le DERNIER arrêt ramène la position dans les bornes", () => {
+  const r = removeJourneyStop(parcours(["A", "B", "C"], 2), 2); // arrivé à C, on retire C
+  assert.equal(r.current, 1);
+  assert.equal(r.legs.length, 1);
+});
+
+test("removeJourneyStop : parcours vidé -> null", () => {
+  assert.equal(removeJourneyStop(parcours(["A", "B"], 0), 0), null);
+});
+
+// ---------- Lignes de manifeste : ajout libre et ré-hydratation ----------
+const MARCHE = {
+  terminals: [{ name: "A", system: "S", planet: "", outpost: false }, { name: "B", system: "S", planet: "", outpost: false }],
+  commodities: [
+    { name: "Laranite", code: "LARA", kind: "metal", illegal: false, buys: [[0, 100, 40, 111, 3]], sells: [[1, 250, 30, 222, 2]] },
+    { name: "Quantainium", code: "QUAN", kind: "mineral", illegal: false, buys: [], sells: [[1, 130000, null, 333, 1]] },
+  ],
+};
+const identite = (n, t, s, price, vol) => ({ price, vol, ovol: vol != null });
+const cLara = MARCHE.commodities[0], cQuan = MARCHE.commodities[1];
+
+test("freeManifestLine : remplit l'espace libre, plafonné par le stock", () => {
+  const l = freeManifestLine(MARCHE, 0, 1, cLara, 96, identite);
+  assert.equal(l.units, 40);      // stock 40 < 96 SCU libres
+  assert.equal(l.buyPrice, 100);
+  assert.equal(l.margin, 150);
+  assert.equal(l.acquired, false);
+});
+
+test("freeManifestLine : un butin sans point d'achat part à 1 SCU et reste balisé", () => {
+  const l = freeManifestLine(MARCHE, 0, 1, cQuan, 96, identite);
+  assert.equal(l.units, 1);
+  assert.equal(l.acquired, true);
+  assert.equal(l.buyPrice, 0);
+});
+
+test("hydrateManifestLine : relit les prix du marché, ne fige rien", () => {
+  const l = hydrateManifestLine(MARCHE, 0, 1, cLara, 7, identite);
+  assert.equal(l.units, 7);       // seule l'intention de l'utilisateur est reprise
+  assert.equal(l.buyPrice, 100);  // le reste vient du marché COURANT
+  assert.equal(l.sellPrice, 250);
+  assert.equal(l.buyUpdated, 111);
+  assert.equal(l.sellUpdated, 222);
+  assert.equal(l.cap, 30);        // min(stock 40, demande 30)
+});
+
+test("hydrateManifestLine : demande inconnue -> le stock seul plafonne", () => {
+  assert.equal(hydrateManifestLine(MARCHE, 0, 1, cQuan, 24, identite).cap, Infinity); // ni achat ni demande connue
+});
+
+test("decodeJourney : rejette les jambes mal formées d'un permalien fabriqué", () => {
+  // Le hash est partageable : son contenu peut venir d'un tiers. Avant, ces entrées produisaient
+  // des jambes à `from: undefined` et faisaient tomber toute l'application au rendu.
+  assert.equal(decodeJourney('{"l":[[]]}'), null);
+  assert.equal(decodeJourney('{"l":[[1,2,3,4,5,6,7,8]]}'), null);        // types faux
+  assert.equal(decodeJourney('{"l":[["A","S","","S","x",1,2,1]]}'), null); // `to` vide
+  assert.equal(decodeJourney('{"c":0,"s":[42]}'), null);                   // départ non textuel
+});
+
+test("decodeJourney : normalise les champs optionnels et borne `current`", () => {
+  const j = decodeJourney('{"c":3000000000,"l":[["A","S1","B","S2"]]}');
+  assert.equal(j.legs.length, 1);
+  assert.deepEqual([j.legs[0].fromSystem, j.legs[0].toSystem, j.legs[0].commodity], ["S1", "S2", ""]);
+  assert.deepEqual([j.legs[0].buyPrice, j.legs[0].sellPrice, j.legs[0].margin], [0, 0, 0]);
+  assert.equal(j.current, 1); // borné à legs.length ; `| 0` le rendait négatif (troncature 32 bits)
 });

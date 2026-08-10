@@ -8,10 +8,11 @@ import {
   routePasses, loopPasses,
   routeMetrics, loopMetrics, enRouteDeals, bestManifest, buildChainAdjacency,
   commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
-  manifestTotals, freeAddUnits, manifestLine, stationLabel, parseStationLabel,
+  manifestTotals, freeAddUnits, manifestLine, freeManifestLine, hydrateManifestLine, stationLabel, parseStationLabel,
   multiTrips, tripMetrics, legFromTrip,
   legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
+  removeJourneyStop as removeStopPure,
   encodeJourney, decodeJourney,
 } from "./logic.mjs";
 
@@ -638,15 +639,10 @@ const findCommodity = (name) => resolveCommodity(MARKET.commodities, name);
 // destination — on la charge pour l'écouler ailleurs (ligne « carry-only », marge nulle ici).
 function addManifestCommodity(name) {
   const m = currentManifest;
-  if (!m) return;
+  if (!m || !MARKET) return;
   const c = findCommodity(name);
   if (!c || m.lines.some((l) => l.name === c.name)) return; // inconnue ou déjà dans le manifeste
-  const b = c.buys.find((x) => x[0] === m.originIdx);   // achat au terminal de départ (si dispo)
-  const s = c.sells.find((x) => x[0] === m.destIdx);    // vente à destination (peut ne pas exister)
-  const eb = b ? effVals(c.name, m.origin.name, "buy", b[1], b[2], b[3]) : null;
-  const es = s ? effVals(c.name, m.dest.name, "sell", s[1], s[2], s[3]) : null;
-  const u = freeAddUnits(eb ? eb.vol : Infinity, manifestRemaining().cargoLeft);
-  m.lines.push(manifestLine(c, eb, es, b ? b[3] : 0, s ? s[3] : 0, u, u));
+  m.lines.push(freeManifestLine(MARKET, m.originIdx, m.destIdx, c, manifestRemaining().cargoLeft, effVals));
   paintManifest();
 }
 
@@ -882,6 +878,10 @@ function syncViewsToJourney() {
 }
 function clearJourney() {
   JOURNEY = null;
+  // Sans cette purge, les manifestes édités survivaient à l'effacement du voyage et ressortaient
+  // sur un parcours ULTÉRIEUR passant par les mêmes terminaux, badge ✎ compris.
+  JOURNEY_EDITS = {}; saveJourneyEdits();
+  journeyExpandedLeg = -1;
   renderJourney();
   saveState();
 }
@@ -890,7 +890,7 @@ function journeyCarriedCommodities() {
   const set = new Set();
   if (!JOURNEY || !MARKET) return set;
   const f = readFilters();
-  JOURNEY.legs.forEach((leg) => legEffectiveLines(leg, f).forEach((l) => set.add(l.name)));
+  JOURNEY.legs.forEach((leg, i) => legEffectiveLines(leg, i, f).forEach((l) => set.add(l.name)));
   return set;
 }
 
@@ -904,27 +904,61 @@ function legManifest(leg, f) {
 }
 
 // ---------- Édition inline des manifestes de jambe (persistée en localStorage, HORS lien) ----------
-// Clé de jambe = "from|to". Le PARCOURS (arrêts) va dans l'URL ; les édits restent locaux.
-const JOURNEY_EDITS_KEY = "best-hauling-journey-edits";
+// Le PARCOURS (arrêts) va dans l'URL ; les manifestes édités restent locaux.
+// On ne persiste que l'INTENTION de l'utilisateur — [{ name, units }] par jambe — jamais un
+// instantané de marché : figé, il continuerait d'afficher le prix du jour de l'édition longtemps
+// après qu'UEX l'ait republié, et la pastille de fraîcheur vieillirait sans refléter le vrai relevé.
+// Prix, stock, demande et dates sont donc RELUS à chaque rendu (cf. hydrateManifestLine).
+// Clé versionnée : l'ancien format stockait des lignes complètes sous une clé « from|to » qui
+// confondait deux jambes identiques d'un même parcours. Les anciennes éditions sont abandonnées.
+const JOURNEY_EDITS_KEY = "best-hauling-journey-edits-v2";
 let JOURNEY_EDITS = {};
 let journeyExpandedLeg = -1; // index de la jambe dépliée en édition (-1 = aucune)
-function loadJourneyEdits() { try { JOURNEY_EDITS = JSON.parse(localStorage.getItem(JOURNEY_EDITS_KEY)) || {}; } catch { JOURNEY_EDITS = {}; } }
-function saveJourneyEdits() { try { localStorage.setItem(JOURNEY_EDITS_KEY, JSON.stringify(JOURNEY_EDITS)); } catch {} }
-const legKey = (leg) => `${leg.from}|${leg.to}`;
-
-// Manifeste EFFECTIF d'une jambe : version éditée si elle existe, sinon l'optimal calculé.
-function legEffectiveLines(leg, f) {
-  const k = legKey(leg);
-  if (JOURNEY_EDITS[k]) return JOURNEY_EDITS[k];
-  const man = legManifest(leg, f);
-  return man ? man.lines : [];
+function loadJourneyEdits() {
+  try { JOURNEY_EDITS = JSON.parse(localStorage.getItem(JOURNEY_EDITS_KEY)) || {}; } catch { JOURNEY_EDITS = {}; }
+  try { localStorage.removeItem("best-hauling-journey-edits"); } catch {} // format v1 abandonné
 }
-// Copie l'optimal dans le store la 1re fois qu'on édite la jambe (puis on édite cette copie).
-function materializeLeg(leg, f) {
-  const k = legKey(leg);
-  if (!JOURNEY_EDITS[k]) JOURNEY_EDITS[k] = (legManifest(leg, f)?.lines || []).map((l) => ({ ...l }));
+function saveJourneyEdits() { try { localStorage.setItem(JOURNEY_EDITS_KEY, JSON.stringify(JOURNEY_EDITS)); } catch {} }
+// Le RANG de la jambe fait partie de la clé : sans lui, un parcours A→B→A→B partageait un seul
+// manifeste entre ses jambes 1 et 3 (éditer l'une réécrivait l'autre, la supprimer supprimait l'autre).
+const legKey = (leg, i) => `${i}|${leg.from}|${leg.to}`;
+
+// Indices des terminaux d'une jambe, ou null si le marché ne les connaît pas (encore).
+function legTerminals(leg) {
+  const fromIdx = stationMap.get(stationLabel(leg.from, leg.fromSystem));
+  const toIdx = stationMap.get(stationLabel(leg.to, leg.toSystem));
+  return fromIdx == null || toIdx == null ? null : { fromIdx, toIdx };
+}
+
+// Manifeste EFFECTIF d'une jambe : intention éditée ré-hydratée si elle existe, sinon l'optimal.
+function legEffectiveLines(leg, i, f) {
+  const k = legKey(leg, i);
+  const intent = JOURNEY_EDITS[k];
+  if (!intent) { const man = legManifest(leg, f); return man ? man.lines : []; }
+  const t = legTerminals(leg);
+  if (!MARKET || !t) return [];
+  const lines = [], gardees = [];
+  for (const e of intent) {
+    const c = findCommodity(e.name);
+    if (!c) continue; // commodité disparue d'UEX : on l'oublie plutôt que d'afficher un fantôme
+    gardees.push(e);
+    lines.push(hydrateManifestLine(MARKET, t.fromIdx, t.toIdx, c, e.units, effVals));
+  }
+  // Purge sur place : sans ça l'index des lignes affichées et celui du store divergeraient, et
+  // éditer une quantité écrirait dans la mauvaise entrée.
+  if (gardees.length !== intent.length) { JOURNEY_EDITS[k] = gardees; saveJourneyEdits(); }
+  return lines;
+}
+
+// Bascule la jambe en mode « édité » la 1re fois : on y copie l'intention issue de l'optimal.
+function legIntent(leg, i, f) {
+  const k = legKey(leg, i);
+  if (!JOURNEY_EDITS[k]) {
+    JOURNEY_EDITS[k] = (legManifest(leg, f)?.lines || []).map((l) => ({ name: l.name, units: l.units }));
+  }
   return JOURNEY_EDITS[k];
 }
+
 const legProfit = (lines) => manifestTotals(lines).profit;
 
 // Contexte de manifeste d'une jambe, à la forme attendue par suggestionsFor/manifestRemaining
@@ -946,20 +980,31 @@ function legSuggestCtx(leg, lines, f) {
 // Actions d'édition d'une jambe (i = index de jambe).
 function toggleLegEditor(i) { journeyExpandedLeg = journeyExpandedLeg === i ? -1 : i; renderJourney(); }
 function editLegQty(i, li, val) {
-  const lines = materializeLeg(JOURNEY.legs[i], readFilters());
-  if (lines[li]) { let u = Math.floor(Number(val)); lines[li].units = Number.isFinite(u) && u > 0 ? u : 0; }
-  saveJourneyEdits(); renderJourney();
+  // Le voyage peut avoir été effacé entre le focus et le blur (cliquer ✕ blure d'abord le champ) :
+  // sans cette garde, l'édition en vol était réécrite APRÈS la purge et ressuscitait toute seule.
+  if (!JOURNEY || !JOURNEY.legs[i]) return;
+  const intent = legIntent(JOURNEY.legs[i], i, readFilters());
+  if (intent[li]) { const u = Math.floor(Number(val)); intent[li].units = Number.isFinite(u) && u > 0 ? u : 0; }
+  saveJourneyEdits();
+  // Ce handler part sur `change`, donc au BLUR — or le blur précède le mouseup d'un clic en cours.
+  // Re-rendre tout de suite détruirait le nœud visé et avalerait ce clic (impossible d'effacer le
+  // voyage ou de replier une jambe du premier coup). On laisse le tour d'événement se terminer.
+  setTimeout(renderJourney, 0);
 }
-// Saisie en direct : met à jour la ligne + repeint profit/caisses/suggestions SANS re-render global
-// (un renderJourney() à chaque frappe ferait perdre le focus de l'input).
+// Saisie en direct : met à jour l'intention + repeint profit/caisses/suggestions SANS re-render
+// global (un renderJourney() à chaque frappe ferait perdre le focus de l'input).
 function liveLegQty(i, li, inp) {
+  if (!JOURNEY || !JOURNEY.legs[i]) return; // idem : le parcours a pu disparaître sous la saisie
   const leg = JOURNEY.legs[i];
-  const lines = materializeLeg(leg, readFilters());
-  const l = lines[li];
-  if (!l) return;
+  const f = readFilters();
+  const intent = legIntent(leg, i, f);
+  if (!intent[li]) return;
   let u = Math.floor(Number(inp.value));
   if (!Number.isFinite(u) || u < 0) u = 0;
-  l.units = u;
+  intent[li].units = u;
+  const lines = legEffectiveLines(leg, i, f); // relues au marché COURANT, jamais figées
+  const l = lines[li];
+  if (!l) return;
   inp.classList.toggle("over-stock", isFinite(l.cap) && u > l.cap);
   const row = inp.closest(".jman-line");
   const prof = row && row.querySelector(".jman-profit");
@@ -977,38 +1022,36 @@ function renderLegSuggestions(i, lines) {
 function addLegSuggestion(i, name) {
   const leg = JOURNEY.legs[i];
   const f = readFilters();
-  const lines = materializeLeg(leg, f);
-  const ctx = legSuggestCtx(leg, lines, f);
+  const ctx = legSuggestCtx(leg, legEffectiveLines(leg, i, f), f);
   if (!ctx) return;
   const it = suggestionsFor(ctx).find((x) => x.name === name);
   if (!it) return;
   const u = addableUnits(it, manifestRemaining(ctx));
   if (u <= 0) return;
-  lines.push({ ...it, units: u, cap: u });
+  legIntent(leg, i, f).push({ name: it.name, units: u });
   saveJourneyEdits(); renderJourney();
 }
 function delLegLine(i, name) {
   const leg = JOURNEY.legs[i];
-  JOURNEY_EDITS[legKey(leg)] = materializeLeg(leg, readFilters()).filter((l) => l.name !== name);
+  JOURNEY_EDITS[legKey(leg, i)] = legIntent(leg, i, readFilters()).filter((e) => e.name !== name);
   saveJourneyEdits(); renderJourney();
 }
-function resetLeg(i) { delete JOURNEY_EDITS[legKey(JOURNEY.legs[i])]; saveJourneyEdits(); renderJourney(); }
+function resetLeg(i) { delete JOURNEY_EDITS[legKey(JOURNEY.legs[i], i)]; saveJourneyEdits(); renderJourney(); }
 // Ajout LIBRE d'une commodité à une jambe (même non vendable à l'arrivée -> ligne « carry-only »).
-// Même comportement qu'« En route » (cf. addManifestCommodity) : remplit l'espace libre, ≥ 1 SCU.
+// Même règle qu'« En route » : freeManifestLine (logic.mjs) en est la source unique.
 function addLegLine(i, name) {
   const leg = JOURNEY.legs[i];
   const c = findCommodity(name);
-  if (!c) return;
+  const t = legTerminals(leg);
+  if (!c || !t || !MARKET) return;
   const f = readFilters();
-  const lines = materializeLeg(leg, f);
-  if (lines.some((l) => l.name === c.name)) return;
-  const fromIdx = stationMap.get(stationLabel(leg.from, leg.fromSystem)), toIdx = stationMap.get(stationLabel(leg.to, leg.toSystem));
-  const b = c.buys.find((x) => x[0] === fromIdx), s = c.sells.find((x) => x[0] === toIdx);
-  const eb = b ? effVals(c.name, leg.from, "buy", b[1], b[2], b[3]) : null;
-  const es = s ? effVals(c.name, leg.to, "sell", s[1], s[2], s[3]) : null;
-  const ctx = legSuggestCtx(leg, lines, f); // null si soute non bornée -> freeAddUnits met 1 SCU
-  const u = freeAddUnits(eb ? eb.vol : Infinity, ctx ? manifestRemaining(ctx).cargoLeft : NaN);
-  lines.push(manifestLine(c, eb, es, b ? b[3] : 0, s ? s[3] : 0, u, u));
+  // Le doublon se teste AVANT de matérialiser l'intention : sinon un ajout refusé basculait quand
+  // même la jambe en « éditée » (badge ✎, bouton « ↺ optimal »), et elle cessait silencieusement
+  // de suivre les prix UEX et les filtres alors que rien n'avait été ajouté.
+  if (legEffectiveLines(leg, i, f).some((l) => l.name === c.name)) return;
+  const ctx = legSuggestCtx(leg, legEffectiveLines(leg, i, f), f); // null si soute non bornée -> 1 SCU
+  const ligne = freeManifestLine(MARKET, t.fromIdx, t.toIdx, c, ctx ? manifestRemaining(ctx).cargoLeft : NaN, effVals);
+  legIntent(leg, i, f).push({ name: c.name, units: ligne.units });
   saveJourneyEdits(); renderJourney();
 }
 
@@ -1076,23 +1119,39 @@ function beginJourney(label) {
 }
 
 // Retire un arrêt (index de station) et RECONNECTE les voisins (recalcule la jambe A->C).
+// Réindexe les manifestes édités après une modification du parcours : la clé porte le RANG de la
+// jambe, donc retirer un arrêt décalerait sinon l'édition d'une jambe sur sa voisine.
+function reindexLegEdits(removedFrom, removedCount, insertedCount) {
+  const decalage = removedCount - insertedCount;
+  const suivant = {};
+  for (const [k, v] of Object.entries(JOURNEY_EDITS)) {
+    const sep = k.indexOf("|");
+    const i = Number(k.slice(0, sep));
+    if (i < removedFrom) suivant[k] = v;                       // avant la coupe : inchangé
+    else if (i < removedFrom + removedCount) continue;         // jambe disparue : son édition part
+    else suivant[`${i - decalage}${k.slice(sep)}`] = v;        // après : recule d'autant
+  }
+  JOURNEY_EDITS = suivant;
+  if (journeyExpandedLeg >= removedFrom) journeyExpandedLeg = -1; // le panneau déplié n'existe plus
+  saveJourneyEdits();
+}
+
 function removeJourneyStop(stopIndex) {
   if (!JOURNEY) return;
   const legs = JOURNEY.legs;
-  let newLegs;
-  if (stopIndex <= 0) newLegs = legs.slice(1);                 // 1er arrêt -> retire la 1re jambe
-  else if (stopIndex >= legs.length) newLegs = legs.slice(0, -1); // dernier arrêt -> retire la dernière jambe
-  else {
-    // arrêt du milieu : reconnecte stops[i-1] -> stops[i+1].
+  let bridge = null;
+  if (stopIndex > 0 && stopIndex < legs.length) {
+    // Arrêt du milieu : on reconnecte stations[i-1] -> stations[i+1].
     const prev = legs[stopIndex - 1], next = legs[stopIndex];
     const fromIdx = stationMap.get(stationLabel(prev.from, prev.fromSystem));
     const toIdx = stationMap.get(stationLabel(next.to, next.toSystem));
-    const bridge = bestLegTo(fromIdx, toIdx) || // si aucun fret rentable A->C, jambe « à vide » (contiguïté préservée)
+    bridge = bestLegTo(fromIdx, toIdx) || // aucun fret rentable A->C : jambe « à vide », contiguïté préservée
       { from: prev.from, fromSystem: prev.fromSystem, to: next.to, toSystem: next.toSystem, commodity: "", buyPrice: 0, sellPrice: 0, margin: 0 };
-    newLegs = [...legs.slice(0, stopIndex - 1), bridge, ...legs.slice(stopIndex + 1)];
   }
-  if (!newLegs.length) { clearJourney(); return; }
-  JOURNEY = { legs: newLegs, current: Math.min(JOURNEY.current, newLegs.length) };
+  const r = removeStopPure(JOURNEY, stopIndex, bridge);
+  if (!r) { clearJourney(); return; }
+  reindexLegEdits(r.removedFrom, r.removedCount, r.insertedCount);
+  JOURNEY = { legs: r.legs, current: r.current };
   syncViewsToJourney();
   renderJourney();
   refresh();
@@ -1129,8 +1188,8 @@ function renderJourney() {
   let totalProfit = 0, totalScu = 0; // récap : profit réel (aUEC) et SCU transportés sur tout le voyage
   // Manifeste (cargaison) de chaque jambe — optimal ou édité ; jambe dépliable pour l'éditer.
   const legsHtml = JOURNEY.legs.map((leg, i) => {
-    const lines = MARKET ? legEffectiveLines(leg, f) : null;
-    const edited = MARKET && !!JOURNEY_EDITS[legKey(leg)];
+    const lines = MARKET ? legEffectiveLines(leg, i, f) : null;
+    const edited = MARKET && !!JOURNEY_EDITS[legKey(leg, i)];
     const expanded = i === journeyExpandedLeg;
     let cargo, total;
     if (!MARKET) { cargo = '<span class="muted">calcul…</span>'; total = "—"; }
@@ -1955,7 +2014,16 @@ async function init() {
     // Applique l'état restauré une fois le menu système peuplé, puis affiche la bonne vue.
     applyState(saved);
     showShipCard(); // ré-affiche la carte du vaisseau restauré (image comprise)
-    renderJourney(); // ré-affiche le parcours restauré (compagnon de voyage)
+    // Le compagnon de voyage vient d'un permalien, donc de données non fiables. S'il échoue, il ne
+    // doit pas emporter TOUTE l'app dans le catch ci-dessous, qui accuserait alors data/routes.json
+    // — parfaitement chargé — et laisserait l'utilisateur devant une page vide et un message faux.
+    try {
+      renderJourney();
+    } catch (err) {
+      JOURNEY = null;
+      renderJourney();
+      showToast("⚠ Parcours illisible dans le lien — il a été ignoré");
+    }
     switchView(view);
   } catch (e) {
     $("meta").textContent = "Erreur de chargement des données.";
