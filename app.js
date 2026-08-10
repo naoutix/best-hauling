@@ -1283,7 +1283,9 @@ function journeyEndIndex() {
 // Meilleure jambe (commodité de marge max) entre deux terminaux, ou null si aucun fret rentable.
 function bestLegTo(fromIdx, toIdx) {
   if (fromIdx == null || toIdx == null) return null;
-  const deals = enRouteDeals(MARKET, fromIdx, "", toIdx); // meilleure vente vers toIdx par commodité
+  // `readFilters()` fait choisir la vente au profit RÉALISABLE et non au prix affiché : sans lui,
+  // la jambe proposée peut viser un terminal déjà saturé, qui n'écoulera qu'une poignée de SCU.
+  const deals = enRouteDeals(MARKET, fromIdx, "", toIdx, readFilters()); // meilleure vente vers toIdx par commodité
   if (!deals.length) return null;
   return legFromRoute(deals.reduce((a, b) => (b.margin > a.margin ? b : a)));
 }
@@ -1307,7 +1309,7 @@ function journeyStopSuggestions() {
   const fromIdx = journeyEndIndex();
   if (fromIdx == null) return [];
   const byDest = new Map();
-  enRouteDeals(MARKET, fromIdx, "").forEach((d) => {
+  enRouteDeals(MARKET, fromIdx, "", null, readFilters()).forEach((d) => {
     const label = stationLabel(d.sell.terminal, d.sell.system);
     const cur = byDest.get(label);
     if (!cur || d.margin > cur.margin) byDest.set(label, { label, terminal: d.sell.terminal, commodity: d.commodity, margin: d.margin });
