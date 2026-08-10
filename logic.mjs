@@ -434,6 +434,40 @@ export function enRouteDeals(market, origin, destSystem, destTerminal = null) {
   return deals;
 }
 
+// Éligibilité d'un couple achat/vente, partagée par le manifeste OPTIMAL et par les SUGGESTIONS
+// de remplissage. Les deux en tenaient chacune une copie, et elles avaient divergé : la boîte de
+// suggestions ne filtrait que « légales », si bien qu'elle proposait — et permettait d'insérer —
+// des commodités que le manifeste venait d'écarter pour relevé trop vieux ou avant-poste exclu.
+export function pairEligible(f, c, sellTerminal, buyUpdated, sellUpdated) {
+  if (f.legalOnly && c.illegal) return false;
+  if (f.noOutpost && sellTerminal.outpost) return false;
+  // Fraîcheur : ignore les relevés trop vieux (0 = filtre inactif -> comportement inchangé).
+  if (f.maxAge) { const a = pairAge(buyUpdated, sellUpdated); if (a == null || a > f.maxAge) return false; }
+  return true;
+}
+
+// Commodités qui pourraient remplir l'espace libre d'un manifeste (même origine -> même
+// destination), hors celles déjà chargées, triées par marge décroissante.
+// `m` = contexte de manifeste { lines, originIdx, destIdx, origin, dest, f }.
+export function suggestionsFrom(market, m, resolve) {
+  const have = new Set(m.lines.map((l) => l.name));
+  const st = market.terminals[m.destIdx];
+  const out = [];
+  market.commodities.forEach((c) => {
+    if (have.has(c.name)) return;
+    const b = c.buys.find((x) => x[0] === m.originIdx);
+    const s = c.sells.find((x) => x[0] === m.destIdx);
+    if (!b || !s) return;
+    if (!pairEligible(m.f, c, st, b[3], s[3])) return;
+    const eb = resolve(c.name, m.origin.name, "buy", b[1], b[2], b[3]);
+    const es = resolve(c.name, m.dest.name, "sell", s[1], s[2], s[3]);
+    const margin = es.price - eb.price;
+    if (margin <= 0) return;
+    out.push({ name: c.name, kind: c.kind, illegal: c.illegal, buyPrice: eb.price, stock: eb.vol, sellPrice: es.price, demand: es.vol, demandKnown: es.ovol, margin, buyUpdated: b[3], sellUpdated: s[3] });
+  });
+  return out.sort((a, b) => b.margin - a.margin);
+}
+
 // TOUS les manifestes depuis `origin` : un par destination atteignable, soute remplie par marge
 // décroissante (fillCargo). Trié par profit décroissant. `bestManifest` n'en garde que le premier ;
 // la vue « Trajets » en mode multi-commodité les garde tous. Renvoie [] si la soute n'est pas bornée.
@@ -451,9 +485,7 @@ export function manifestsFrom(market, origin, destSystem, f, resolve, destTermin
       const st = market.terminals[s[0]];
       if (destTerminal != null) { if (s[0] !== destTerminal) return; }
       else if (destSystem && st.system !== destSystem) return;
-      if (f.noOutpost && st.outpost) return;
-      // Fraîcheur : ignore les relevés trop vieux (0 = filtre inactif -> comportement inchangé).
-      if (f.maxAge) { const a = pairAge(b[3], s[3]); if (a == null || a > f.maxAge) return; }
+      if (!pairEligible(f, c, st, b[3], s[3])) return;
       const es = resolve(c.name, st.name, "sell", s[1], s[2], s[3]);
       const margin = es.price - eb.price;
       if (margin <= 0) return;

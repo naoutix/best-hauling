@@ -10,6 +10,7 @@ import {
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
   profitPerHour, rawScoreOf, routePasses, loopPasses,
   routeMetrics, loopMetrics, dealFrom, enRouteDeals, bestManifest, buildChainAdjacency,
+  pairEligible, suggestionsFrom,
   manifestsFrom, multiTrips, tripMetrics, legFromTrip,
   commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
   legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
@@ -1463,4 +1464,59 @@ test("decodeJourney : normalise les champs optionnels et borne `current`", () =>
   assert.deepEqual([j.legs[0].fromSystem, j.legs[0].toSystem, j.legs[0].commodity], ["S1", "S2", ""]);
   assert.deepEqual([j.legs[0].buyPrice, j.legs[0].sellPrice, j.legs[0].margin], [0, 0, 0]);
   assert.equal(j.current, 1); // borné à legs.length ; `| 0` le rendait négatif (troncature 32 bits)
+});
+
+// ---------- Éligibilité partagée manifeste / suggestions ----------
+const T_VILLE = { name: "Ville", system: "S", planet: "", outpost: false };
+const T_POSTE = { name: "Poste", system: "S", planet: "", outpost: true };
+// `pairEligible` n'accepte pas d'injection d'horloge (pairAge lit Date.now()) : on ancre donc les
+// relevés sur MAINTENANT. Le test reste déterministe — « il y a 9 jours » est toujours plus vieux
+// que la fenêtre « < 24 h », quelle que soit la date d'exécution.
+const NOW_S = Math.floor(Date.now() / 1000);
+const VIEUX = NOW_S - 9 * 86400, FRAIS = NOW_S - 3600;
+
+test("pairEligible : la fraîcheur écarte un couple dont un relevé est trop vieux", () => {
+  const c = { name: "X", illegal: false };
+  const f = { maxAge: 1 }; // < 24 h
+  assert.equal(pairEligible({}, c, T_VILLE, VIEUX, FRAIS), true);            // filtre inactif
+  assert.equal(pairEligible(f, c, T_VILLE, FRAIS, FRAIS), true);
+  assert.equal(pairEligible(f, c, T_VILLE, VIEUX, FRAIS), false);            // achat périmé
+  assert.equal(pairEligible(f, c, T_VILLE, FRAIS, VIEUX), false);            // vente périmée
+});
+
+test("pairEligible : légales et avant-postes", () => {
+  assert.equal(pairEligible({ legalOnly: true }, { illegal: true }, T_VILLE, 0, 0), false);
+  assert.equal(pairEligible({ noOutpost: true }, { illegal: false }, T_POSTE, 0, 0), false);
+  assert.equal(pairEligible({ noOutpost: true }, { illegal: false }, T_VILLE, 0, 0), true);
+});
+
+test("suggestionsFrom : une commodité hors fenêtre de fraîcheur n'est PAS suggérée", () => {
+  // Régression : la boîte « Remplir les N SCU libres » ne filtrait que « légales », donc elle
+  // proposait des commodités que le manifeste optimal venait d'écarter, et le clic les insérait.
+  const market = {
+    terminals: [T_VILLE, { name: "Dest", system: "S", planet: "", outpost: false }],
+    commodities: [
+      { name: "Frais", kind: "metal", illegal: false, buys: [[0, 100, 50, FRAIS, 3]], sells: [[1, 300, 40, FRAIS, 2]] },
+      { name: "Perime", kind: "metal", illegal: false, buys: [[0, 100, 50, VIEUX, 3]], sells: [[1, 900, 40, FRAIS, 2]] },
+    ],
+  };
+  const ctx = (f) => ({
+    lines: [], originIdx: 0, destIdx: 1,
+    origin: { name: "Ville", system: "S" }, dest: { name: "Dest", system: "S" }, f,
+  });
+  const id = (n, t, s, price, vol) => ({ price, vol, ovol: vol != null });
+
+  // Sans filtre : les deux sortent, la plus margée d'abord.
+  assert.deepEqual(suggestionsFrom(market, ctx({}), id).map((x) => x.name), ["Perime", "Frais"]);
+  // Avec « relevé < 24 h » : la périmée disparaît, exactement comme du manifeste optimal.
+  assert.deepEqual(suggestionsFrom(market, ctx({ maxAge: 1 }), id).map((x) => x.name), ["Frais"]);
+});
+
+test("suggestionsFrom : une commodité déjà chargée n'est pas re-suggérée", () => {
+  const market = {
+    terminals: [T_VILLE, { name: "Dest", system: "S", planet: "", outpost: false }],
+    commodities: [{ name: "Frais", kind: "metal", illegal: false, buys: [[0, 100, 50, FRAIS, 3]], sells: [[1, 300, 40, FRAIS, 2]] }],
+  };
+  const m = { lines: [{ name: "Frais" }], originIdx: 0, destIdx: 1, origin: { name: "Ville", system: "S" }, dest: { name: "Dest", system: "S" }, f: {} };
+  assert.deepEqual(suggestionsFrom(market, m, (n, t, s, price, vol) => ({ price, vol, ovol: true })), []);
 });

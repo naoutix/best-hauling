@@ -94,6 +94,20 @@ function normalizeKind(k) {
   return fix[k] || k || "other";
 }
 
+// Demande exploitable d'un point de vente = capacité RESTANTE du terminal, jamais son stock.
+// UEX expose `scu_sell` (capacité totale pour cette commodité) et `scu_sell_stock` (ce que le
+// terminal détient DÉJÀ) ; `status_sell` n'est que leur ratio (1 = quasi vide -> forte demande …
+// 7 = plein -> saturé). Prendre `scu_sell_stock` pour la « demande » inverserait le sens : les
+// meilleurs points de vente paraîtraient les plus contraints.
+// null = capacité inconnue (UEX ne renseigne `scu_sell` que sur ~11 % des points) -> AUCUN plafond
+// de volume en aval, contrairement à 0 qui signifie « saturé, ne prend plus rien ».
+// Exportée pour être testée : c'est la règle métier la plus structurante du pipeline, et elle
+// vivait au fond de main(), hors de portée de tout test.
+export function sellDemand(p) {
+  const cap = p.scu_sell || 0;
+  return cap > 0 ? Math.max(0, cap - (p.scu_sell_stock || 0)) : null;
+}
+
 // Génère les routes d'arbitrage pour une commodité.
 // `c` = { name, kind, illegal, refBuy, refSell, buys[], sells[] } où chaque buy/sell porte
 // { id, orbit, name, system, planet, price, stock|demand, updated, status }.
@@ -275,9 +289,7 @@ async function main() {
       // vente (peu de stock, donc forte demande) paraissaient les plus contraints.
       // null = capacité inconnue (UEX ne renseigne scu_sell que sur ~11 % des points) -> pas de
       // plafond de volume, contrairement à 0 qui signifie « saturé, ne prend plus rien ».
-      const cap = p.scu_sell || 0;
-      const demand = cap > 0 ? Math.max(0, cap - (p.scu_sell_stock || 0)) : null;
-      c.sells.push({ ...loc, price: p.price_sell, demand, updated: p.date_modified || 0, status: p.status_sell || 0 });
+      c.sells.push({ ...loc, price: p.price_sell, demand: sellDemand(p), updated: p.date_modified || 0, status: p.status_sell || 0 });
     }
   }
 
