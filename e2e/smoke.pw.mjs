@@ -589,3 +589,46 @@ test("service worker : les données atterrissent vraiment dans le cache", async 
   });
   await expect.poll(dataEnCache, { timeout: 15000 }).toContain("/data/routes.json");
 });
+
+// ---------- Corrections locales & réactivité des filtres (#39, #49) ----------
+
+test("consulter un chiffre ne crée aucune correction locale", async ({ page }) => {
+  await expect(page.locator("#viewCorrections")).toHaveText("✎ Corrections"); // aucune au départ
+  const cell = page.locator("#rows .editv").first();
+  const avant = await cell.innerText();
+
+  await cell.click();
+  await expect(cell.locator("input")).toBeVisible();
+  await page.locator("h1").click(); // blur SANS rien modifier
+
+  await expect(page.locator("#viewCorrections")).toHaveText("✎ Corrections"); // toujours aucune
+  await expect(page.locator("#rows .editv.ov")).toHaveCount(0);
+  await expect(cell).toHaveText(avant); // l'affichage d'origine est restauré, ✎ compris
+
+  // Effet de bord réglé : le clic suivant n'est plus avalé par un re-render global.
+  const autre = page.locator("#rows .editv").nth(3);
+  await autre.click();
+  await expect(autre.locator("input")).toBeVisible();
+});
+
+test("modifier un chiffre crée bien une correction (contre-épreuve)", async ({ page }) => {
+  const cell = page.locator("#rows .editv").first();
+  await cell.click();
+  await cell.locator("input").fill("12345");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#viewCorrections")).toContainText("Corrections (1)");
+  await expect(page.locator("#rows .editv.ov").first()).toBeVisible();
+});
+
+test("les filtres à saisie libre sont débouncés : un mot tapé ne re-rend qu'une fois", async ({ page }) => {
+  await page.evaluate(() => {
+    window.__rendus = 0;
+    new MutationObserver(() => { window.__rendus++; }).observe(document.getElementById("rows"), { childList: true });
+  });
+  await page.type("#search", "Laranite", { delay: 20 }); // 8 frappes
+
+  // saveState() tourne à la FIN de refresh() : le hash ne bouge qu'une fois le debounce tiré.
+  await expect(page).toHaveURL(/search=Laranite/);
+  // Sans debounce : 8 reconstructions complètes de la table (528 Ko de HTML chacune).
+  expect(await page.evaluate(() => window.__rendus)).toBeLessThanOrEqual(2);
+});
