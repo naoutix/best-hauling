@@ -290,7 +290,7 @@ function renderMulti(f) {
     empty.textContent = "Active la soute (SCU) pour calculer des trajets multi-commodité.";
     return;
   }
-  if (!MARKET) { loadMarket().then(() => { setupEnRoute(); render(); }); return; } // graphe requis
+  if (!MARKET) { withMarket(render); return; } // graphe requis
   const trips = multiTrips(MARKET, f, effVals).map((t) => ({ ...t, ...tripMetrics(t) }));
   normalizeScores(trips);
   trips.sort(bySort(sortKey, sortDir));
@@ -480,11 +480,33 @@ let stationMap = new Map();   // libellé -> index, TOUS les terminaux (pour la 
 let enrouteOrigin = null;     // index du terminal de départ sélectionné
 let stationSel = null;        // index de la station sélectionnée (vue Corrections)
 
-async function loadMarket() {
-  if (!MARKET) {
-    MARKET = await fetch("data/market.json").then((r) => r.json()).catch(() => ({ terminals: [], commodities: [] }));
+// Charge le graphe de marché à la demande. Deux règles, apprises à la dure :
+//   - on mémorise la PROMESSE en vol, pas seulement son résultat : sinon chaque frappe pendant le
+//     chargement relançait un fetch complet de market.json (4 requêtes concurrentes mesurées) ;
+//   - on ne mémorise JAMAIS l'échec. Un marché vide mis en cache verrouillait « En route »,
+//     « Chaîne », « Commodités » et « Corrections » pour TOUTE la session — autocomplétion vide,
+//     0 tuile, « aucune chaîne rentable » — sans le moindre message, et seul un rechargement
+//     complet réparait. L'erreur remonte donc aux appelants, et l'action suivante réessaie.
+let MARKET_LOADING = null;
+function loadMarket() {
+  if (MARKET) return Promise.resolve(MARKET);
+  if (!MARKET_LOADING) {
+    MARKET_LOADING = fetch("data/market.json")
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then((m) => (MARKET = m))
+      .catch((e) => { MARKET_LOADING = null; throw e; }); // rien n'est retenu -> réessai possible
   }
-  return MARKET;
+  return MARKET_LOADING;
+}
+
+// Prévient que le marché est indisponible plutôt que de laisser la vue vide ET muette.
+const marketUnavailable = () => showToast("⚠ Marché indisponible — vérifie ta connexion, puis réessaie");
+
+// Exécute `then` une fois le marché chargé et les datalists peuplées. Point de passage unique de
+// toutes les vues qui ont besoin du graphe : c'est lui qui garantit que `setupEnRoute()` ne tourne
+// jamais sur un marché vide (il pose `enrouteReady`, qui figerait les datalists une fois pour toutes).
+function withMarket(then) {
+  loadMarket().then(() => { setupEnRoute(); then(); }).catch(marketUnavailable);
 }
 
 // Peuple la liste des terminaux de départ (ceux où l'on peut acheter). Idempotent.
@@ -741,7 +763,7 @@ function renderManifest(origin, destSystem, f, destTerminal) {
 }
 
 function renderEnRoute() {
-  if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderEnRoute(); }); return; }
+  if (!MARKET) { withMarket(renderEnRoute); return; }
   if (!enrouteReady) setupEnRoute();
   resolveOrigin(); // re-résout depuis le champ (peut avoir été posé par le parcours, sans événement input)
   resolveDest();
@@ -814,7 +836,7 @@ function chainCardHTML(chain) {
 }
 
 function renderChain() {
-  if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderChain(); }); return; }
+  if (!MARKET) { withMarket(renderChain); return; }
   if (!enrouteReady) setupEnRoute();
   resolveChainOrigin();
   const box = $("chainOut");
@@ -1043,7 +1065,7 @@ function addStopByTerminal(label) {
 function beginJourney(label) {
   const v = (label || "").trim();
   if (!v) return;
-  if (!stationMap.size) { loadMarket().then(() => { setupEnRoute(); beginJourney(v); }); return; } // marché requis pour résoudre
+  if (!stationMap.size) { withMarket(() => beginJourney(v)); return; } // marché requis pour résoudre
   const startIdx = resolveStationLabel(v);
   if (startIdx == null) return; // terminal inconnu
   const t = MARKET.terminals[startIdx];
@@ -1095,7 +1117,7 @@ function renderJourney() {
   }
   card.hidden = false;
   // MARKET nécessaire pour les manifestes par jambe -> charge à la demande puis re-render.
-  if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderJourney(); }); }
+  if (!MARKET) { withMarket(renderJourney); }
   else if (!enrouteReady) setupEnRoute();
 
   const stations = journeyStations(JOURNEY);
@@ -1526,7 +1548,7 @@ function correctionsListHTML() {
 }
 
 function renderCorrections() {
-  if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderCorrections(); }); return; }
+  if (!MARKET) { withMarket(renderCorrections); return; }
   if (!enrouteReady) setupEnRoute();
   resolveStation();
   const q = $("search").value.trim().toLowerCase();
@@ -1662,7 +1684,7 @@ function setCommBoard(board) {
 }
 
 function renderCommodities() {
-  if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderCommodities(); }); return; }
+  if (!MARKET) { withMarket(renderCommodities); return; }
   if (!enrouteReady) setupEnRoute();
   const f = { ...readFilters(), board: commBoard };
   const q = f.q;
@@ -1826,7 +1848,7 @@ async function init() {
   document.addEventListener("focusin", (e) => {
     if ((e.target.id === "journeyStart" || e.target.id === "journeyAddStop") && !enrouteReady) {
       if (MARKET) setupEnRoute();
-      else loadMarket().then(() => setupEnRoute());
+      else withMarket(() => {});
     }
   });
   // SCU d'une ligne de jambe : suggestions/profit en direct à la frappe, persistance au blur/Entrée.
