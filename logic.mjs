@@ -258,6 +258,39 @@ export function manifestLine(c, buy, sell, buyUpdated, sellUpdated, units, cap) 
   };
 }
 
+// Résout les deux côtés d'une commodité entre deux terminaux (corrections locales comprises).
+// `null` d'un côté = ce terminal ne traite pas cette commodité — cas NORMAL, pas une erreur :
+// on charge un fret pour l'écouler ailleurs, ou on transporte un butin acquis ailleurs.
+function resolveSides(market, fromIdx, toIdx, c, resolve) {
+  const ft = market.terminals[fromIdx], tt = market.terminals[toIdx];
+  const b = c.buys.find((x) => x[0] === fromIdx);
+  const s = c.sells.find((x) => x[0] === toIdx);
+  return {
+    b, s,
+    eb: b ? resolve(c.name, ft.name, "buy", b[1], b[2], b[3]) : null,
+    es: s ? resolve(c.name, tt.name, "sell", s[1], s[2], s[3]) : null,
+  };
+}
+
+// Ligne de manifeste pour un ajout LIBRE : l'utilisateur choisit la commodité, les unités
+// remplissent l'espace restant. Partagée par « En route » et par les jambes de voyage, qui en
+// tenaient deux copies divergentes — l'une testait le doublon avant de muter l'état, l'autre après.
+export function freeManifestLine(market, fromIdx, toIdx, c, cargoLeft, resolve) {
+  const { b, s, eb, es } = resolveSides(market, fromIdx, toIdx, c, resolve);
+  const u = freeAddUnits(eb ? eb.vol : Infinity, cargoLeft);
+  return manifestLine(c, eb, es, b ? b[3] : 0, s ? s[3] : 0, u, u);
+}
+
+// Ligne RÉ-HYDRATÉE depuis la seule intention persistée { name, units }.
+// On ne persiste JAMAIS d'instantané de marché : figé, il continuerait d'afficher le prix du jour
+// de l'édition longtemps après qu'UEX l'ait republié, avec une pastille de fraîcheur qui vieillit
+// sans jamais refléter le vrai relevé. Prix, stock, demande et dates sont donc relus à chaque rendu.
+export function hydrateManifestLine(market, fromIdx, toIdx, c, units, resolve) {
+  const { b, s, eb, es } = resolveSides(market, fromIdx, toIdx, c, resolve);
+  const cap = tighterVolume(eb ? eb.vol : Infinity, es ? es.vol : null);
+  return manifestLine(c, eb, es, b ? b[3] : 0, s ? s[3] : 0, units, cap);
+}
+
 // ---------- Décomposition en caisses SCU standard ----------
 // Répartit N SCU en conteneurs standard (plus grand d'abord). Renvoie [{size, count}, ...].
 export const SCU_BOX_SIZES = [32, 24, 16, 8, 4, 2, 1];
@@ -739,6 +772,36 @@ export function addToJourney(journey, legs) {
   if (journeyConnects(journey, legs)) return { legs: journey.legs.concat(legs), current: journey.current };
   return startJourney(legs);
 }
+// Retire un ARRÊT du parcours (stopIndex indexe les STATIONS, pas les jambes).
+// `bridge` = jambe de remplacement pour un arrêt du MILIEU, calculée par l'appelant depuis le
+// marché (elle reconnecte stations[stopIndex-1] à stations[stopIndex+1]) ; ignorée aux extrémités.
+// Renvoie { legs, current, removedFrom, removedCount, insertedCount }, ou null si le parcours
+// devient vide. Les trois derniers champs servent à réindexer les manifestes édités par jambe.
+export function removeJourneyStop(journey, stopIndex, bridge) {
+  const legs = journey.legs;
+  let newLegs, removedFrom, removedCount, insertedCount = 0;
+  if (stopIndex <= 0) {
+    newLegs = legs.slice(1); removedFrom = 0; removedCount = 1;          // 1er arrêt -> 1re jambe
+  } else if (stopIndex >= legs.length) {
+    newLegs = legs.slice(0, -1); removedFrom = legs.length - 1; removedCount = 1; // dernier arrêt
+  } else {
+    // Arrêt du milieu : deux jambes disparaissent, remplacées par une seule (le pont).
+    newLegs = [...legs.slice(0, stopIndex - 1), bridge, ...legs.slice(stopIndex + 1)];
+    removedFrom = stopIndex - 1; removedCount = 2; insertedCount = 1;
+  }
+  if (!newLegs.length) return null;
+  // `current` indexe les STATIONS. Retirer l'arrêt `stopIndex` fait reculer d'un cran TOUTES les
+  // stations situées à partir de lui : sans ce décalage, le marqueur « je suis ici » sautait à la
+  // station suivante, `currentLeg` devenait null (parcours cru terminé) et « En route » se
+  // préremplissait avec le mauvais terminal de départ.
+  const c = journey.current >= stopIndex ? journey.current - 1 : journey.current;
+  return {
+    legs: newLegs,
+    current: Math.max(0, Math.min(c, newLegs.length)),
+    removedFrom, removedCount, insertedCount,
+  };
+}
+
 // Déplace la position courante (bornée à 0..legs.length).
 export function setJourneyPosition(journey, i) {
   return { ...journey, current: Math.max(0, Math.min(journey.legs.length, i | 0)) };
@@ -770,10 +833,23 @@ export function decodeJourney(str) {
     const p = JSON.parse(str);
     if (!p) return null;
     // Parcours « de zéro » : juste un point de départ.
-    if (Array.isArray(p.s) && p.s[0]) return { legs: [], current: 0, start: { name: p.s[0], system: p.s[1] } };
+    if (Array.isArray(p.s) && typeof p.s[0] === "string" && p.s[0]) {
+      return { legs: [], current: 0, start: { name: p.s[0], system: String(p.s[1] ?? "") } };
+    }
+    // Le hash est PARTAGEABLE : son contenu vient donc potentiellement d'un tiers. On ne validait
+    // que la forme du conteneur, si bien qu'un tuple vide ou mal typé produisait une jambe dont
+    // `from`/`system` valaient `undefined` -> TypeError au rendu, et l'app entière tombait.
     if (!Array.isArray(p.l) || !p.l.length) return null;
-    const legs = p.l.map((a) => ({ from: a[0], fromSystem: a[1], to: a[2], toSystem: a[3], commodity: a[4], buyPrice: a[5], sellPrice: a[6], margin: a[7] }));
-    return { legs, current: Math.max(0, Math.min(legs.length, p.c | 0)) };
+    const jambeValide = (a) => Array.isArray(a) && typeof a[0] === "string" && a[0] && typeof a[2] === "string" && a[2];
+    if (!p.l.every(jambeValide)) return null;
+    const legs = p.l.map((a) => ({
+      from: a[0], fromSystem: String(a[1] ?? ""), to: a[2], toSystem: String(a[3] ?? ""),
+      commodity: String(a[4] ?? ""),
+      buyPrice: Number(a[5]) || 0, sellPrice: Number(a[6]) || 0, margin: Number(a[7]) || 0,
+    }));
+    // `| 0` tronquait sur 32 bits : un `c` géant devenait négatif au lieu d'être borné.
+    const c = Math.trunc(Number(p.c)) || 0;
+    return { legs, current: Math.max(0, Math.min(legs.length, c)) };
   } catch {
     return null;
   }

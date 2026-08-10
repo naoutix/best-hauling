@@ -320,7 +320,7 @@ test("Compagnon de voyage : éditer le manifeste d'une jambe (SCU) persiste hors
   await page.locator("#journeyCard .jman-qty").first().blur();
   await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(1);  // ✎ = manifeste personnalisé
   // Les édits sont en localStorage, pas dans l'URL (lien léger).
-  expect(await page.evaluate(() => localStorage.getItem("best-hauling-journey-edits"))).toBeTruthy();
+  expect(await page.evaluate(() => localStorage.getItem("best-hauling-journey-edits-v2"))).toBeTruthy();
   expect(page.url()).not.toContain("Aluminum");
   await page.reload();
   await expect(page.locator("#journeyCard .jcargo-item").first()).toBeVisible({ timeout: 8000 });
@@ -359,7 +359,7 @@ test("Compagnon de voyage : libérer des SCU dans une jambe propose de quoi remp
   await expect(added.locator(".jman-qty")).toHaveValue(units);
   // La cargaison de la jambe (repliée) reflète l'ajout, et l'édit est persisté hors URL.
   await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(1);
-  expect(await page.evaluate(() => localStorage.getItem("best-hauling-journey-edits"))).toContain(name);
+  expect(await page.evaluate(() => localStorage.getItem("best-hauling-journey-edits-v2"))).toContain(name);
 });
 
 // Encode la décision de conception : le rafraîchissement est incrémental (handler `input`), pas un
@@ -631,4 +631,55 @@ test("les filtres à saisie libre sont débouncés : un mot tapé ne re-rend qu'
   await expect(page).toHaveURL(/search=Laranite/);
   // Sans debounce : 8 reconstructions complètes de la table (528 Ko de HTML chacune).
   expect(await page.evaluate(() => window.__rendus)).toBeLessThanOrEqual(2);
+});
+
+// ---------- Manifestes de jambe : intention persistée, pas instantané (#40, #42, #48) ----------
+
+// Ouvre l'éditeur d'une jambe SANS y toucher (le helper ci-dessus, lui, ajuste les SCU et bascule
+// donc la jambe en « éditée » — ce qu'on veut justement éviter ici).
+async function openLegEditorPristine(page) {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jcargo-item").first()).toBeVisible({ timeout: 8000 });
+  await page.locator("#journeyCard .jleg-head").first().click();
+  await expect(page.locator("#journeyCard .jman")).toBeVisible();
+}
+
+test("jambe : un ajout refusé pour doublon ne bascule pas la jambe en « éditée »", async ({ page }) => {
+  await openLegEditorPristine(page);
+  await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(0); // manifeste encore optimal
+  const deja = (await page.locator("#journeyCard .jman-line .jman-name").first().innerText()).trim().split("\n")[0];
+
+  await page.fill("#journeyCard .jman-add-input", deja);
+  await page.click("#journeyCard .jman-add-btn");
+
+  // Rien n'a été ajouté ET la jambe n'est pas devenue « personnalisée » : sans le correctif,
+  // materializeLeg s'exécutait AVANT la garde et gelait le manifeste sur les prix du jour.
+  await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.getItem("best-hauling-journey-edits-v2"))).toBeFalsy();
+});
+
+test("jambe : seule l'intention est persistée, jamais un instantané de marché", async ({ page }) => {
+  await openLegEditorWithFreeSpace(page);
+  await page.locator("#journeyCard .jman-qty").first().fill("3");
+  await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(1);
+
+  const stock = JSON.parse(await page.evaluate(() => localStorage.getItem("best-hauling-journey-edits-v2")));
+  const lignes = Object.values(stock)[0];
+  expect(lignes.length).toBeGreaterThan(0);
+  // Ni buyPrice, ni sellPrice, ni margin, ni buyUpdated : ces champs se figeaient pour toujours
+  // et la carte Voyage continuait d'annoncer un profit calculé sur des prix périmés.
+  for (const l of lignes) expect(Object.keys(l).sort()).toEqual(["name", "units"]);
+  // La clé porte le RANG de la jambe : deux jambes identiques ne partagent plus un manifeste.
+  expect(Object.keys(stock)[0]).toMatch(/^\d+\|/);
+});
+
+test("effacer le voyage purge les manifestes édités", async ({ page }) => {
+  await openLegEditorWithFreeSpace(page);
+  await page.locator("#journeyCard .jman-qty").first().fill("3");
+  await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(1);
+
+  await page.locator("#journeyClear").click();
+  // Sans la purge, ces éditions ressortaient sur un parcours ULTÉRIEUR passant par les mêmes
+  // terminaux, badge ✎ compris, alors que l'utilisateur n'avait rien édité dans ce voyage-là.
+  expect(await page.evaluate(() => localStorage.getItem("best-hauling-journey-edits-v2"))).toBe("{}");
 });
