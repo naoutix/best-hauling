@@ -432,3 +432,46 @@ test("Compagnon de voyage : démarrer un voyage « de zéro » (sans passer par 
   await page.click("#journeyAddBtn");
   await expect(page.locator("#journeyCard .jstep")).toHaveCount(2);
 });
+
+test("mode Butin : le board expose les commodités qu'on ne peut pas acheter", async ({ page }) => {
+  await page.click("#viewCommodities");
+  await expect(page.locator("#commGrid .comm-tile").first()).toBeVisible();
+  // Marché : que de l'échangeable, donc aucune tuile « introuvable à l'achat ».
+  expect(await page.locator("#commGrid .comm-tile.sell-only").count()).toBe(0);
+  const nMarket = await page.locator("#commGrid .comm-tile").count();
+
+  await page.click('#commBoardModes button[data-board="loot"]');
+  expect(await page.locator("#commGrid .comm-tile").count()).toBeGreaterThan(nMarket);
+  expect(await page.locator("#commGrid .comm-tile.sell-only").count()).toBeGreaterThan(0);
+  await expect(page.locator('#commSortModes button[data-sort="margin"]')).toHaveText("Revente");
+
+  await page.click('#commBoardModes button[data-board="market"]');
+  expect(await page.locator("#commGrid .comm-tile.sell-only").count()).toBe(0);
+});
+
+test("mode Butin : le détail ne montre que la revente", async ({ page }) => {
+  await page.click("#viewCommodities");
+  await page.click('#commBoardModes button[data-board="loot"]');
+  await page.locator("#commGrid .comm-tile.sell-only").first().click();
+  await expect(page.locator("#commDetail .loot-value")).toBeVisible();   // prix au SCU en tête
+  await expect(page.locator("#commDetail .comm-col")).toHaveCount(1);    // une seule colonne
+  await expect(page.locator("#commDetail")).toContainText("Où l'écouler");
+  await expect(page.locator("#commDetail")).not.toContainText("Où acheter");
+
+  // Retour en Marché : la sélection « butin » n'existe plus, le rendu retombe sur la 1re tuile.
+  await page.click('#commBoardModes button[data-board="market"]');
+  await expect(page.locator("#commDetail .comm-col")).toHaveCount(2);
+  await expect(page.locator("#commDetail .loot-value")).toHaveCount(0);
+});
+
+test("le mode Butin survit au rechargement (permalien)", async ({ page }) => {
+  await page.click("#viewCommodities");
+  await page.click('#commBoardModes button[data-board="loot"]');
+  await expect(page.locator('#commBoardModes button[data-board="loot"]')).toHaveClass(/active/);
+
+  await page.reload();
+  await expect(page.locator("#commGrid .comm-tile").first()).toBeVisible();
+  await expect(page.locator('#commBoardModes button[data-board="loot"]')).toHaveClass(/active/);
+  await expect(page.locator('#commSortModes button[data-sort="margin"]')).toHaveText("Revente");
+  expect(await page.locator("#commGrid .comm-tile.sell-only").count()).toBeGreaterThan(0);
+});
