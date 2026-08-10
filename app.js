@@ -1587,10 +1587,26 @@ function commodityTileHTML(c) {
     </button>`;
 }
 
-// Détail d'une commodité : tous ses points d'achat (moins cher d'abord) et de vente (mieux payé d'abord).
+// Mode Butin : la réponse directe à « ça vaut combien ». `p.sells` est déjà trié par prix
+// décroissant, le meilleur point est donc en tête. Prix au SCU seulement — le joueur multiplie
+// par ce qu'il a trouvé, on ne suppose pas une soute pleine.
+function lootValueHTML(p) {
+  const best = p.sells[0];
+  if (!best) return '<span class="loot-value muted">aucun point de vente</span>';
+  return `<span class="loot-value"><b>${fmt(best.price)}</b> aUEC/SCU<span class="loot-where">au mieux — ${esc(best.terminal)} (${esc(best.system)})</span></span>`;
+}
+
+// Détail d'une commodité : tous ses points d'achat (moins cher d'abord) et de vente (mieux payé
+// d'abord). En mode Butin, l'achat n'a pas de sens : on ne garde que « où l'écouler ».
 function paintCommodityDetail() {
   const box = $("commDetail");
-  if (!commSelected) { box.innerHTML = '<p class="manifest-hint">Sélectionne une commodité (ligne du tableau ou champ « Commodité ») pour voir tous ses points d\'achat et de vente.</p>'; return; }
+  const loot = commBoard === "loot";
+  if (!commSelected) {
+    box.innerHTML = loot
+      ? '<p class="manifest-hint">Sélectionne une commodité pour savoir combien elle vaut au SCU et où l\'écouler.</p>'
+      : '<p class="manifest-hint">Sélectionne une commodité (ligne du tableau ou champ « Commodité ») pour voir tous ses points d\'achat et de vente.</p>';
+    return;
+  }
   const p = commodityPoints(MARKET, commSelected, readFilters()); // exclut les avant-postes si le filtre est actif
   if (!p) { box.innerHTML = ""; return; }
   const buyRow = (b) => `<tr><td class="loc"><div>${esc(b.terminal)}${sysBadge(b.system)}${outpostTag(b.outpost)}</div><div class="loc-sub">${esc(b.planet)}</div></td><td class="num">${fmt(b.price)}</td><td class="num">${statusDot(b.status, "buy")} ${fmt(b.stock)}</td><td>${freshChip(b.updated)}</td></tr>`;
@@ -1598,12 +1614,17 @@ function paintCommodityDetail() {
   const table = (rows, head, mapper) => rows.length
     ? `<table class="comm-points"><thead><tr><th>Terminal</th><th class="num">Prix</th><th class="num">${head}</th><th>Relevé</th></tr></thead><tbody>${rows.map(mapper).join("")}</tbody></table>`
     : '<p class="muted">Aucun point.</p>';
+  const cols = loot
+    ? `<div class="comm-cols one">
+         <div class="comm-col"><h4>◈ Où l'écouler <span class="muted">(${p.sells.length} · mieux payé d'abord)</span></h4>${table(p.sells, "Demande", sellRow)}</div>
+       </div>`
+    : `<div class="comm-cols">
+         <div class="comm-col"><h4>◈ Où acheter <span class="muted">(${p.buys.length} · moins cher d'abord)</span></h4>${table(p.buys, "Stock", buyRow)}</div>
+         <div class="comm-col"><h4>◈ Où vendre <span class="muted">(${p.sells.length} · mieux payé d'abord)</span></h4>${table(p.sells, "Demande", sellRow)}</div>
+       </div>`;
   box.innerHTML =
-    `<div class="comm-detail-head">${commodityIcon(p.kind)}<span class="comm-detail-title">${p.code ? `<b class="comm-code">${esc(p.code)}</b> · ` : ""}${esc(p.name)}${illegalTag(p.illegal)}</span></div>
-     <div class="comm-cols">
-       <div class="comm-col"><h4>◈ Où acheter <span class="muted">(${p.buys.length} · moins cher d'abord)</span></h4>${table(p.buys, "Stock", buyRow)}</div>
-       <div class="comm-col"><h4>◈ Où vendre <span class="muted">(${p.sells.length} · mieux payé d'abord)</span></h4>${table(p.sells, "Demande", sellRow)}</div>
-     </div>`;
+    `<div class="comm-detail-head">${commodityIcon(p.kind)}<span class="comm-detail-title">${p.code ? `<b class="comm-code">${esc(p.code)}</b> · ` : ""}${esc(p.name)}${illegalTag(p.illegal)}</span>${loot ? lootValueHTML(p) : ""}</div>
+     ${cols}`;
 }
 
 // Textes d'aide : le board ne répond pas à la même question selon le mode.

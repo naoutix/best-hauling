@@ -699,6 +699,11 @@ input.mqty-input.over-stock { color: var(--warn); border-color: var(--warn); box
 .comm-detail-title { font-family: var(--display); font-size: 15px; font-weight: 700; color: #fff; }
 .comm-detail-title .comm-code { font-family: var(--mono); font-size: 13px; }
 .comm-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+.comm-cols.one { grid-template-columns: 1fr; } /* mode Butin : pas de colonne « où acheter » */
+/* Mode Butin : la réponse directe — combien vaut 1 SCU, et au meilleur endroit. */
+.loot-value { margin-left: auto; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--acc); }
+.loot-value b { font-size: 16px; color: #fff; }
+.loot-where { display: block; font-family: var(--font); font-size: 10.5px; color: var(--muted); letter-spacing: 0.3px; }
 .comm-col h4 { margin: 0 0 8px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--acc); font-weight: 600; }
 .comm-col h4 .muted { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
 .comm-points { width: 100%; border-collapse: collapse; font-size: 12px; }
