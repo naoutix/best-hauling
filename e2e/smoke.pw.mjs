@@ -475,3 +475,53 @@ test("le mode Butin survit au rechargement (permalien)", async ({ page }) => {
   await expect(page.locator('#commSortModes button[data-sort="margin"]')).toHaveText("Revente");
   expect(await page.locator("#commGrid .comm-tile.sell-only").count()).toBeGreaterThan(0);
 });
+
+// ---------- Régressions du mode Butin (PR #37) ----------
+
+test("Butin : deux tuiles ne portent jamais la même étiquette (code UEX non unique)", async ({ page }) => {
+  // UEX attribue le même code à des commodités distinctes (COPP = Copper ET Copper (Ore)).
+  // Invariant indépendant des données : une étiquette de tuile identifie sa commodité.
+  await page.click("#viewCommodities");
+  await page.click('#commBoardModes button[data-board="loot"]');
+  const labels = await page.locator("#commGrid .comm-tile .tile-code").allInnerTexts();
+  expect(labels.length).toBeGreaterThan(50);
+  expect(new Set(labels).size).toBe(labels.length);
+});
+
+test("Butin : une commodité au code ambigu reste atteignable par son nom", async ({ page }) => {
+  await page.click("#viewCommodities");
+  await page.click('#commBoardModes button[data-board="loot"]');
+  // Prend une commodité de butin et vérifie que cliquer sa tuile ouvre BIEN la sienne.
+  const tile = page.locator("#commGrid .comm-tile.sell-only").first();
+  const name = await tile.getAttribute("data-name");
+  await tile.click();
+  await expect(page.locator("#commDetail .comm-detail-title")).toContainText(name);
+});
+
+test("Butin : ajouter un fret trouvé n'invente ni la quantité ni un achat sur place", async ({ page }) => {
+  // Récupère une commodité réellement introuvable à l'achat (tuile pointillée du board Butin).
+  await page.click("#viewCommodities");
+  await page.click('#commBoardModes button[data-board="loot"]');
+  const loot = await page.locator("#commGrid .comm-tile.sell-only").first().getAttribute("data-name");
+  expect(loot).toBeTruthy();
+
+  // Manifeste réel via ▶ (garantit des lignes), puis ajout libre de ce fret.
+  await page.click("#viewRoutes");
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await page.click("#viewEnroute");
+  await expect(page.locator("#manifest .mqty-input").first()).toBeVisible({ timeout: 8000 });
+  await page.fill("#manifestAddInput", loot);
+  await page.click("#manifestAddBtn");
+
+  const line = page.locator("#manifest .mline.acquired");
+  await expect(line).toHaveCount(1);
+  // 1 SCU par défaut : on ne remplit pas la soute d'un fret qu'on ne peut pas acheter ici.
+  await expect(line.locator(".mqty-input")).toHaveValue("1");
+  // Le côté achat est balisé, plus chiffré à 0 comme un vrai relevé UEX. (La ligne peut être
+  // AUSSI « carry » si ce butin n'est pas vendable à l'arrivée : les deux tags coexistent.)
+  const prix = (await line.locator(".mprice").innerText()).trim();
+  expect(prix).toContain("acquis ailleurs");
+  expect(prix.startsWith("0")).toBe(false);
+  // Le stock d'un fret introuvable sur place n'est pas un chiffre corrigeable.
+  await expect(line.locator(".mstock")).toContainText("stock —");
+});

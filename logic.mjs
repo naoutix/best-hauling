@@ -227,16 +227,23 @@ export function manifestTotals(lines) {
 
 // Unités pour un ajout LIBRE au manifeste (commodité choisie à la main, éventuellement carry-only) :
 // remplit l'espace restant, plafonné par le stock connu, mais AU MOINS 1 SCU (ajout volontaire).
-// cargoLeft non fini (soute non bornée) -> 1 SCU. Comportement partagé En route / jambe de voyage.
+// Comportement partagé En route / jambe de voyage. Deux cas ne remplissent PAS la soute :
+//   - cargoLeft non fini (soute désactivée) : on ne sait pas ce qu'on peut emporter ;
+//   - stock non fini : rien à acheter sur place (butin trouvé ailleurs) — proposer une soute pleine
+//     d'un fret introuvable au terminal de départ chiffrerait un profit qui n'existe pas.
+// Dans les deux cas -> 1 SCU, et l'utilisateur ajuste la quantité à ce qu'il a réellement.
 export function freeAddUnits(stock, cargoLeft) {
-  let u = Number.isFinite(cargoLeft) ? Math.max(0, cargoLeft) : 0;
-  if (Number.isFinite(stock)) u = Math.min(u, stock);
-  return Math.max(1, u);
+  if (!Number.isFinite(stock)) return 1;
+  const u = Number.isFinite(cargoLeft) ? Math.max(0, cargoLeft) : 0;
+  return Math.max(1, Math.min(u, stock));
 }
 
 // Assemble une ligne de manifeste depuis une commodité `c` et ses valeurs résolues (corrections
 // comprises). `buy`/`sell` = { price, vol, ovol } résolus, ou null si le point n'existe pas de ce
-// côté. Sans vente (`sell` null) -> ligne « carry-only » : chargée pour être écoulée ailleurs.
+// côté. Les deux côtés manquants sont balisés SYMÉTRIQUEMENT, sans quoi le rendu affiche un prix
+// d'achat « 0 » indiscernable d'un vrai relevé UEX :
+//   - sans vente (`sell` null) -> `carry` : chargée ici pour être écoulée ailleurs ;
+//   - sans achat (`buy` null)  -> `acquired` : déjà en soute (butin, minage, salvage), coût nul.
 export function manifestLine(c, buy, sell, buyUpdated, sellUpdated, units, cap) {
   const buyPrice = buy ? buy.price : 0;
   return {
@@ -247,7 +254,7 @@ export function manifestLine(c, buy, sell, buyUpdated, sellUpdated, units, cap) 
     demandKnown: sell ? sell.ovol : false,
     margin: sell ? sell.price - buyPrice : 0,
     buyUpdated: buyUpdated || 0, sellUpdated: sellUpdated || 0,
-    units, cap, carry: !sell,
+    units, cap, carry: !sell, acquired: !buy,
   };
 }
 
@@ -627,6 +634,32 @@ export function compactValue(n) {
   if (a >= 1e6) return Math.round(n / 1e5) / 10 + "M";
   if (a >= 1e3) return Math.round(n / 100) / 10 + "K";
   return String(Math.round(n));
+}
+
+// ---------- Résolution d'une commodité (le code UEX n'est PAS une clé unique) ----------
+// Piège : UEX attribue le même code à des commodités DISTINCTES — `COPP` désigne à la fois
+// « Copper » (échangeable) et « Copper (Ore) » (butin, aucun point d'achat). Une recherche par
+// `find()` sur nom-ou-code renvoyait donc toujours la première et rendait l'autre inatteignable.
+// D'où : le nom exact prime, et un code ambigu ne résout RIEN plutôt que d'en désigner une au hasard.
+export function resolveCommodity(commodities, query) {
+  const q = String(query ?? "").trim().toLowerCase();
+  if (!q) return null;
+  const byName = commodities.find((c) => c.name.toLowerCase() === q);
+  if (byName) return byName;
+  const byCode = commodities.filter((c) => c.code && c.code.toLowerCase() === q);
+  return byCode.length === 1 ? byCode[0] : null;
+}
+
+// Codes portés par PLUSIEURS commodités de la liste. Le board n'affiche le code seul que s'il
+// identifie sa commodité : sinon deux tuiles seraient rigoureusement indiscernables à l'écran.
+export function ambiguousCodes(rows) {
+  const seen = new Set(), dup = new Set();
+  for (const r of rows) {
+    if (!r.code) continue;
+    if (seen.has(r.code)) dup.add(r.code);
+    else seen.add(r.code);
+  }
+  return dup;
 }
 
 // ---------- Libellé canonique d'une station « Nom — Système » ----------
