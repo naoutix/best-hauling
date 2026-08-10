@@ -10,7 +10,7 @@ import {
   profitPerHour, rawScoreOf, routePasses, loopPasses,
   routeMetrics, loopMetrics, dealFrom, enRouteDeals, bestManifest, buildChainAdjacency,
   manifestsFrom, multiTrips, tripMetrics, legFromTrip,
-  commoditySummaries, commodityPoints, compactValue,
+  commoditySummaries, commodityPoints, compactValue, valueTiers,
   legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   encodeJourney, decodeJourney,
@@ -840,6 +840,42 @@ test("compactValue : notation compacte K/M", () => {
   assert.equal(compactValue(540), "540");
   assert.equal(compactValue(0), "0");
   assert.equal(compactValue(null), "—");
+});
+
+// ---------- Heatmap par rang (mode Butin) ----------
+const rowsOf = (vals) => vals.map((v, i) => ({ name: "C" + i, bestSell: v }));
+
+test("valueTiers répartit par rang : 15 % / 25 % / 30 % / reste", () => {
+  const t = valueTiers(rowsOf([100, 90, 80, 70, 60, 50, 40, 30, 20, 10]));
+  assert.deepEqual([...t.values()], [
+    "t-hot", "t-hot", "t-warm", "t-warm", "t-mid", "t-mid", "t-mid", "t-low", "t-low", "t-low",
+  ]);
+});
+
+test("valueTiers résiste aux valeurs extrêmes (Saldynium à 34 M vs Iron Ore à 1 000)", () => {
+  // C'est tout l'intérêt du rang : une échelle linéaire écraserait les trois derniers en t-low.
+  const t = valueTiers(rowsOf([34_000_000, 1000, 900, 800]));
+  assert.deepEqual([...t.values()], ["t-hot", "t-warm", "t-mid", "t-low"]);
+});
+
+test("valueTiers est indépendant de l'ordre d'affichage (tri par code ≠ recoloration)", () => {
+  const desc = valueTiers([{ name: "A", bestSell: 300 }, { name: "B", bestSell: 200 }, { name: "C", bestSell: 100 }]);
+  const asc = valueTiers([{ name: "C", bestSell: 100 }, { name: "B", bestSell: 200 }, { name: "A", bestSell: 300 }]);
+  assert.equal(asc.get("A"), desc.get("A"));
+  assert.equal(asc.get("B"), desc.get("B"));
+  assert.equal(asc.get("C"), desc.get("C"));
+});
+
+test("valueTiers : valeur absente -> t-none, et elle ne décale pas les rangs", () => {
+  const t = valueTiers([{ name: "Vide", bestSell: null }, ...rowsOf([100, 50])]);
+  assert.equal(t.get("Vide"), "t-none");
+  assert.equal(t.get("C0"), "t-hot");
+  assert.equal(t.get("C1"), "t-mid"); // 2 valeurs : rangs 0 (0 %) et 1 (50 %)
+});
+
+test("valueTiers : une seule commodité est en tête", () => {
+  assert.equal(valueTiers(rowsOf([42])).get("C0"), "t-hot");
+  assert.equal(valueTiers([]).size, 0);
 });
 
 test("enRouteDeals : destTerminal force le terminal d'arrivée", () => {

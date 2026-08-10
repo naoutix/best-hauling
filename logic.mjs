@@ -595,6 +595,28 @@ export function commodityPoints(market, name, f = {}) {
   return { name: c.name, code: c.code || "", kind: c.kind, illegal: c.illegal, buys, sells };
 }
 
+// Paliers de heatmap par RANG, pour le mode « Butin ».
+// Les prix de revente s'étalent sur cinq ordres de grandeur (Saldynium à 34 M aUEC/SCU contre
+// Iron Ore à 1 000) : une échelle relative au maximum, comme `marginTier`, tasserait tout le
+// board dans le palier le plus bas sauf deux tuiles. Le rang, lui, colore toujours.
+// Le classement se fait sur la VALEUR, jamais sur l'ordre d'affichage : trier par code A→Z ne
+// doit pas recolorer le board. À valeur égale, l'ordre est celui du tri (stable).
+export function valueTiers(rows, key = "bestSell") {
+  const tiers = new Map();
+  const ranked = [];
+  for (const r of rows) {
+    if (r[key] == null) tiers.set(r.name, "t-none"); // rien à classer -> hors barème
+    else ranked.push(r);
+  }
+  ranked.sort((a, b) => b[key] - a[key]);
+  const n = ranked.length;
+  ranked.forEach((r, i) => {
+    const q = i / n; // part des commodités strictement mieux payées
+    tiers.set(r.name, q < 0.15 ? "t-hot" : q < 0.40 ? "t-warm" : q < 0.70 ? "t-mid" : "t-low");
+  });
+  return tiers;
+}
+
 // Notation compacte K/M pour les tuiles du board (ex. 9600 -> "9.6K", 1_600_000 -> "1.6M").
 export function compactValue(n) {
   if (n == null || !isFinite(n)) return "—";
