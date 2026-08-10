@@ -1374,7 +1374,8 @@ const STATE_CHECKS = ["useCargo", "useBudget", "sameSystem", "noOutpost", "legal
 let restoring = false; // évite de resauver pendant qu'on applique un état
 
 function collectState() {
-  const s = { v: view, sk: sortKey, sd: sortDir, lk: loopSortKey, ld: loopSortDir };
+  // `cb` : board des commodités. Vide en mode Marché (défaut) -> encodeState l'omet, l'URL reste courte.
+  const s = { v: view, sk: sortKey, sd: sortDir, lk: loopSortKey, ld: loopSortDir, cb: commBoard === "loot" ? "loot" : "" };
   STATE_FIELDS.forEach((id) => (s[id] = $(id).value));
   STATE_CHECKS.forEach((id) => (s[id] = $(id).checked ? 1 : 0));
   if (JOURNEY) s.j = encodeJourney(JOURNEY); // compagnon de voyage (partageable)
@@ -1415,9 +1416,11 @@ function applyState(s) {
   if (safeKey(s.sk)) { sortKey = s.sk; sortDir = Number(s.sd) === 1 ? 1 : -1; }
   if (safeKey(s.lk)) { loopSortKey = s.lk; loopSortDir = Number(s.ld) === 1 ? 1 : -1; }
   if (["routes", "loops", "enroute", "chain", "corrections", "commodities"].includes(s.v)) view = s.v;
+  if (s.cb === "loot") commBoard = "loot";
   if (s.j) JOURNEY = decodeJourney(s.j); // compagnon de voyage restauré (les champs sont déjà repris ci-dessus)
   applySortIndicators();
   syncToggles();
+  syncCommBoardUI(); // bouton actif + libellé « Revente » restaurés avant le premier rendu
   restoring = false;
 }
 
