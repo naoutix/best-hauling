@@ -2,6 +2,7 @@
 // Lancer : `node --test` (ou `npm test`).
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   tripMinutes, loopMinutes, ageDays, pairAge, freshnessFactor, availabilityFactor, tighterVolume,
   normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits, scuBoxes, bestChain,
@@ -1342,4 +1343,31 @@ test("legFromTrip : jambe de voyage depuis un trajet multi (commodité de tête)
   assert.equal(leg.to, "B");
   assert.equal(leg.commodity, "Gold");
   assert.equal(leg.margin, 45);            // marge moyenne du chargement
+});
+
+// ---------- Résolution confrontée aux VRAIES données ----------
+// Le doublon de code COPP (Copper / Copper (Ore)) est entré dans data/market.json et a traversé la
+// CI au vert, parce que toutes les fixtures de ce fichier tiennent en 1 à 3 commodités — un doublon
+// y est structurellement impossible. Ces deux tests confrontent la résolution à l'instantané réel.
+const REAL = JSON.parse(readFileSync(new URL("./data/market.json", import.meta.url), "utf8"));
+
+test("resolveCommodity : toute commodité réelle est atteignable par son NOM", () => {
+  // L'invariant que le doublon COPP avait cassé : « Copper (Ore) » était introuvable.
+  assert.ok(REAL.commodities.length > 50, "instantané trop petit pour être significatif");
+  for (const c of REAL.commodities) {
+    const got = resolveCommodity(REAL.commodities, c.name);
+    assert.ok(got, `${c.name} introuvable par son nom`);
+    assert.equal(got.name, c.name);
+  }
+});
+
+test("resolveCommodity : sur les vraies données, un code résout SSI il est unique", () => {
+  const counts = new Map();
+  for (const c of REAL.commodities) if (c.code) counts.set(c.code, (counts.get(c.code) || 0) + 1);
+  assert.ok(counts.size > 50, "instantané trop petit pour être significatif");
+  for (const [code, n] of counts) {
+    const got = resolveCommodity(REAL.commodities, code);
+    if (n === 1) assert.equal(got && got.code, code, `code unique ${code} non résolu`);
+    else assert.equal(got, null, `code ambigu ${code} (${n} commodités) a désigné « ${got && got.name} »`);
+  }
 });

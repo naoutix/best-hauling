@@ -482,7 +482,11 @@ test("Butin : deux tuiles ne portent jamais la même étiquette (code UEX non un
   // UEX attribue le même code à des commodités distinctes (COPP = Copper ET Copper (Ore)).
   // Invariant indépendant des données : une étiquette de tuile identifie sa commodité.
   await page.click("#viewCommodities");
+  // `allInnerTexts()` n'attend RIEN : sans ces deux attentes il lit la grille avant l'arrivée de
+  // market.json et le test devient fragile sous charge (il passait seul, échouait en parallèle).
+  await expect(page.locator("#commGrid .comm-tile").first()).toBeVisible({ timeout: 10000 });
   await page.click('#commBoardModes button[data-board="loot"]');
+  await expect(page.locator("#commGrid .comm-tile.sell-only").first()).toBeVisible({ timeout: 10000 });
   const labels = await page.locator("#commGrid .comm-tile .tile-code").allInnerTexts();
   expect(labels.length).toBeGreaterThan(50);
   expect(new Set(labels).size).toBe(labels.length);
@@ -524,4 +528,64 @@ test("Butin : ajouter un fret trouvé n'invente ni la quantité ni un achat sur 
   expect(prix.startsWith("0")).toBe(false);
   // Le stock d'un fret introuvable sur place n'est pas un chiffre corrigeable.
   await expect(line.locator(".mstock")).toContainText("stock —");
+});
+
+// ---------- Chargement du marché : l'échec réseau ne doit pas être collant (#38) ----------
+
+// Le service worker est BLOQUÉ ici : on teste la logique de chargement d'app.js, pas le cache.
+// (page.route n'intercepte de toute façon pas les requêtes émises par un service worker.)
+test.describe("chargement du marché", () => {
+  test.use({ serviceWorkers: "block" });
+
+
+  test("marché indisponible : l'échec n'est pas mémorisé et l'action suivante réessaie", async ({ page }) => {
+    let hits = 0;
+    await page.route("**/data/market.json", (route) => {
+      hits++;
+      return hits === 1 ? route.abort("failed") : route.continue(); // 1re tentative KO, puis réseau OK
+    });
+
+    await page.click("#viewEnroute"); // 1er besoin du marché -> échoue
+    await expect(page.locator("#toast")).toContainText("Marché indisponible");
+    expect(hits).toBe(1);
+
+    // Le repli vide n'est pas mémorisé : revenir sur la vue relance un chargement, qui aboutit.
+    await page.click("#viewRoutes");
+    await page.click("#viewEnroute");
+    await expect(page.locator("#originList option").first()).toBeAttached({ timeout: 8000 });
+    expect(hits).toBeGreaterThan(1);
+  });
+
+  test("marché : une salve de frappes pendant le chargement ne déclenche qu'un seul fetch", async ({ page }) => {
+    let hits = 0;
+    await page.route("**/data/market.json", async (route) => {
+      hits++;
+      await new Promise((r) => setTimeout(r, 800)); // chargement lent : laisse le temps de taper
+      return route.continue();
+    });
+
+    await page.click("#viewCommodities");
+    for (const c of ["l", "a", "r", "a"]) await page.type("#search", c, { delay: 20 });
+    await expect(page.locator("#commGrid .comm-tile").first()).toBeVisible({ timeout: 15000 });
+    expect(hits).toBe(1); // la promesse en vol est mémorisée, pas re-déclenchée à chaque frappe
+  });
+});
+
+// ---------- Service worker : le cache doit réellement se remplir (#66) ----------
+
+test("service worker : les données atterrissent vraiment dans le cache", async ({ page }) => {
+  // Régression : `putInCache` appelait `res.clone()` DANS le `.then()` de `caches.open()`, donc
+  // après que la page ait consommé le corps -> « Response body is already used ». Le cache ne
+  // contenait que les 8 fichiers précachés à l'installation : le repli hors-ligne, qui est toute
+  // la raison d'être du mode « réseau d'abord, cache en repli », n'avait jamais rien à servir.
+  await page.reload(); // 1re visite : le SW s'installe ; il ne contrôle la page qu'ensuite
+  await expect(page.locator("#rows tr").first()).toBeVisible();
+
+  const dataEnCache = async () => page.evaluate(async () => {
+    const keys = await caches.keys();
+    if (!keys.length) return [];
+    const c = await caches.open(keys[0]);
+    return (await c.keys()).map((r) => new URL(r.url).pathname).filter((p) => p.includes("/data/"));
+  });
+  await expect.poll(dataEnCache, { timeout: 15000 }).toContain("/data/routes.json");
 });

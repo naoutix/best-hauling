@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { normalizeKind, routesForCommodity, buildBestLegs, buildMarket } from "./build-data.mjs";
+import { readFileSync } from "node:fs";
 
 test("normalizeKind corrige la casse, les fautes de frappe et les valeurs vides", () => {
   assert.equal(normalizeKind("Minteral"), "mineral");
@@ -154,4 +155,55 @@ test("une commodité « vente seule » ne produit ni route ni segment (inerte po
   assert.deepEqual(routesForCommodity(c), []);
   const legs = buildBestLegs(new Map([[1, c]]));
   assert.equal(legs.size, 0);
+});
+
+// ---------- Invariants de l'instantané data/market.json réellement produit ----------
+// Les tests ci-dessus n'utilisent que des fixtures écrites à la main (1 à 3 commodités) : un défaut
+// de FORME du fichier produit — tuple tronqué, index de terminal hors bornes, `undefined` là où
+// logic.mjs attend `null` — leur est structurellement invisible. Ce test ouvre le fichier versionné
+// et vérifie ce dont app.js et logic.mjs dépendent réellement.
+// Il lit l'INSTANTANÉ commité, pas des données fraîches : `node --test` tourne avant
+// `npm run build` dans update-data.yml, donc il ne peut pas bloquer un déploiement sur un aléa UEX.
+const MARKET = JSON.parse(readFileSync(new URL("../data/market.json", import.meta.url), "utf8"));
+
+test("data/market.json : forme des terminaux", () => {
+  assert.ok(MARKET.terminals.length > 0, "aucun terminal");
+  for (const t of MARKET.terminals) {
+    assert.equal(typeof t.name, "string");
+    assert.ok(t.name.length, "terminal sans nom");
+    assert.equal(typeof t.system, "string");
+    assert.equal(typeof t.outpost, "boolean");
+  }
+});
+
+test("data/market.json : chaque commodité est vendable et bien formée", () => {
+  const n = MARKET.terminals.length;
+  assert.ok(MARKET.commodities.length > 0, "aucune commodité");
+  for (const c of MARKET.commodities) {
+    // Le pipeline ne garde que le vendable : sans vente, la commodité n'a rien à dire.
+    assert.ok(c.sells.length, `${c.name} : aucun point de vente`);
+    assert.equal(typeof c.name, "string");
+    assert.ok(c.name.length, "commodité sans nom");
+    assert.equal(typeof c.code, "string");   // "" toléré, jamais undefined
+    assert.equal(typeof c.illegal, "boolean");
+    for (const [side, tuples, volNullable] of [["buys", c.buys, false], ["sells", c.sells, true]]) {
+      for (const t of tuples) {
+        assert.equal(t.length, 5, `${c.name}/${side} : tuple de ${t.length} champs au lieu de 5`);
+        assert.ok(Number.isInteger(t[0]) && t[0] >= 0 && t[0] < n, `${c.name}/${side} : index terminal ${t[0]} hors bornes`);
+        assert.ok(typeof t[1] === "number" && t[1] > 0, `${c.name}/${side} : prix ${t[1]} non strictement positif`);
+        // Sémantique des volumes : côté vente, null = capacité non communiquée par UEX (aucun
+        // plafond) et 0 = terminal saturé. Un `undefined` casserait ce distinguo silencieusement.
+        if (volNullable) assert.ok(t[2] === null || typeof t[2] === "number", `${c.name}/sells : volume ${t[2]}`);
+        else assert.equal(typeof t[2], "number", `${c.name}/buys : stock ${t[2]}`);
+        assert.equal(typeof t[3], "number", `${c.name}/${side} : date ${t[3]}`);
+        assert.equal(typeof t[4], "number", `${c.name}/${side} : statut ${t[4]}`);
+      }
+    }
+  }
+});
+
+test("data/market.json : les commodités « vente seule » du mode Butin sont présentes", () => {
+  // Régression de la PR #37 : le pipeline les excluait, le mode Butin n'avait rien à montrer.
+  const sellOnly = MARKET.commodities.filter((c) => !c.buys.length);
+  assert.ok(sellOnly.length > 0, "aucune commodité sans point d'achat : le mode Butin serait vide");
 });
