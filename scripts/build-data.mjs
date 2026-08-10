@@ -180,7 +180,12 @@ function buildMarket(byCommodity, term) {
   };
   const commodities = [];
   for (const [, c] of byCommodity) {
-    if (!c.buys.length || !c.sells.length) continue; // uniquement les commodités échangeables
+    // Tout ce qui est VENDABLE entre, même sans point d'achat : le butin (minerais raffinés,
+    // salvage, drogues de wreck) ne s'achète nulle part et c'est justement ce que le mode
+    // « Butin » de l'onglet Commodités doit pouvoir chiffrer. Sans vente, il n'y a rien à en dire.
+    // Ces commodités restent inertes pour Trajets/Boucles/En route/Chaîne, qui partent toutes
+    // d'un point d'achat (`c.buys.find(...)`) et n'en trouvent aucun.
+    if (!c.sells.length) continue;
     commodities.push({
       name: c.name, code: c.code || "", kind: c.kind, illegal: c.illegal,
       buys: c.buys.map((b) => [idxOf(b.id), b.price, b.stock, b.updated, b.status]),
