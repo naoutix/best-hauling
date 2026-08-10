@@ -7,7 +7,7 @@ import {
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
   routePasses, loopPasses,
   routeMetrics, loopMetrics, enRouteDeals, bestManifest, buildChainAdjacency,
-  commoditySummaries, commodityPoints, compactValue, valueTiers,
+  commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
   manifestTotals, freeAddUnits, manifestLine, stationLabel, parseStationLabel,
   multiTrips, tripMetrics, legFromTrip,
   legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
@@ -36,6 +36,9 @@ let commMode = "margin", commSortKey = "margin", commSortDir = -1, commSelected 
 // Board « Commodités » : "market" = marge achat→vente ; "loot" = prix de revente d'une ressource
 // trouvée (le coût d'acquisition est nul, la marge n'a plus de sens).
 let commBoard = "market", commTiers = new Map();
+// Codes UEX portés par plusieurs commodités du board courant : leurs tuiles affichent le nom,
+// sinon elles seraient rigoureusement identiques à l'écran (COPP = Copper ET Copper (Ore)).
+let commDupCodes = new Set();
 let commMaxMargin = 0; // marge max de la liste courante (pour colorer la heatmap en relatif)
 let commCarried = new Set(); // commodités transportées au moins 1 fois dans le voyage (highlight board)
 // Compagnon de voyage : parcours sélectionné { legs[], current } ou null.
@@ -605,11 +608,9 @@ function addSuggestion(name) {
   paintManifest();
 }
 
-// Trouve une commodité par nom OU code (insensible à la casse/espaces). Partagé par les ajouts libres.
-const findCommodity = (name) => {
-  const q = (name || "").trim().toLowerCase();
-  return q ? MARKET.commodities.find((x) => x.name.toLowerCase() === q || (x.code && x.code.toLowerCase() === q)) : null;
-};
+// Trouve une commodité par nom OU code (insensible à la casse/espaces). Partagé par les ajouts
+// libres. La résolution vit dans logic.mjs : un code UEX peut désigner deux commodités.
+const findCommodity = (name) => resolveCommodity(MARKET.commodities, name);
 
 // Ajout LIBRE : n'importe quelle commodité (par nom ou code), même si elle n'est pas vendable à
 // destination — on la charge pour l'écouler ailleurs (ligne « carry-only », marge nulle ici).
@@ -650,14 +651,19 @@ function paintManifest() {
     <div class="manifest-lines">` +
     m.lines.map((l, i) => {
       const carry = l.sellPrice == null; // pas vendable à cette destination -> à écouler ailleurs
+      // Symétrique : aucun point d'achat au départ -> le fret est DÉJÀ en soute (butin, minage,
+      // salvage). Afficher un prix « 0 » éditable le ferait passer pour un achat gratuit sur place.
+      const acq = !!l.acquired;
       const demCell = carry ? '<span class="muted">—</span>' : editv(l.name, m.dest.name, "sell", "vol", l.demand, isOv(l.name, m.dest.name, "sell", "vol"), l.sellUpdated);
       const sellCell = carry ? '<span class="carry-tag" title="Pas vendable à cette destination — à écouler ailleurs">vend ailleurs</span>' : editv(l.name, m.dest.name, "sell", "price", l.sellPrice, isOv(l.name, m.dest.name, "sell", "price"), l.sellUpdated);
+      const stockCell = acq ? '<span class="muted">—</span>' : editv(l.name, m.origin.name, "buy", "vol", l.stock, isOv(l.name, m.origin.name, "buy", "vol"), l.buyUpdated);
+      const buyCell = acq ? '<span class="carry-tag" title="Introuvable à l\'achat ici — fret déjà en soute (butin, minage, salvage). Ajuste les SCU à ce que tu transportes.">acquis ailleurs</span>' : editv(l.name, m.origin.name, "buy", "price", l.buyPrice, isOv(l.name, m.origin.name, "buy", "price"), l.buyUpdated);
       const profitCell = carry ? '<span class="mprofit muted">—</span>' : `<span class="mprofit profit">+${fmt(l.units * l.margin)}</span>`;
-      return `<div class="mline${carry ? " carry" : ""}">${commodityIcon(l.kind)}` +
+      return `<div class="mline${carry ? " carry" : ""}${acq ? " acquired" : ""}">${commodityIcon(l.kind)}` +
         `<span class="mqtywrap"><input type="number" class="mqty-input" min="0" value="${l.units}" data-i="${i}" data-margin="${l.margin}" data-buy="${l.buyPrice}" data-cap="${l.cap}" title="Ajuste librement — tu peux dépasser le stock UEX (vol de fret, relevé périmé…)" aria-label="SCU ${esc(l.name)}"><span class="munit">SCU</span></span>` +
         `<span class="mname">${esc(l.name)}${illegalTag(l.illegal)}<button class="mline-del" data-name="${esc(l.name)}" title="Retirer du manifeste" aria-label="Retirer">✕</button></span>` +
-        `<span class="mstock">stock ${editv(l.name, m.origin.name, "buy", "vol", l.stock, isOv(l.name, m.origin.name, "buy", "vol"), l.buyUpdated)} · dem. ${demCell}</span>` +
-        `<span class="mprice">${editv(l.name, m.origin.name, "buy", "price", l.buyPrice, isOv(l.name, m.origin.name, "buy", "price"), l.buyUpdated)} → ${sellCell}</span>` +
+        `<span class="mstock">stock ${stockCell} · dem. ${demCell}</span>` +
+        `<span class="mprice">${buyCell} → ${sellCell}</span>` +
         profitCell +
         `<span class="mboxes" title="Caisses SCU standard à charger">📦 ${scuBoxesLabel(l.units)}</span></div>`;
     }).join("") +
@@ -1118,7 +1124,7 @@ function renderJourney() {
       const rows = lines.map((l, li) =>
         `<div class="jman-line">${commodityIcon(l.kind)}` +
         `<span class="mqtywrap"><input type="number" class="jman-qty" min="0" value="${l.units}" data-leg="${i}" data-i="${li}" aria-label="SCU ${esc(l.name)}"><span class="munit">SCU</span></span>` +
-        `<span class="jman-name">${freshDot(lineFreshUpdated(l))}${esc(l.name)}${illegalTag(l.illegal)}${l.sellPrice == null ? ' <span class="carry-tag">vend ailleurs</span>' : ""}</span>` +
+        `<span class="jman-name">${freshDot(lineFreshUpdated(l))}${esc(l.name)}${illegalTag(l.illegal)}${l.acquired ? ' <span class="carry-tag" title="Introuvable à l\'achat ici — fret déjà en soute">acquis ailleurs</span>' : ""}${l.sellPrice == null ? ' <span class="carry-tag">vend ailleurs</span>' : ""}</span>` +
         `<span class="jman-profit profit">${l.sellPrice == null ? "—" : "+" + fmt(l.units * (l.margin || 0))}</span>` +
         `<button class="jman-del" data-leg="${i}" data-name="${esc(l.name)}" title="Retirer">✕</button></div>`
       ).join("") || '<div class="muted jman-empty">Aucune commodité.</div>';
@@ -1584,8 +1590,11 @@ function commodityTileHTML(c) {
   const title = loot
     ? `${c.name}${c.illegal ? " (illégal)" : ""} — revente max ${fmt(c.bestSell)} aUEC/SCU · ${c.nSell} point(s) de vente${c.sellOnly ? " · introuvable à l'achat — butin / minage" : ""}`
     : `${c.name}${c.illegal ? " (illégal)" : ""}${carried ? " — transportée dans ton voyage" : ""} — marge max ${fmt(c.margin)} aUEC/SCU · ${c.nBuy} achat(s) / ${c.nSell} vente(s)`;
+  // Le code ne sert d'étiquette que s'il identifie SA commodité ; sinon on retombe sur le nom
+  // (tronqué par CSS), seul moyen de distinguer deux tuiles qui partagent un code UEX.
+  const label = c.code && !commDupCodes.has(c.code) ? c.code : c.name;
   return `<button class="${cls}" data-name="${esc(c.name)}" title="${esc(title)}">
-      <span class="tile-code">${carried ? '<span class="tile-carried" title="Dans ton voyage">◆</span>' : ""}${esc(c.code || c.name.slice(0, 4).toUpperCase())}</span>
+      <span class="tile-code">${carried ? '<span class="tile-carried" title="Dans ton voyage">◆</span>' : ""}${esc(label)}</span>
       <span class="tile-val">${val == null ? "—" : compactValue(val)}</span>
     </button>`;
 }
@@ -1664,6 +1673,7 @@ function renderCommodities() {
   shownCommodities = rows;
   commMaxMargin = rows.reduce((mx, c) => Math.max(mx, c.margin || 0), 0); // heatmap relative (Marché)
   commTiers = commBoard === "loot" ? valueTiers(rows) : new Map();        // heatmap par rang (Butin)
+  commDupCodes = ambiguousCodes(rows);                                    // codes UEX non discriminants
   commCarried = journeyCarriedCommodities(); // commodités du voyage à surligner
   // Sélection : garde la commodité choisie si toujours visible, sinon prend la 1re.
   if (commSelected && !rows.some((r) => r.name === commSelected)) commSelected = null;

@@ -10,7 +10,7 @@ import {
   profitPerHour, rawScoreOf, routePasses, loopPasses,
   routeMetrics, loopMetrics, dealFrom, enRouteDeals, bestManifest, buildChainAdjacency,
   manifestsFrom, multiTrips, tripMetrics, legFromTrip,
-  commoditySummaries, commodityPoints, compactValue, valueTiers,
+  commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
   legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   encodeJourney, decodeJourney,
@@ -1088,6 +1088,16 @@ test("freeAddUnits : soute non bornée -> 1 SCU (pas de remplissage massif)", ()
   assert.equal(freeAddUnits(50, NaN), 1);   // cargoLeft inconnu (soute désactivée)
 });
 
+test("freeAddUnits : stock inconnu (rien à acheter sur place) -> 1 SCU", () => {
+  // Régression du mode Butin : une commodité sans aucun point d'achat arrivait ici avec un stock
+  // Infinity et remplissait toute la soute d'un fret introuvable au terminal de départ.
+  assert.equal(freeAddUnits(Infinity, 96), 1);
+  assert.equal(freeAddUnits(Infinity, 4), 1);
+  // Un stock connu remplit toujours l'espace libre : comportement inchangé.
+  assert.equal(freeAddUnits(500, 96), 96);
+  assert.equal(freeAddUnits(50, 96), 50);
+});
+
 // ---------- Manifeste : assemblage d'une ligne ----------
 test("manifestLine : ligne vendable (achat + vente résolus)", () => {
   const c = { name: "Gold", kind: "metal", illegal: false };
@@ -1126,6 +1136,59 @@ test("manifestLine : sans achat -> prix 0, stock Infinity (chargé d'ailleurs)",
   assert.equal(l.stock, Infinity);
   assert.equal(l.margin, 50);          // 50 - 0
   assert.equal(l.carry, false);
+});
+
+test("manifestLine : `acquired` balise le côté ACHAT manquant, comme `carry` balise la vente", () => {
+  // Sans ce drapeau, un butin (aucun point d'achat) affichait un prix d'achat « 0 » indiscernable
+  // d'un vrai relevé UEX : le manifeste se lisait comme un achat gratuit sur place.
+  const c = { name: "Quantainium", kind: "mineral", illegal: false };
+  const sell = { price: 130000, vol: null, ovol: false };
+  const buy = { price: 100, vol: 50, ovol: true };
+  assert.equal(manifestLine(c, null, sell, 0, 5, 1, 1).acquired, true);
+  assert.equal(manifestLine(c, buy, sell, 1, 2, 3, 3).acquired, false);
+  // Les deux côtés peuvent manquer : trouvé ailleurs ET pas vendable ici.
+  const both = manifestLine(c, null, null, 0, 0, 1, 1);
+  assert.equal(both.acquired, true);
+  assert.equal(both.carry, true);
+  assert.equal(both.margin, 0);
+});
+
+// ---------- Résolution d'une commodité : le code UEX n'est PAS une clé unique ----------
+const COMMS_DUP = [
+  { name: "Copper", code: "COPP" },
+  { name: "Copper (Ore)", code: "COPP" }, // UEX attribue le même code aux deux
+  { name: "Laranite", code: "LARA" },
+  { name: "Sans code", code: "" },
+];
+
+test("resolveCommodity : le nom exact prime sur le code", () => {
+  assert.equal(resolveCommodity(COMMS_DUP, "Copper (Ore)").name, "Copper (Ore)");
+  assert.equal(resolveCommodity(COMMS_DUP, "  copper  ").name, "Copper"); // casse et espaces ignorés
+});
+
+test("resolveCommodity : un code ambigu ne résout rien plutôt que de deviner", () => {
+  assert.equal(resolveCommodity(COMMS_DUP, "LARA").name, "Laranite"); // code unique -> résout
+  assert.equal(resolveCommodity(COMMS_DUP, "lara").name, "Laranite");
+  // COPP désigne DEUX commodités : renvoyer la première rendait « Copper (Ore) » inatteignable.
+  assert.equal(resolveCommodity(COMMS_DUP, "COPP"), null);
+});
+
+test("resolveCommodity : requête vide, nulle ou inconnue -> null", () => {
+  assert.equal(resolveCommodity(COMMS_DUP, ""), null);
+  assert.equal(resolveCommodity(COMMS_DUP, "   "), null);
+  assert.equal(resolveCommodity(COMMS_DUP, null), null);
+  assert.equal(resolveCommodity(COMMS_DUP, undefined), null);
+  assert.equal(resolveCommodity(COMMS_DUP, "Inconnue"), null);
+  assert.equal(resolveCommodity([], "Copper"), null);
+});
+
+test("ambiguousCodes : ne retient que les codes portés par PLUSIEURS commodités", () => {
+  const dup = ambiguousCodes(COMMS_DUP);
+  assert.equal(dup.has("COPP"), true);
+  assert.equal(dup.has("LARA"), false);
+  assert.equal(dup.has(""), false);      // code vide : jamais un doublon
+  assert.equal(dup.size, 1);
+  assert.equal(ambiguousCodes([]).size, 0);
 });
 
 // ---------- Libellé de station « Nom — Système » ----------
