@@ -7,7 +7,7 @@ import {
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
   routePasses, loopPasses,
   routeMetrics, loopMetrics, enRouteDeals, bestManifest, buildChainAdjacency,
-  commoditySummaries, commodityPoints, compactValue,
+  commoditySummaries, commodityPoints, compactValue, valueTiers,
   manifestTotals, freeAddUnits, manifestLine, stationLabel, parseStationLabel,
   multiTrips, tripMetrics, legFromTrip,
   legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
@@ -33,6 +33,9 @@ let loopSortDir = -1;
 let shownRoutes = [], shownEnroute = [], shownLoops = [], shownMulti = [];
 // Vue « Commodités » : mode de tri (margin|code|kind|custom), clé/sens custom, sélection.
 let commMode = "margin", commSortKey = "margin", commSortDir = -1, commSelected = null, shownCommodities = [];
+// Board « Commodités » : "market" = marge achat→vente ; "loot" = prix de revente d'une ressource
+// trouvée (le coût d'acquisition est nul, la marge n'a plus de sens).
+let commBoard = "market", commTiers = new Map();
 let commMaxMargin = 0; // marge max de la liste courante (pour colorer la heatmap en relatif)
 let commCarried = new Set(); // commodités transportées au moins 1 fois dans le voyage (highlight board)
 // Compagnon de voyage : parcours sélectionné { legs[], current } ou null.
@@ -1527,11 +1530,13 @@ function renderCorrections() {
 // ---------- Vue « Commodités » : grand tableau + tous les points d'achat/vente ----------
 // Tri du tableau : 3 modes prédéfinis (boutons) + tri par colonne (clic en-tête).
 function sortCommodities(rows) {
-  if (commMode === "margin") return rows.sort(bySort("margin", -1));                 // plus lucratif d'abord
-  if (commMode === "code") return rows.sort(bySort("code", 1));                       // code A→Z
-  if (commMode === "kind")                                                            // catégorie puis marge
-    return rows.sort((a, b) => (a.kind || "").localeCompare(b.kind || "", "fr") || (b.margin ?? -Infinity) - (a.margin ?? -Infinity));
-  return rows.sort(bySort(commSortKey, commSortDir));                                 // colonne (mode custom)
+  // La « valeur » d'une tuile dépend du board : marge en Marché, prix de revente en Butin.
+  const vk = commBoard === "loot" ? "bestSell" : "margin";
+  if (commMode === "margin") return rows.sort(bySort(vk, -1));                        // plus lucratif d'abord
+  if (commMode === "code") return rows.sort(bySort("code", 1));                        // code A→Z
+  if (commMode === "kind")                                                             // catégorie puis valeur
+    return rows.sort((a, b) => (a.kind || "").localeCompare(b.kind || "", "fr") || (b[vk] ?? -Infinity) - (a[vk] ?? -Infinity));
+  return rows.sort(bySort(commSortKey, commSortDir));                                  // colonne (mode custom)
 }
 
 // Applique un tri (bouton mode ou clic en-tête) et re-rend.
@@ -1558,19 +1563,27 @@ function marginTier(m) {
   return "t-low";
 }
 
-// Une tuile du board : code UEX + marge max compacte (K/M), colorée par palier.
+// Une tuile du board : code UEX + valeur compacte (K/M), colorée par palier.
+// En Marché la valeur est la marge (heatmap linéaire) ; en Butin le prix de revente
+// (heatmap par rang, cf. valueTiers — les prix s'étalent sur cinq ordres de grandeur).
 function commodityTileHTML(c) {
+  const loot = commBoard === "loot";
+  const val = loot ? c.bestSell : c.margin;
+  const tier = loot ? commTiers.get(c.name) || "t-none" : marginTier(c.margin);
   const carried = commCarried.has(c.name);
   const cls = [
-    "comm-tile", marginTier(c.margin),
+    "comm-tile", tier,
     c.name === commSelected ? "selected" : "",
     c.illegal ? "illegal" : "",
     carried ? "carried" : "",
+    loot && c.sellOnly ? "sell-only" : "",
   ].filter(Boolean).join(" ");
-  const title = `${c.name}${c.illegal ? " (illégal)" : ""}${carried ? " — transportée dans ton voyage" : ""} — marge max ${fmt(c.margin)} aUEC/SCU · ${c.nBuy} achat(s) / ${c.nSell} vente(s)`;
+  const title = loot
+    ? `${c.name}${c.illegal ? " (illégal)" : ""} — revente max ${fmt(c.bestSell)} aUEC/SCU · ${c.nSell} point(s) de vente${c.sellOnly ? " · introuvable à l'achat — butin / minage" : ""}`
+    : `${c.name}${c.illegal ? " (illégal)" : ""}${carried ? " — transportée dans ton voyage" : ""} — marge max ${fmt(c.margin)} aUEC/SCU · ${c.nBuy} achat(s) / ${c.nSell} vente(s)`;
   return `<button class="${cls}" data-name="${esc(c.name)}" title="${esc(title)}">
       <span class="tile-code">${carried ? '<span class="tile-carried" title="Dans ton voyage">◆</span>' : ""}${esc(c.code || c.name.slice(0, 4).toUpperCase())}</span>
-      <span class="tile-val">${c.margin == null ? "—" : compactValue(c.margin)}</span>
+      <span class="tile-val">${val == null ? "—" : compactValue(val)}</span>
     </button>`;
 }
 
@@ -1593,17 +1606,40 @@ function paintCommodityDetail() {
      </div>`;
 }
 
+// Textes d'aide : le board ne répond pas à la même question selon le mode.
+const COMM_HINT_MARKET = 'Le <b>board de marché</b> : chaque tuile = une commodité (code UEX) et sa <b>marge max</b>, colorée selon son intérêt. Clique une tuile — ou cherche via le champ <b>Commodité</b> — pour voir <b>tous ses points d\'achat / vente</b> (stock, demande, prix) et surtout <b>où l\'écouler</b> quand une station est saturée.';
+const COMM_HINT_LOOT = 'Tu as <b>trouvé</b> une ressource (minage, salvage, caisse abandonnée) ? Ce board liste <b>tout ce qui se vend</b>, y compris ce qui ne s\'achète nulle part, avec son <b>prix de revente max</b> au SCU. Clique une tuile pour voir <b>où l\'écouler</b>. Les tuiles en <b>pointillés</b> sont introuvables à l\'achat.';
+
+// Reflète le board courant dans les contrôles. « Marge » n'a aucun sens quand l'acquisition est
+// gratuite : le premier bouton de tri devient « Revente ».
+function syncCommBoardUI() {
+  const loot = commBoard === "loot";
+  document.querySelectorAll("#commBoardModes button").forEach((b) => b.classList.toggle("active", b.dataset.board === commBoard));
+  const first = document.querySelector('#commSortModes button[data-sort="margin"]');
+  if (first) first.textContent = loot ? "Revente" : "Marge";
+  $("commHint").innerHTML = loot ? COMM_HINT_LOOT : COMM_HINT_MARKET;
+}
+
+function setCommBoard(board) {
+  if (board !== "market" && board !== "loot") return;
+  if (board === commBoard) return;
+  commBoard = board;
+  renderCommodities(); // la sélection courante est revalidée par le rendu (elle peut disparaître)
+  saveState();
+}
+
 function renderCommodities() {
   if (!MARKET) { loadMarket().then(() => { setupEnRoute(); renderCommodities(); }); return; }
   if (!enrouteReady) setupEnRoute();
-  const f = readFilters();
+  const f = { ...readFilters(), board: commBoard };
   const q = f.q;
-  let rows = commoditySummaries(MARKET, f).filter( // légales + avant-postes s'appliquent ici
+  let rows = commoditySummaries(MARKET, f).filter( // légales + avant-postes + board s'appliquent ici
     (c) => !q || c.name.toLowerCase().includes(q) || (c.code && c.code.toLowerCase().includes(q))
   );
   sortCommodities(rows);
   shownCommodities = rows;
-  commMaxMargin = rows.reduce((mx, c) => Math.max(mx, c.margin || 0), 0); // pour la heatmap relative
+  commMaxMargin = rows.reduce((mx, c) => Math.max(mx, c.margin || 0), 0); // heatmap relative (Marché)
+  commTiers = commBoard === "loot" ? valueTiers(rows) : new Map();        // heatmap par rang (Butin)
   commCarried = journeyCarriedCommodities(); // commodités du voyage à surligner
   // Sélection : garde la commodité choisie si toujours visible, sinon prend la 1re.
   if (commSelected && !rows.some((r) => r.name === commSelected)) commSelected = null;
@@ -1611,6 +1647,7 @@ function renderCommodities() {
   $("commGrid").innerHTML = rows.map(commodityTileHTML).join("");
   // Bouton de mode de tri actif.
   document.querySelectorAll("#commSortModes button").forEach((b) => b.classList.toggle("active", b.dataset.sort === commMode));
+  syncCommBoardUI();
   paintCommodityDetail();
   notifySuperseded();
 }
@@ -1648,6 +1685,7 @@ async function init() {
   $("share").addEventListener("click", copyShareLink);
   // Contrôles « Commodités » : modes de tri + sélection d'une tuile.
   $("commSortModes").addEventListener("click", (e) => { const b = e.target.closest("button[data-sort]"); if (b) setCommSort(b.dataset.sort); });
+  $("commBoardModes").addEventListener("click", (e) => { const b = e.target.closest("button[data-board]"); if (b) setCommBoard(b.dataset.board); });
   $("commGrid").addEventListener("click", (e) => {
     const tile = e.target.closest(".comm-tile");
     if (!tile) return;
