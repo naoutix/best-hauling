@@ -545,12 +545,21 @@ export function buildChainAdjacency(market, f, resolve) {
 
 // ---------- Panneau « Commodités » : résumé global + points d'achat/vente ----------
 // Une ligne de synthèse par commodité (pour le grand tableau triable).
-// f (optionnel) = { legalOnly, noOutpost } — seuls filtres pertinents ici : masque les
-// commodités illégales, et exclut les points en avant-poste du calcul best/compteurs.
+// f (optionnel) = { legalOnly, noOutpost, board } :
+//   - legalOnly / noOutpost : masque les commodités illégales, exclut les points en avant-poste
+//     du calcul best/compteurs ;
+//   - board = "market" (défaut) -> uniquement les commodités ÉCHANGEABLES (achat ET vente) ;
+//     board = "loot" -> mode Butin : tout ce qui se VEND, y compris ce qu'on ne peut acheter
+//     nulle part (minerais raffinés, salvage, drogues de wreck) — le cas « je l'ai trouvé ».
 export function commoditySummaries(market, f = {}) {
+  const loot = f.board === "loot";
   const out = [];
   for (const c of market.commodities) {
     if (f.legalOnly && c.illegal) continue;
+    // « Échangeable » se juge sur les données BRUTES : le juger après `noOutpost` ferait
+    // disparaître du board Marché une commodité achetable seulement en avant-poste.
+    const sellOnly = c.buys.length === 0;
+    if (!loot && sellOnly) continue;
     const buys = f.noOutpost ? c.buys.filter((b) => !market.terminals[b[0]].outpost) : c.buys;
     const sells = f.noOutpost ? c.sells.filter((s) => !market.terminals[s[0]].outpost) : c.sells;
     // Achat le moins cher / vente la plus chère + le statut d'inventaire à ce point.
@@ -558,10 +567,13 @@ export function commoditySummaries(market, f = {}) {
     for (const b of buys) if (bestBuy == null || b[1] < bestBuy) { bestBuy = b[1]; buyStatus = b[4] || 0; }
     let bestSell = null, sellStatus = 0;
     for (const s of sells) if (bestSell == null || s[1] > bestSell) { bestSell = s[1]; sellStatus = s[4] || 0; }
+    // En mode Butin, une commodité sans point de vente restant n'a plus de réponse à offrir.
+    if (loot && bestSell == null) continue;
     const margin = bestBuy != null && bestSell != null ? bestSell - bestBuy : null;
     out.push({
       name: c.name, code: c.code || "", kind: c.kind, illegal: c.illegal,
       nBuy: buys.length, nSell: sells.length, bestBuy, bestSell, buyStatus, sellStatus, margin,
+      sellOnly,
     });
   }
   return out;

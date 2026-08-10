@@ -771,6 +771,60 @@ test("commoditySummaries : noOutpost exclut les points en avant-poste du calcul"
   assert.equal(gold.bestBuy, 90);   // achats non touchés (aucun avant-poste)
 });
 
+// Marché de test : une commodité échangeable, une « vente seule » (butin), une achetable
+// uniquement en avant-poste (piège du filtre noOutpost).
+const MARKET_BUTIN = {
+  terminals: [
+    { name: "Ville", system: "Stanton", planet: "Hurston", outpost: false },
+    { name: "Poste", system: "Stanton", planet: "Hurston", outpost: true },
+  ],
+  commodities: [
+    { name: "Laranite", code: "LARA", kind: "metal", illegal: false,
+      buys: [[0, 100, 50, 1, 3]], sells: [[0, 250, 80, 1, 2]] },
+    { name: "Quantainium", code: "QUAN", kind: "mineral", illegal: false,
+      buys: [], sells: [[0, 170000, 0, 1, 1]] },
+    { name: "Stims", code: "STIM", kind: "drug", illegal: false,
+      buys: [[1, 10, 5, 1, 3]], sells: [[0, 40, 9, 1, 2]] },
+  ],
+};
+
+test("commoditySummaries : mode Marché (défaut) ignore les commodités sans point d'achat", () => {
+  const rows = commoditySummaries(MARKET_BUTIN);
+  assert.deepEqual(rows.map((r) => r.name), ["Laranite", "Stims"]);
+  assert.equal(rows.every((r) => r.sellOnly === false), true);
+});
+
+test("commoditySummaries : mode Butin ajoute le butin et chiffre sa revente", () => {
+  const rows = commoditySummaries(MARKET_BUTIN, { board: "loot" });
+  assert.deepEqual(rows.map((r) => r.name), ["Laranite", "Quantainium", "Stims"]);
+  const quan = rows.find((r) => r.name === "Quantainium");
+  assert.equal(quan.sellOnly, true);
+  assert.equal(quan.bestSell, 170000);
+  assert.equal(quan.bestBuy, null);
+  assert.equal(quan.margin, null); // pas de marge sans achat
+  assert.equal(quan.nBuy, 0);
+});
+
+test("commoditySummaries : `sellOnly` se juge sur les données brutes, pas après le filtre avant-postes", () => {
+  // Stims ne s'achète qu'en avant-poste : exclure les avant-postes ne doit PAS le faire
+  // basculer en « butin » ni le sortir du board Marché (régression évitée).
+  const rows = commoditySummaries(MARKET_BUTIN, { noOutpost: true });
+  const stims = rows.find((r) => r.name === "Stims");
+  assert.ok(stims, "Stims reste listé en mode Marché");
+  assert.equal(stims.sellOnly, false);
+  assert.equal(stims.bestBuy, null); // son seul achat est filtré
+  assert.equal(stims.nBuy, 0);
+});
+
+test("commoditySummaries : mode Butin retire ce qui n'a plus aucun point de vente après filtrage", () => {
+  const market = {
+    terminals: [{ name: "Poste", system: "Pyro", planet: "", outpost: true }],
+    commodities: [{ name: "Riccite", code: "RICC", kind: "mineral", illegal: false, buys: [], sells: [[0, 91000, 0, 1, 1]] }],
+  };
+  assert.equal(commoditySummaries(market, { board: "loot" }).length, 1);
+  assert.equal(commoditySummaries(market, { board: "loot", noOutpost: true }).length, 0);
+});
+
 test("commodityPoints : noOutpost exclut les points en avant-poste", () => {
   const p = commodityPoints(CMKT, "Gold", { noOutpost: true });
   assert.equal(p.sells.length, 1);
