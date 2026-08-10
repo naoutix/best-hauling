@@ -627,6 +627,23 @@ input.mqty-input.over-stock { color: var(--warn); border-color: var(--warn); box
 .reset-ov { margin-left: auto; color: var(--warn); border-color: #5a4a1c; background: rgba(245,167,66,.08); border-radius: 3px; padding: 5px 11px; cursor: pointer; font-family: var(--font); font-size: 11px; font-weight: 600; }
 .reset-ov:hover { color: #fff; border-color: var(--warn); background: rgba(245, 167, 66, 0.16); }
 
+/* ---------- Frais d'autoload ---------- */
+/* Marqueur des lignes où l'interrupteur est actif mais où aucune des deux stations ne facture :
+   sans lui, un profit resté brut au milieu d'une colonne nette se lirait comme un frais oublié. */
+.nofee { color: var(--muted); font-size: 11px; cursor: help; }
+/* Montant des frais exposé à part du profit (totaux de manifeste) : même discrétion. */
+.fee-chip { color: var(--muted); cursor: help; }
+/* Panneau de relevé du tarif d'une station (vue Corrections). Violet comme la chaîne : ce n'est
+   pas une correction de prix UEX, c'est une mesure de manutention faite par le joueur. */
+.fee-panel { border: 1px solid var(--line); border-left: 2px solid var(--acc-2); border-radius: 3px; padding: 12px 14px; margin: 12px 0 18px; background: rgba(169, 112, 255, 0.04); }
+.fee-head { font-family: var(--display); font-size: 12px; letter-spacing: 1px; color: var(--acc-2); margin-bottom: 9px; }
+.fee-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
+.fee-row input[type="number"] { min-width: 108px; padding: 7px 9px; font-size: 13px; }
+.fee-note { margin-top: 9px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.fee-note b { color: var(--text); }
+.fee-off { font-size: 13px; color: var(--muted); }
+.corr-item.autoload { border-left-color: var(--acc-2); background: rgba(169, 112, 255, 0.04); }
+
 /* ---------- Toast ---------- */
 .toast {
   position: fixed; right: 20px; bottom: 20px; z-index: 200; max-width: 320px; padding: 12px 16px;

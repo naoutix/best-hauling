@@ -108,6 +108,22 @@ export function sellDemand(p) {
   return cap > 0 ? Math.max(0, cap - (p.scu_sell_stock || 0)) : null;
 }
 
+// Taille de caisse maximale acceptée par un terminal : c'est elle qui décide en combien de caisses
+// une cargaison se découpe, donc combien de forfaits de manutention l'autoload facture.
+// UEX renvoie 0 quand il ne renseigne pas le champ (33 terminaux sur 161) -> repli sur 32, la plus
+// grosse caisse du jeu. Le repli SOUS-ESTIME les frais au lieu de les inventer, et c'est le sens
+// dans lequel il faut se tromper : un terminal réellement plafonné à 1 SCU découpe 32 SCU en
+// 32 caisses (≈ 1 750 aUEC contre ≈ 820 en une seule), et facturer ça à un terminal simplement
+// muet inventerait plus du double. Contrairement à sellDemand, 0 (muet) et 32 (vraie limite) se
+// confondent donc ici — assumé, parce que la confusion penche du bon côté.
+// Piège vérifié : le même enregistrement UEX porte aussi un champ `mcs`, à 0 sur les 161 terminaux.
+// Le prendre replierait tout le monde sur 32 sans qu'aucun test ne bronche.
+// Exportée pour être testée, comme sellDemand : sinon la règle vit au fond de main().
+export function maxBoxSize(t) {
+  const n = Number(t.max_container_size) || 0;
+  return n > 0 ? n : 32;
+}
+
 // Génère les routes d'arbitrage pour une commodité.
 // `c` = { name, kind, illegal, refBuy, refSell, buys[], sells[] } où chaque buy/sell porte
 // { id, orbit, name, system, planet, price, stock|demand, updated, status }.
@@ -188,7 +204,7 @@ function buildMarket(byCommodity, term) {
     if (index.has(id)) return index.get(id);
     const t = term.get(id);
     const i = terminals.length;
-    terminals.push({ name: t.name, system: t.system, planet: t.planet, outpost: t.outpost });
+    terminals.push({ name: t.name, system: t.system, planet: t.planet, outpost: t.outpost, autoload: t.autoload, maxBox: t.maxBox });
     index.set(id, i);
     return i;
   };
@@ -218,6 +234,12 @@ async function main() {
   // Signature de données = nb de relevés + le date_modified le plus récent. Change dès qu'UEX
   // publie/modifie un prix. Permet de sauter tout le reste (distances + assemblage + déploiement)
   // quand rien n'a bougé. FORCE=1 (push / lancement manuel) court-circuite ce test.
+  // Elle ignore VOLONTAIREMENT les terminaux, `is_auto_load` / `max_container_size` compris : ces
+  // champs sont quasi statiques, et les faire entrer dans la signature ferait reconstruire tout le
+  // site — les centaines d'appels de distance avec — au moindre remaniement de terminal chez UEX,
+  // sans qu'aucun prix ait bougé. Le seul moment où ces deux champs DOIVENT atteindre la prod est
+  // le déploiement du changement qui les introduit, et c'est déjà couvert : le workflow pose
+  // FORCE=1 sur tout événement non-cron, donc le push sur main force la reconstruction complète.
   const maxModified = prices.reduce((m, p) => Math.max(m, p.date_modified || 0), 0);
   const signature = `${prices.length}:${maxModified}`;
   if (!process.env.FORCE) {
@@ -254,6 +276,10 @@ async function main() {
       planet: t.planet_name || "",
       // Avant-poste de surface = élévateur de fret peu fiable. Stations/villes = fiables.
       outpost: t.id_outpost > 0,
+      // Le (dé)chargement automatique n'existe pas partout : sans ce drapeau, l'app facturerait
+      // au joueur un service que le terminal ne rend pas.
+      autoload: !!t.is_auto_load,
+      maxBox: maxBoxSize(t),
     });
   }
 

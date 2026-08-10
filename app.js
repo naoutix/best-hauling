@@ -3,10 +3,11 @@
 // Fonctions de calcul pures (testées par logic.test.mjs).
 import {
   tripMinutes, ageDays, pairAge,
-  normalizeScores, bySort, addableUnits, scuBoxes, bestChain,
+  normalizeScores, bySort, addableUnits, scuBoxes, cargoBoxes, bestChain,
+  AUTOLOAD, autoloadFee, autoloadPoint, haulFee, lineHaulFee,
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
   routePasses, loopPasses,
-  routeMetrics, loopMetrics, enRouteDeals, bestManifest, buildChainAdjacency, suggestionsFrom,
+  routeMetrics, loopMetrics, enRouteDeals, bestManifest, buildChainAdjacency, suggestionsFrom, netMarginRoi,
   commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
   manifestTotals, freeAddUnits, manifestLine, freeManifestLine, hydrateManifestLine, stationLabel, parseStationLabel,
   multiTrips, tripMetrics, legFromTrip,
@@ -17,10 +18,18 @@ import {
 } from "./logic.mjs";
 
 // Libellé compact des caisses SCU standard, ex. « 8×32 · 1×16 · 1×4 · 1×2 · 1×1 ».
-function scuBoxesLabel(n) {
-  const boxes = scuBoxes(n);
-  return boxes.length ? boxes.map((b) => `${b.count}×${b.size}`).join(" · ") : "";
+// `maxBox` = plafond de caisse du terminal de CHARGEMENT, quand on le connaît : c'est une propriété
+// physique de la station, indépendante de l'interrupteur de frais. On le propage partout où le
+// terminal d'achat est disponible, parce que c'est exactement la décomposition que la facture
+// d'autoload utilise — un « 📦 1×32 » à côté d'un montant calculé sur deux caisses de 16 serait
+// une incohérence directement visible.
+const boxesLabel = (boxes) => (boxes.length ? boxes.map((b) => `${b.count}×${b.size}`).join(" · ") : "");
+function scuBoxesLabel(n, maxBox) {
+  return boxesLabel(scuBoxes(n, maxBox));
 }
+// Même libellé pour un chargement à plusieurs commodités : une caisse ne contient qu'une commodité,
+// la décomposition se fait donc ligne par ligne (cargoBoxes) et jamais sur le total des SCU.
+const cargoBoxesLabel = (lines, maxBox) => boxesLabel(cargoBoxes(lines, maxBox));
 
 // État global
 let ROUTES = [];
@@ -184,6 +193,143 @@ function setOverride(commodity, terminal, side, field, value, baseUpdated) {
 }
 function resetOverrides() { OVERRIDES = {}; saveOverrides(); }
 
+// ---------- Frais d'autoload : tarif par station + contexte de calcul ----------
+// Le calcul est PUR et vit dans logic.mjs (autoloadFee / autoloadPoint / haulFee). app.js n'y
+// apporte que ce que logic.mjs ne peut pas deviner sans lire une globale : quel terminal porte
+// quel nom, et combien CETTE station facture. Deux résolutions, donc :
+//   - nom de terminal -> terminal de market.json, parce que routes.json et loops.json (vues
+//     « Trajets » et « Boucles ») ne portent que des noms ;
+//   - terminal -> coefficient `k`, relevé par l'utilisateur ou valeur globale par défaut.
+const AUTOLOAD_KEY = "best-hauling-autoload";
+const K_DEFAULT = 1.2; // milieu des deux seules stations mesurées (Endgame 1,0 et Ruin 1,4)
+
+// { "autoload|<terminal>": { k, amount, scu } } — même forme de clé et même mécanique que les
+// corrections locales (localStorage, jamais partagé, jamais dans le lien), mais un STORE À PART.
+// Les ranger dans OVERRIDES casserait trois consommateurs qui supposent tous qu'une clé du store
+// est une correction prix/stock à TROIS segments : ovCount() les compterait dans le badge « ✎
+// Corrections (n) », correctionsListHTML() lirait « autoload|<terminal> » comme commodité/terminal/
+// side et rendrait une correction « vente » vide, et « Tout réinitialiser » les effacerait sans le
+// dire. S'y ajoutent deux incompatibilités de fond : setInStore arrondit à l'entier (un k de 1,41
+// deviendrait 1) et effValue périme une correction dès qu'UEX republie le point, alors qu'un tarif
+// de manutention n'a aucune date UEX de référence et n'a donc aucune raison de périmer.
+let AUTOLOAD_K = {};
+const alKey = (terminal) => `autoload|${terminal}`;
+function loadAutoloadK() { try { AUTOLOAD_K = JSON.parse(localStorage.getItem(AUTOLOAD_KEY)) || {}; } catch { AUTOLOAD_K = {}; } }
+function saveAutoloadK() { try { localStorage.setItem(AUTOLOAD_KEY, JSON.stringify(AUTOLOAD_K)); } catch {} }
+
+// Coefficient global, appliqué à toute station non relevée. Une saisie vide ou absurde retombe sur
+// le défaut : `Number("")` vaut 0, et un k nul annulerait silencieusement tous les frais.
+const globalK = () => { const v = Number($("alk").value); return v > 0 ? v : K_DEFAULT; };
+const kFor = (terminal) => { const o = AUTOLOAD_K[alKey(terminal)]; return o && o.k > 0 ? o.k : globalK(); };
+
+// Déduit k d'un montant observé en jeu : personne ne lit un coefficient à l'écran, on lit une
+// facture. k = montant payé / montant que la formule prédirait au tarif d'ancrage (k = 1).
+// null quand la mesure ne dit rien (quantité nulle, montant absurde).
+function kFromReading(amount, scu, maxBox) {
+  const ref = autoloadFee(scu, maxBox, 1);
+  if (!(ref > 0) || !(amount > 0)) return null;
+  return Math.round((amount / ref) * 1000) / 1000;
+}
+
+// Ce qu'UNE extrémité facture. `point` est ce que consomme logic.mjs ; les autres champs servent à
+// EXPLIQUER le chiffre à l'écran — « cette station ne propose pas l'autoload » et « UEX ne nous a
+// pas dit si elle le propose » aboutissent au même 0 mais ne se racontent pas pareil, et aucun des
+// deux ne doit se lire comme un frais oublié.
+function feeEnd(name, terminal) {
+  const t = terminal || termByName.get(name) || null;
+  const k = kFor(name);
+  return {
+    name, k, point: autoloadPoint(t, k),
+    known: !!t && t.autoload != null, // champ absent = instantané de market.json antérieur au build
+    available: !!t && t.autoload === true,
+    maxBox: t ? t.maxBox : undefined,
+    measured: !!AUTOLOAD_K[alKey(name)],
+  };
+}
+
+// Contexte de frais d'un chargement A -> B. `null` dès que l'interrupteur est inactif, et c'est
+// littéralement ce que « inactif » veut dire pour tout le moteur : sans contexte, chaque fonction
+// de logic.mjs rend exactement les valeurs brutes qu'elle rendait avant que les frais n'existent.
+function feeCtx(f, buyName, sellName, buyT, sellT) {
+  if (!f.autoload) return null;
+  // Marché pas encore chargé (premier rendu de « Trajets » / « Boucles ») : aucun terminal n'est
+  // résolvable, donc aucun frais n'est calculable. On rend le brut SANS marqueur — prétendre
+  // « aucune de ces stations ne facture » serait faux — et ensureFeeMarket re-rend à l'arrivée.
+  if (!buyT && !sellT && !termByName.size) return null;
+  const a = feeEnd(buyName, buyT), b = feeEnd(sellName, sellT);
+  return { a, b, pair: { buy: a.point, sell: b.point } };
+}
+
+// Résolveur passé aux fonctions de logic.mjs qui parcourent le marché : elles découvrent leurs
+// terminaux en chemin et n'ont donc aucun nom à nous donner d'avance.
+const feeResolver = (f) => (f.autoload ? (t) => autoloadPoint(t, kFor(t && t.name)) : null);
+
+// Un montant qui incorpore des frais d'autoload est une ESTIMATION : la formule colle aux 18
+// relevés à 2,8 % près, et `k` varie de 40 % entre les deux seules stations mesurées. Le « ≈ » le
+// dit, partout où le chiffre a été amputé.
+const fmtFee = (n, fees) => (fees > 0 ? "≈ " + fmt(n) : fmt(n));
+const kText = (e) => `×${e.k.toLocaleString("fr-FR", { maximumFractionDigits: 3 })} ${e.measured ? "(relevé)" : "(k global)"}`;
+function feeEndText(e) {
+  if (!e.known) return `${e.name} : autoload inconnu (donnée UEX absente) — rien facturé`;
+  if (!e.available) return `${e.name} : pas d'autoload — rien facturé`;
+  return `${e.name} ${kText(e)}`;
+}
+// Décrit la manutention facturée, et avec quelle formule : l'infobulle doit permettre de REFAIRE le
+// calcul, sinon elle explique un montant qu'elle contredit. D'où deux textes, parce qu'il y a deux
+// facturations — une transaction pour un chargement à une commodité, une PAR commodité au-delà
+// (hypothèse 2 de la spec), et autant de fois la base de 150.
+const FEE_FORMULA = `${AUTOLOAD.base} + ${AUTOLOAD.perBox}/caisse + ${AUTOLOAD.perScu}/SCU`;
+const boxCount = (boxes) => boxes.reduce((a, b) => a + b.count, 0);
+function feeLoadText(scu, maxBox) {
+  const n = boxCount(scuBoxes(scu, maxBox));
+  return `${fmt(scu)} SCU en ${n} caisse${n > 1 ? "s" : ""}, chargement + déchargement · ${FEE_FORMULA} par opération`;
+}
+// Chargement MULTI-commodité : les caisses se comptent ligne par ligne (une caisse = une commodité)
+// et la base est facturée par commodité. Décrire le total en une seule opération annonçait un
+// nombre de caisses et une formule qui ne redonnaient pas le montant déduit.
+function feeCargoText(lines, maxBox) {
+  const n = boxCount(cargoBoxes(lines, maxBox));
+  const scu = lines.reduce((a, l) => a + (l.units || 0), 0);
+  const p = lines.length;
+  return `${fmt(scu)} SCU en ${n} caisse${n > 1 ? "s" : ""} sur ${p} commodité${p > 1 ? "s" : ""}, chargement + déchargement · ${FEE_FORMULA} par commodité et par opération`;
+}
+
+// Infobulle + marqueur d'une cellule de profit soumise aux frais. `what` décrit la manutention et
+// n'est appelée que si elle sert : l'interrupteur inactif est le cas courant, et ce chemin est
+// parcouru une fois par ligne de tableau.
+// `bounded` = la route a un volume : sans volume aucun frais n'est calculable (le profit est déjà
+// « — »), et rien ne doit laisser croire à un oubli. Quand l'interrupteur est actif mais qu'aucune
+// des deux stations ne facture, l'infobulle DIT pourquoi et un ⊘ discret le signale — un profit
+// resté brut au milieu d'une colonne nette, sans un mot, se lit comme un bug. Le marqueur ne va que
+// sur la colonne « profit » : le répéter sur « profit/heure » doublerait le bruit sans rien ajouter.
+const NO_FEE_CELL = { attr: "", mark: "", text: "" };
+function feeCell(ctx, fees, what, bounded) {
+  if (!ctx || !bounded) return NO_FEE_CELL;
+  const text = fees > 0
+    ? `Frais d'autoload ≈ ${fmt(fees)} aUEC déduits — ${what()} · ${feeEndText(ctx.a)} · ${feeEndText(ctx.b)} · estimation ±3 %`
+    : `Aucun frais d'autoload sur ce trajet — ${feeEndText(ctx.a)} · ${feeEndText(ctx.b)}`;
+  return { attr: ` title="${esc(text)}"`, mark: fees > 0 ? "" : ' <span class="nofee">⊘</span>', text };
+}
+// Compose une infobulle existante avec le détail des frais (cellule profit/heure).
+const withFeeText = (base, cell) => esc(cell.text ? `${base} · ${cell.text}` : base);
+
+// Frais et profit NET d'une ligne de manifeste. Hypothèse 2 de la spec : une transaction PAR
+// COMMODITÉ, donc chaque ligne paie sa propre base — sans quoi la somme des lignes affichées ne
+// ferait pas le total affiché, l'incohérence la plus visible qui soit. Le décompte des opérations
+// vit dans logic.mjs (lineHaulFee), qui sait qu'une ligne « vend ailleurs » n'est pas déchargée et
+// qu'une ligne « acquis ailleurs » n'a pas été chargée : c'est la MÊME règle que manifestTotals,
+// donc le total et les lignes ne peuvent pas diverger.
+const lineNet = (units, l, pair) => units * (l.margin || 0) - lineHaulFee(units, l, pair);
+// Texte de la cellule « profit » d'une ligne de manifeste. Partagé par le premier rendu et par la
+// mise à jour en direct : deux conventions différentes et éditer une quantité changerait le sens
+// de la cellule. Une ligne « vend ailleurs » n'a pas de profit sur ce trajet — elle a quand même
+// été chargée, et ce chargement, lui, est bien retranché du total.
+function lineProfitText(units, l, pair) {
+  const fees = lineHaulFee(units, l, pair);
+  if (l.sellPrice == null) return fees > 0 ? fmtFee(-fees, fees) : "—";
+  return "+" + fmtFee(lineNet(units, l, pair), fees);
+}
+
 // Flash discret quand des corrections ont été périmées par une mise à jour UEX.
 let toastTimer = null;
 function showToast(msg) {
@@ -216,14 +362,20 @@ function applyOverrides(commodity, buy, sell) {
 // Calcule les champs dérivés d'une route selon les entrées utilisateur : applique les corrections
 // locales (impur, globales OVERRIDES) puis délègue le calcul pur à routeMetrics (logic.mjs).
 function evaluate(r, f) {
-  const { buy, sell, margin, roi } = applyOverrides(r.commodity, r.buy, r.sell);
+  const { buy, sell, margin } = applyOverrides(r.commodity, r.buy, r.sell);
+  // routes.json et enRouteDeals ne donnent que des NOMS de terminaux : c'est ici, du côté impur,
+  // qu'ils deviennent des tarifs. routeMetrics, lui, reçoit un contexte déjà résolu.
+  const feeInfo = feeCtx(f, buy.terminal, sell.terminal);
   const metrics = routeMetrics({
     buyPrice: buy.price, buyStock: buy.stock, sellDemand: sell.demand, margin,
     distance: r.distance, sameSystem: r.same_system,
     buyUpdated: buy.updated, sellUpdated: sell.updated,
     demandKnown: sell.ovVol, // ovVol = demande corrigée par l'utilisateur = fiable
-  }, f);
-  return { ...r, buy, sell, margin, roi, buyPrice: buy.price, sellPrice: sell.price, ...metrics };
+  }, f, feeInfo && feeInfo.pair);
+  // Marge et ROI nets des frais, comme en mode multi : la même colonne garde la même définition
+  // d'un mode à l'autre. Sans frais, netMarginRoi rend exactement la marge de marché et l'ancien ROI.
+  const net = netMarginRoi(margin, buy.price, metrics.units, metrics.fees);
+  return { ...r, buy, sell, buyPrice: buy.price, sellPrice: sell.price, feeInfo, ...metrics, ...net };
 }
 
 // Cellule visuelle du score : mini-barre + valeur.
@@ -257,6 +409,7 @@ function readFilters() {
     maxAge: Number($("freshness").value) || 0,
     q: $("search").value.trim().toLowerCase(),
     multi: $("multiCommodity").checked,
+    autoload: $("autoload").checked,
   };
 }
 
@@ -266,6 +419,7 @@ const isMultiRoutes = () => view === "routes" && $("multiCommodity").checked;
 function render() {
   const f = readFilters();
   if (f.multi) return renderMulti(f);
+  ensureFeeMarket(f, render);
 
   let rows = ROUTES.filter((r) => routePasses(r, f)).map((r) => evaluate(r, f));
 
@@ -292,7 +446,10 @@ function renderMulti(f) {
     return;
   }
   if (!MARKET) { withMarket(render); return; } // graphe requis
-  const trips = multiTrips(MARKET, f, effVals).map((t) => ({ ...t, ...tripMetrics(t) }));
+  // Le contexte de frais descend DANS multiTrips (et non après coup) : c'est lui qui trie puis
+  // TRONQUE à 300 trajets, un trajet meilleur en net serait donc coupé avant d'atteindre le tableau.
+  const trips = multiTrips(MARKET, f, effVals, 300, 2, feeResolver(f))
+    .map((t) => ({ ...t, feeInfo: feeCtx(f, t.origin.name, t.dest.name, t.origin, t.dest), ...tripMetrics(t) }));
   normalizeScores(trips);
   trips.sort(bySort(sortKey, sortDir));
   shownMulti = trips;
@@ -307,6 +464,7 @@ function renderMulti(f) {
 // Ligne de tableau d'un trajet multi-commodité (mêmes colonnes que les trajets simples).
 function multiRowHTML(t, i) {
   const n = t.lines.length;
+  const fc = feeCell(t.feeInfo, t.fees, () => feeCargoText(t.lines, t.origin.maxBox), t.units > 0);
   const cross = t.cross ? '<span class="cross">⚡ saut inter-système</span>' : "";
   const icons = t.lines.slice(0, 6).map((l) => commodityIcon(l.kind)).join("");
   const more = n > 6 ? `<span class="muted">+${n - 6}</span>` : "";
@@ -330,12 +488,12 @@ function multiRowHTML(t, i) {
           <div class="loc-sub">${esc(t.dest.planet)}</div>
         </td>
         <td>${scoreCell(t.score)}</td>
-        <td class="num" title="Marge moyenne pondérée par SCU chargé">${fmt(t.margin)}</td>
-        <td class="num roi-badge">${t.roi}%</td>
-        <td class="num"${t.units ? ` title="Caisses : ${scuBoxesLabel(t.units)}"` : ""}>${fmt(t.units)}</td>
+        <td class="num" title="${withFeeText("Marge moyenne pondérée par SCU chargé", fc)}">${fmtFee(t.margin, t.fees)}</td>
+        <td class="num roi-badge"${fc.attr}>${t.fees > 0 ? "≈ " : ""}${t.roi}%</td>
+        <td class="num"${t.units ? ` title="Caisses : ${cargoBoxesLabel(t.lines, t.origin.maxBox)}"` : ""}>${fmt(t.units)}</td>
         <td class="num">${fmt(t.investment)}</td>
-        <td class="num profit">${fmt(t.profit)}</td>
-        <td class="num profit" title="Estimation ${Math.round(t.minutes)} min/voyage (distance approchée)">${fmt(t.profitHour)}</td>
+        <td class="num profit"${fc.attr}>${fmtFee(t.profit, t.fees)}${fc.mark}</td>
+        <td class="num profit" title="${withFeeText(`Estimation ${Math.round(t.minutes)} min/voyage (distance approchée)`, fc)}">${fmtFee(t.profitHour, t.fees)}</td>
       </tr>`;
 }
 
@@ -349,8 +507,8 @@ function multiSchemaHTML(t) {
     `<span class="mname">${esc(l.name)}${illegalTag(l.illegal)}</span>` +
     `<span class="mstock">stock ${fmt(l.stock)} · dem. ${fmtVol(l.demand)}</span>` +
     `<span class="mprice">${fmt(l.buyPrice)} → ${fmt(l.sellPrice)} · marge ${fmt(l.margin)}</span>` +
-    `<span class="mprofit profit">+${fmt(l.units * l.margin)}</span>` +
-    `<span class="mboxes" title="Caisses SCU standard à charger">📦 ${fmt(l.units)} SCU · ${scuBoxesLabel(l.units)}</span></div>`
+    `<span class="mprofit profit">${lineProfitText(l.units, l, t.fee)}</span>` +
+    `<span class="mboxes" title="Caisses SCU standard à charger">📦 ${fmt(l.units)} SCU · ${scuBoxesLabel(l.units, t.origin.maxBox)}</span></div>`
   ).join("");
   return `${schema}<div class="multi-cargo"><div class="suggest-head">Chargement — ${t.lines.length} commodité${t.lines.length > 1 ? "s" : ""}, ${fmt(t.units)}/${fmt(t.cargo)} SCU</div>${lines}</div>`;
 }
@@ -377,6 +535,12 @@ function loopSchemaHTML(l) {
 
 // Ligne de tableau pour une route évaluée (partagée par « Trajets simples » et « En route »).
 function routeRowHTML(r, i) {
+  // Plafond de caisse du terminal d'ACHAT, lu du marché et non du contexte de frais : c'est une
+  // propriété physique de la station (cf. scuBoxesLabel). Le prendre dans `feeInfo` le faisait
+  // disparaître dès l'interrupteur relâché, et la ligne du tableau annonçait alors « 3×32 » à côté
+  // d'un manifeste qui, lui, affichait « 6×16 » pour la même cargaison au même terminal.
+  const maxBox = (termByName.get(r.buy.terminal) || {}).maxBox;
+  const fc = feeCell(r.feeInfo, r.fees, () => feeLoadText(r.units, maxBox), r.units > 0);
   const cross = r.same_system ? "" : '<span class="cross">⚡ saut inter-système</span>';
   return `
       <tr data-row="${i}">
@@ -397,12 +561,12 @@ function routeRowHTML(r, i) {
           <div class="loc-fresh">${freshChip(r.sell.updated)}</div>
         </td>
         <td>${scoreCell(r.score)}</td>
-        <td class="num">${fmt(r.margin)}</td>
-        <td class="num roi-badge">${r.roi}%</td>
-        <td class="num"${r.units ? ` title="Caisses : ${scuBoxesLabel(r.units)}"` : ""}>${fmt(r.units)}</td>
+        <td class="num"${fc.attr}>${fmtFee(r.margin, r.fees)}</td>
+        <td class="num roi-badge"${fc.attr}>${r.fees > 0 ? "≈ " : ""}${r.roi}%</td>
+        <td class="num"${r.units ? ` title="Caisses : ${scuBoxesLabel(r.units, maxBox)}"` : ""}>${fmt(r.units)}</td>
         <td class="num">${fmt(r.investment)}</td>
-        <td class="num profit">${fmt(r.profit)}</td>
-        <td class="num profit" title="Estimation ${Math.round(r.minutes)} min/voyage">${fmt(r.profitHour)}</td>
+        <td class="num profit"${fc.attr}>${fmtFee(r.profit, r.fees)}${fc.mark}</td>
+        <td class="num profit" title="${withFeeText(`Estimation ${Math.round(r.minutes)} min/voyage`, fc)}">${fmtFee(r.profitHour, r.fees)}</td>
       </tr>`;
 }
 
@@ -418,12 +582,16 @@ function evaluateLoop(l, f) {
   const out = effLeg(l.out, l.a.terminal, l.b.terminal);
   const back = effLeg(l.back, l.b.terminal, l.a.terminal);
   const cross = l.a.system !== l.b.system;
-  const metrics = loopMetrics(out, back, l.distance, cross, f); // calcul pur (logic.mjs)
-  return { ...l, out, back, cross, ...metrics };
+  // Une boucle n'a pas un terminal d'achat et un de vente : elle a deux EXTRÉMITÉS qui sont tour à
+  // tour l'un et l'autre, d'où { a, b } et quatre opérations facturées (cf. loopMetrics).
+  const feeInfo = feeCtx(f, l.a.terminal, l.b.terminal);
+  const metrics = loopMetrics(out, back, l.distance, cross, f, feeInfo && { a: feeInfo.a.point, b: feeInfo.b.point });
+  return { ...l, out, back, cross, feeInfo, ...metrics };
 }
 
 function renderLoops() {
   const f = readFilters();
+  ensureFeeMarket(f, renderLoops);
 
   let rows = LOOPS.filter((l) => loopPasses(l, f)).map((l) => evaluateLoop(l, f));
 
@@ -439,8 +607,10 @@ function renderLoops() {
   shownLoops = rows;
 
   $("loopRows").innerHTML = rows
-    .map(
-      (l, i) => `
+    .map((l, i) => {
+      // Quatre opérations par boucle : on charge et on décharge à chacun des deux bouts.
+      const fc = feeCell(l.feeInfo, l.fees, () => `${fmt(l.unitsOut)} + ${fmt(l.unitsBack)} SCU, 4 opérations (charge et décharge à chaque bout)`, l.units > 0);
+      return `
       <tr data-row="${i}"${l._fromHere ? ' class="from-here"' : ""}>
         <td class="loc loop-cell">
           <button class="route-toggle" data-row="${i}" title="Voir le trajet" aria-label="Voir le trajet">🗺</button>
@@ -463,10 +633,10 @@ function renderLoops() {
         <td>${scoreCell(l.score)}</td>
         <td class="num">${fmt(l.loopMargin)}</td>
         <td class="num">${l.units == null ? "—" : fmt(l.unitsOut) + " + " + fmt(l.unitsBack)}</td>
-        <td class="num profit">${fmt(l.profit)}</td>
-        <td class="num profit" title="Estimation ${Math.round(l.minutes)} min/boucle">${fmt(l.profitHour)}</td>
-      </tr>`
-    )
+        <td class="num profit"${fc.attr}>${fmtFee(l.profit, l.fees)}${fc.mark}</td>
+        <td class="num profit" title="${withFeeText(`Estimation ${Math.round(l.minutes)} min/boucle`, fc)}">${fmtFee(l.profitHour, l.fees)}</td>
+      </tr>`;
+    })
     .join("");
 
   $("empty").hidden = rows.length > 0;
@@ -478,6 +648,10 @@ let MARKET = null;            // graphe d'échange, chargé à la demande
 let enrouteReady = false;     // datalist/destSystem peuplés une seule fois
 let originMap = new Map();    // libellé « Nom — Système » -> index terminal (achat uniquement)
 let stationMap = new Map();   // libellé -> index, TOUS les terminaux (pour la vue Corrections)
+// Nom de terminal -> terminal de market.json. Pont indispensable aux frais d'autoload : routes.json
+// et loops.json ne portent QUE des noms, et les noms sont déjà la clé métier du dépôt (corrections
+// locales, jambes de voyage). Peuplée en même temps que stationMap.
+let termByName = new Map();
 let enrouteOrigin = null;     // index du terminal de départ sélectionné
 let stationSel = null;        // index de la station sélectionnée (vue Corrections)
 
@@ -510,6 +684,23 @@ function withMarket(then) {
   loadMarket().then(() => { setupEnRoute(); then(); }).catch(marketUnavailable);
 }
 
+// Les vues « Trajets » et « Boucles » lisent routes.json / loops.json, qui ne portent que des NOMS
+// de terminaux : `autoload` et `maxBox` n'existent que dans market.json, que ces deux vues n'ont
+// jamais eu besoin de charger. On le charge donc en TÂCHE DE FOND et on re-rend à l'arrivée, plutôt
+// que de retarder — ou de vider — la vue par défaut de l'app derrière un fetch de 85 ko : le tableau
+// reste lisible, ses profits simplement bruts le temps du chargement.
+// En cas d'échec on NE re-rend PAS : ce re-rendu rappellerait ensureFeeMarket, qui relancerait un
+// fetch (loadMarket ne mémorise jamais l'échec), en boucle. La prochaine action de l'utilisateur
+// réessaiera, ce qui est exactement la règle de loadMarket.
+let feeMarketPending = false;
+function ensureFeeMarket(f, then) {
+  if (!f.autoload || MARKET || feeMarketPending) return;
+  feeMarketPending = true;
+  loadMarket()
+    .then(() => { feeMarketPending = false; setupEnRoute(); then(); })
+    .catch(() => { feeMarketPending = false; marketUnavailable(); });
+}
+
 // Peuple la liste des terminaux de départ (ceux où l'on peut acheter). Idempotent.
 function setupEnRoute() {
   if (enrouteReady) return;
@@ -530,6 +721,7 @@ function setupEnRoute() {
   // Datalist de TOUTES les stations (achat ou vente) pour la vue Corrections.
   const stations = MARKET.terminals.map((t, i) => ({ label: stationLabel(t.name, t.system), i }));
   stations.forEach((s) => stationMap.set(s.label, s.i));
+  MARKET.terminals.forEach((t) => termByName.set(t.name, t)); // pont nom -> terminal (frais d'autoload)
   stations.sort((a, b) => a.label.localeCompare(b.label, "fr"));
   $("stationList").innerHTML = stations.map((s) => `<option value="${esc(s.label)}"></option>`).join("");
 
@@ -564,10 +756,14 @@ const isOv = (commodity, terminal, side, field) => {
   return !!(o && o[field] != null);
 };
 
-function manifestTotalsHTML(profit, scu, cargo, invest, cross) {
-  const empty = cargo - scu;
-  const profitHour = (profit * 60) / tripMinutes(0, cross);
-  return `Profit <b class="profit">${fmt(profit)}</b> aUEC · <b>${fmt(scu)}</b>/${fmt(cargo)} SCU${empty > 0 ? ` · ${fmt(empty)} SCU vides` : ""} · invest. ${fmt(invest)} · ~${fmt(profitHour)}/h`;
+// `m` = manifeste courant (il porte `fee`, le contexte de frais qui l'a produit) ; `t` = ses totaux.
+function manifestTotalsHTML(m, t) {
+  const empty = m.cargo - t.scu;
+  const profitHour = (t.profit * 60) / tripMinutes(0, m.cross);
+  // Les frais sont exposés à part plutôt que fondus dans le profit : c'est le seul moyen de voir
+  // ce que coûte la manutention d'un chargement à plusieurs commodités (une base par ligne).
+  const fees = t.fees > 0 ? ` · <span class="fee-chip" title="${m.feeInfo ? esc(`${feeEndText(m.feeInfo.a)} · ${feeEndText(m.feeInfo.b)} · une transaction par commodité · estimation ±3 %`) : ""}">frais ≈ ${fmt(t.fees)}</span>` : "";
+  return `Profit <b class="profit">${fmtFee(t.profit, t.fees)}</b> aUEC${fees} · <b>${fmt(t.scu)}</b>/${fmt(m.cargo)} SCU${empty > 0 ? ` · ${fmt(empty)} SCU vides` : ""} · invest. ${fmt(t.invest)} · ~${fmtFee(profitHour, t.fees)}/h`;
 }
 
 // Espace/budget restants d'après les SCU actuellement affectés.
@@ -591,7 +787,12 @@ const suggestionsFor = (m = currentManifest) => suggestionsFrom(MARKET, m, effVa
 function suggestionsHTML(m, addAttrs = "") {
   const rem = manifestRemaining(m);
   if (rem.cargoLeft <= 0) return "";
-  const sugg = suggestionsFor(m).map((it) => ({ it, u: addableUnits(it, rem) })).filter((x) => x.u >= 1).slice(0, 6);
+  const sugg = suggestionsFor(m).map((it) => ({ it, u: addableUnits(it, rem) })).filter((x) => x.u >= 1)
+    // Frais actifs : une commodité dont la manutention mange la marge fait PERDRE de l'argent, et
+    // le manifeste optimal l'écarte déjà (manifestsFrom). La proposer en tête, juste sous le
+    // manifeste qui vient de la refuser, serait une contradiction à l'écran.
+    .filter((x) => !m.fee || lineNet(x.u, x.it, m.fee) > 0)
+    .slice(0, 6);
   if (!sugg.length) return `<div class="suggest-head">${fmt(rem.cargoLeft)} SCU libres — aucune autre commodité rentable vers cette destination.</div>`;
   return `<div class="suggest-head">Remplir les ${fmt(rem.cargoLeft)} SCU libres — suggestions :</div>` +
     sugg.map(({ it, u }) =>
@@ -645,12 +846,12 @@ function removeManifestLine(name) {
 function paintManifest() {
   const m = currentManifest;
   const card = $("manifest");
-  const { profit, invest, scu } = manifestTotals(m.lines);
+  const totals = manifestTotals(m.lines, m.fee);
   card.hidden = false;
   card.innerHTML =
     `<div class="manifest-head">
       <span class="manifest-title">◈ Manifeste — ${esc(m.origin.name)}${sysBadge(m.origin.system)} → ${esc(m.dest.name)}${sysBadge(m.dest.system)}${m.cross ? ' <span class="cross">⚡ inter-système</span>' : ""}</span>
-      <span class="manifest-tot" id="manifestTot">${manifestTotalsHTML(profit, scu, m.cargo, invest, m.cross)}</span>
+      <span class="manifest-tot" id="manifestTot">${manifestTotalsHTML(m, totals)}</span>
       <button id="copyManifest" class="copy-btn" title="Copier le plan de chargement">⧉ Copier</button>
     </div>
     <div class="manifest-lines">` +
@@ -663,14 +864,20 @@ function paintManifest() {
       const sellCell = carry ? '<span class="carry-tag" title="Pas vendable à cette destination — à écouler ailleurs">vend ailleurs</span>' : editv(l.name, m.dest.name, "sell", "price", l.sellPrice, isOv(l.name, m.dest.name, "sell", "price"), l.sellUpdated);
       const stockCell = acq ? '<span class="muted">—</span>' : editv(l.name, m.origin.name, "buy", "vol", l.stock, isOv(l.name, m.origin.name, "buy", "vol"), l.buyUpdated);
       const buyCell = acq ? '<span class="carry-tag" title="Introuvable à l\'achat ici — fret déjà en soute (butin, minage, salvage). Ajuste les SCU à ce que tu transportes.">acquis ailleurs</span>' : editv(l.name, m.origin.name, "buy", "price", l.buyPrice, isOv(l.name, m.origin.name, "buy", "price"), l.buyUpdated);
-      const profitCell = carry ? '<span class="mprofit muted">—</span>' : `<span class="mprofit profit">+${fmt(l.units * l.margin)}</span>`;
+      const lineFees = lineHaulFee(l.units, l, m.fee);
+      // Une ligne « vend ailleurs » n'a pas de profit ICI (elle sera écoulée plus loin), mais elle
+      // a bien été CHARGÉE ici : ses frais sont retranchés du total. Les taire laissait le total
+      // baisser sans qu'aucune ligne à l'écran ne l'explique.
+      const profitCell = carry
+        ? `<span class="mprofit muted"${lineFees > 0 ? ' title="Chargée ici, vendue ailleurs : seul le chargement est facturé sur ce trajet"' : ""}>${lineProfitText(l.units, l, m.fee)}</span>`
+        : `<span class="mprofit profit">${lineProfitText(l.units, l, m.fee)}</span>`;
       return `<div class="mline${carry ? " carry" : ""}${acq ? " acquired" : ""}">${commodityIcon(l.kind)}` +
-        `<span class="mqtywrap"><input type="number" class="mqty-input" min="0" value="${l.units}" data-i="${i}" data-margin="${l.margin}" data-buy="${l.buyPrice}" data-cap="${l.cap}" title="Ajuste librement — tu peux dépasser le stock UEX (vol de fret, relevé périmé…)" aria-label="SCU ${esc(l.name)}"><span class="munit">SCU</span></span>` +
+        `<span class="mqtywrap"><input type="number" class="mqty-input" min="0" value="${l.units}" data-i="${i}" data-cap="${l.cap}" title="Ajuste librement — tu peux dépasser le stock UEX (vol de fret, relevé périmé…)" aria-label="SCU ${esc(l.name)}"><span class="munit">SCU</span></span>` +
         `<span class="mname">${esc(l.name)}${illegalTag(l.illegal)}<button class="mline-del" data-name="${esc(l.name)}" title="Retirer du manifeste" aria-label="Retirer">✕</button></span>` +
         `<span class="mstock">stock ${stockCell} · dem. ${demCell}</span>` +
         `<span class="mprice">${buyCell} → ${sellCell}</span>` +
         profitCell +
-        `<span class="mboxes" title="Caisses SCU standard à charger">📦 ${scuBoxesLabel(l.units)}</span></div>`;
+        `<span class="mboxes" title="Caisses SCU standard à charger">📦 ${scuBoxesLabel(l.units, m.origin.maxBox)}</span></div>`;
     }).join("") +
     `</div>
     <div class="manifest-add">
@@ -684,6 +891,7 @@ function paintManifest() {
 // Recalcule totaux + profit par ligne d'après les SCU saisis, et rafraîchit les suggestions.
 function updateManifestTotals() {
   if (!currentManifest) return;
+  const pair = currentManifest.fee;
   document.querySelectorAll("#manifest .mqty-input").forEach((inp) => {
     const i = Number(inp.dataset.i);
     const cap = Number(inp.dataset.cap);
@@ -692,13 +900,18 @@ function updateManifestTotals() {
     // Le dépassement du stock UEX est autorisé (vol de fret, relevé périmé…) : on ne plafonne
     // plus à `cap`, on le signale visuellement pour que ce soit un choix conscient.
     inp.classList.toggle("over-stock", u > cap);
-    if (currentManifest.lines[i]) currentManifest.lines[i].units = u;
+    // La LIGNE, pas ses attributs data-* : elle seule porte `carry`/`acquired`, donc le nombre
+    // d'opérations réellement facturées. Recalculer à partir de la seule marge affichait un profit
+    // qui contredisait le total juste au-dessus.
+    const l = currentManifest.lines[i];
+    if (!l) return;
+    l.units = u;
     const line = inp.closest(".mline");
-    line.querySelector(".mprofit").textContent = "+" + fmt(u * Number(inp.dataset.margin));
-    line.querySelector(".mboxes").textContent = "📦 " + scuBoxesLabel(u);
+    line.querySelector(".mprofit").textContent = lineProfitText(u, l, pair);
+    line.querySelector(".mboxes").textContent = "📦 " + scuBoxesLabel(u, currentManifest.origin.maxBox);
   });
-  const { profit, invest, scu } = manifestTotals(currentManifest.lines); // unités déjà synchronisées ci-dessus
-  $("manifestTot").innerHTML = manifestTotalsHTML(profit, scu, currentManifest.cargo, invest, currentManifest.cross);
+  const totals = manifestTotals(currentManifest.lines, pair); // unités déjà synchronisées ci-dessus
+  $("manifestTot").innerHTML = manifestTotalsHTML(currentManifest, totals);
   renderSuggestions();
 }
 
@@ -706,14 +919,15 @@ function updateManifestTotals() {
 function copyManifest() {
   const m = currentManifest;
   if (!m) return;
-  const { profit, invest, scu } = manifestTotals(m.lines);
+  const { profit, invest, scu, fees } = manifestTotals(m.lines, m.fee);
   const rows = m.lines.map(
-    (l) => `${fmt(l.units)} SCU  ${l.name}  @ ${fmt(l.buyPrice)} -> ${fmt(l.sellPrice)}  (+${fmt(l.units * l.margin)} aUEC)  [${scuBoxesLabel(l.units)}]`
+    (l) => `${fmt(l.units)} SCU  ${l.name}  @ ${fmt(l.buyPrice)} -> ${fmt(l.sellPrice)}  (${lineProfitText(l.units, l, m.fee)} aUEC)  [${scuBoxesLabel(l.units, m.origin.maxBox)}]`
   );
   const text = [
     `Manifeste — ${m.origin.name} (${m.origin.system}) -> ${m.dest.name} (${m.dest.system})`,
     ...rows,
-    `Total : ${fmt(scu)}/${fmt(m.cargo)} SCU · profit ${fmt(profit)} aUEC · investissement ${fmt(invest)} aUEC`,
+    `Total : ${fmt(scu)}/${fmt(m.cargo)} SCU · profit ${fmtFee(profit, fees)} aUEC · investissement ${fmt(invest)} aUEC` +
+      (fees > 0 ? ` · frais d'autoload ≈ ${fmt(fees)} aUEC (estimation)` : ""),
   ].join("\n");
   const btn = $("copyManifest");
   navigator.clipboard?.writeText(text).then(() => {
@@ -733,7 +947,7 @@ function renderManifest(origin, destSystem, f, destTerminal) {
     card.innerHTML = `<div class="manifest-hint">Active la <b>soute (SCU)</b> pour calculer un manifeste de remplissage.</div>`;
     return;
   }
-  const man = bestManifest(MARKET, origin, destSystem, f, effVals, destTerminal);
+  const man = bestManifest(MARKET, origin, destSystem, f, effVals, destTerminal, feeResolver(f));
   if (!man) {
     card.hidden = false;
     card.innerHTML = `<div class="manifest-hint">Aucun chargement rentable depuis ce terminal vers cette destination.</div>`;
@@ -741,6 +955,9 @@ function renderManifest(origin, destSystem, f, destTerminal) {
   }
   man.originIdx = origin;
   man.f = f;
+  // `man.fee` (le contexte de frais) vient de manifestsFrom : on ne le reconstruit pas, on ne
+  // risque donc pas de le reconstruire AUTREMENT que ce qui a servi à choisir la destination.
+  man.feeInfo = feeCtx(f, man.origin.name, man.dest.name, man.origin, man.dest);
   currentManifest = man;
   paintManifest();
 }
@@ -765,7 +982,10 @@ function renderEnRoute() {
   const destSystem = $("destSystem").value;
   // sysFilter:"" — le système d'arrivée est filtré par destSystem (ou le terminal forcé), pas par le menu « système d'achat ».
   const ef = { ...f, sysFilter: "" };
-  let deals = enRouteDeals(MARKET, enrouteOrigin, destSystem, enrouteDest)
+  // Le contexte de frais descend DANS enRouteDeals : elle ne garde qu'UNE vente par commodité, donc
+  // une destination meilleure en net n'entrerait jamais dans la liste — et la carte Manifeste, juste
+  // au-dessus, afficherait la destination inverse (bestManifest, lui, tranche déjà sur le net).
+  let deals = enRouteDeals(MARKET, enrouteOrigin, destSystem, enrouteDest, f, feeResolver(f))
     .filter((r) => routePasses(r, ef))
     .map((r) => evaluate(r, f));
 
@@ -789,29 +1009,34 @@ function resolveChainOrigin() {
 
 // buildChainAdjacency vit dans logic.mjs (fonction pure) ; appelée avec MARKET + effVals.
 
-function chainCardHTML(chain) {
+function chainCardHTML(chain, f) {
   const T = (idx) => MARKET.terminals[idx];
   const invest = chain.legs[0] ? chain.legs[0].units * chain.legs[0].buyPrice : 0;
   let minutes = 0;
   for (let i = 0; i < chain.legs.length; i++) {
     minutes += tripMinutes(0, T(chain.path[i]).system !== T(chain.path[i + 1]).system);
   }
+  // Deux opérations par saut. bestChain a déjà retranché ces frais (il les reçoit par `leg.fee`) :
+  // on ne fait ici que les rendre lisibles, jamais les recalculer autrement.
+  const totalFees = chain.legs.reduce((s, leg) => s + haulFee(leg.units, leg.fee), 0);
   const nodes = chain.path
     .map((idx) => `<span class="snode term">${esc(T(idx).name)}</span>${sysBadge(T(idx).system)}`)
     .join('<span class="chain-arrow">→</span>');
   const legs = chain.legs
     .map((leg, i) => {
-      const from = T(chain.path[i]).name, to = T(chain.path[i + 1]).name;
+      const a = T(chain.path[i]), b = T(chain.path[i + 1]);
+      const fees = haulFee(leg.units, leg.fee);
+      const fc = feeCell(feeCtx(f, a.name, b.name, a, b), fees, () => feeLoadText(leg.units, a.maxBox), leg.units > 0);
       return `<div class="chain-leg"><span class="chain-step">${i + 1}</span><div class="chain-leg-main">` +
         `<div class="commodity-cell">${commodityIcon(leg.kind)}<span><b>${esc(leg.commodity)}</b>${illegalTag(leg.illegal)} · ${fmt(leg.units)} SCU</span></div>` +
-        `<div class="loc-sub">${esc(from)} → ${esc(to)} · ${fmt(leg.buyPrice)} → ${fmt(leg.sellPrice)} (marge ${fmt(leg.margin)}/SCU)</div>` +
-        `</div><span class="chain-leg-profit profit">+${fmt(leg.profit)}</span></div>`;
+        `<div class="loc-sub">${esc(a.name)} → ${esc(b.name)} · ${fmt(leg.buyPrice)} → ${fmt(leg.sellPrice)} (marge ${fmt(leg.margin)}/SCU)</div>` +
+        `</div><span class="chain-leg-profit profit"${fc.attr}>+${fmtFee(leg.profit, fees)}${fc.mark}</span></div>`;
     })
     .join("");
   return `<div class="chain">
       <div class="chain-head">
         <span class="chain-path">${nodes}</span>
-        <span class="chain-tot">Profit <b class="profit">${fmt(chain.profit)}</b> aUEC · ${chain.legs.length} saut${chain.legs.length > 1 ? "s" : ""} · capital de départ ${fmt(invest)} · ~${Math.round(minutes)} min</span>
+        <span class="chain-tot">Profit <b class="profit">${fmtFee(chain.profit, totalFees)}</b> aUEC${totalFees > 0 ? ` · frais ≈ ${fmt(totalFees)}` : ""} · ${chain.legs.length} saut${chain.legs.length > 1 ? "s" : ""} · capital de départ ${fmt(invest)} · ~${Math.round(minutes)} min</span>
         <button id="chainToJourney" class="chain-pick" title="Ajouter cette chaîne au voyage en cours">▶ Ajouter au voyage</button>
       </div>
       <div class="chain-legs">${legs}</div>
@@ -829,10 +1054,13 @@ function renderChain() {
   if (chainOrigin == null) return hint("Choisis un <b>terminal de départ</b> pour calculer une chaîne rentable.");
   if (!f.useCargo || !(f.cargo > 0)) return hint("Active la <b>soute (SCU)</b> pour dimensionner la chaîne.");
   const hops = Number($("hops").value) || 3;
-  const chain = bestChain(buildChainAdjacency(MARKET, f, effVals), chainOrigin, hops, { cargo: f.cargo });
+  // Les frais sont estampillés sur chaque leg par buildChainAdjacency — seul endroit de la chaîne
+  // où les deux terminaux d'un saut coexistent — puis consommés par bestChain, dont l'élagage et la
+  // sélection portent alors sur le profit NET.
+  const chain = bestChain(buildChainAdjacency(MARKET, f, effVals, feeResolver(f)), chainOrigin, hops, { cargo: f.cargo });
   if (!chain || !chain.legs.length) return hint("Aucune chaîne rentable depuis ce terminal avec ces filtres.");
   shownChain = chain;
-  box.innerHTML = chainCardHTML(chain);
+  box.innerHTML = chainCardHTML(chain, f);
   notifySuperseded();
 }
 
@@ -887,8 +1115,12 @@ function legManifest(leg, f) {
   const fromIdx = stationMap.get(stationLabel(leg.from, leg.fromSystem));
   const toIdx = stationMap.get(stationLabel(leg.to, leg.toSystem));
   if (fromIdx == null || toIdx == null) return null;
-  return bestManifest(MARKET, fromIdx, "", f, effVals, toIdx); // { lines, profit, … } ou null
+  return bestManifest(MARKET, fromIdx, "", f, effVals, toIdx, feeResolver(f)); // { lines, profit, … } ou null
 }
+
+// Contexte de frais d'une jambe. Le récap du voyage est affiché à CÔTÉ des tableaux : le laisser en
+// brut pendant que les six vues passent en net mettrait deux chiffres contradictoires côte à côte.
+const legFeeCtx = (leg, f) => feeCtx(f, leg.from, leg.to);
 
 // ---------- Édition inline des manifestes de jambe (persistée en localStorage, HORS lien) ----------
 // Le PARCOURS (arrêts) va dans l'URL ; les manifestes édités restent locaux.
@@ -946,8 +1178,6 @@ function legIntent(leg, i, f) {
   return JOURNEY_EDITS[k];
 }
 
-const legProfit = (lines) => manifestTotals(lines).profit;
-
 // Contexte de manifeste d'une jambe, à la forme attendue par suggestionsFor/manifestRemaining
 // (mêmes suggestions de remplissage qu'« En route »). null si le terminal ou la soute manque.
 function legSuggestCtx(leg, lines, f) {
@@ -956,11 +1186,12 @@ function legSuggestCtx(leg, lines, f) {
   const originIdx = stationMap.get(stationLabel(leg.from, leg.fromSystem));
   const destIdx = stationMap.get(stationLabel(leg.to, leg.toSystem));
   if (originIdx == null || destIdx == null) return null;
+  const ctx = legFeeCtx(leg, f);
   return {
     lines, originIdx, destIdx,
     origin: { name: leg.from, system: leg.fromSystem },
     dest: { name: leg.to, system: leg.toSystem },
-    cargo: f.cargo, f,
+    cargo: f.cargo, f, fee: ctx && ctx.pair, // même filtrage des suggestions qu'« En route »
   };
 }
 
@@ -993,9 +1224,11 @@ function liveLegQty(i, li, inp) {
   const l = lines[li];
   if (!l) return;
   inp.classList.toggle("over-stock", isFinite(l.cap) && u > l.cap);
+  const ctx = legFeeCtx(leg, f);
+  const pair = ctx && ctx.pair;
   const row = inp.closest(".jman-line");
   const prof = row && row.querySelector(".jman-profit");
-  if (prof) prof.textContent = l.sellPrice == null ? "—" : "+" + fmt(u * (l.margin || 0));
+  if (prof) prof.textContent = lineProfitText(u, l, pair);
   renderLegSuggestions(i, lines);
 }
 // Repeint la boîte de suggestions d'une jambe dépliée.
@@ -1172,10 +1405,11 @@ function renderJourney() {
     .join('<span class="jsep">→</span>');
   const n = JOURNEY.legs.length;
   const f = readFilters();
-  let totalProfit = 0, totalScu = 0; // récap : profit réel (aUEC) et SCU transportés sur tout le voyage
+  let totalProfit = 0, totalScu = 0, totalFees = 0; // récap : profit réel, SCU et frais du voyage
   // Manifeste (cargaison) de chaque jambe — optimal ou édité ; jambe dépliable pour l'éditer.
   const legsHtml = JOURNEY.legs.map((leg, i) => {
     const lines = MARKET ? legEffectiveLines(leg, i, f) : null;
+    const pair = MARKET ? (legFeeCtx(leg, f) || {}).pair : null;
     const edited = MARKET && !!JOURNEY_EDITS[legKey(leg, i)];
     const expanded = i === journeyExpandedLeg;
     let cargo, total;
@@ -1183,8 +1417,10 @@ function renderJourney() {
     else if (!lines.length) { cargo = '<span class="muted">aucun fret rentable</span>'; total = "0"; }
     else {
       cargo = lines.map((l) => `<span class="jcargo-item">${freshDot(lineFreshUpdated(l))}${commodityIcon(l.kind)}<span>${esc(l.name)}${illegalTag(l.illegal)}</span> <b>${fmt(l.units)} SCU</b></span>`).join("");
-      total = fmt(legProfit(lines));
-      totalProfit += legProfit(lines);
+      const t = manifestTotals(lines, pair);
+      total = fmtFee(t.profit, t.fees);
+      totalProfit += t.profit;
+      totalFees += t.fees;
       totalScu += lines.reduce((s, l) => s + l.units, 0);
     }
     let editor = "";
@@ -1193,7 +1429,7 @@ function renderJourney() {
         `<div class="jman-line">${commodityIcon(l.kind)}` +
         `<span class="mqtywrap"><input type="number" class="jman-qty" min="0" value="${l.units}" data-leg="${i}" data-i="${li}" aria-label="SCU ${esc(l.name)}"><span class="munit">SCU</span></span>` +
         `<span class="jman-name">${freshDot(lineFreshUpdated(l))}${esc(l.name)}${illegalTag(l.illegal)}${l.acquired ? ' <span class="carry-tag" title="Introuvable à l\'achat ici — fret déjà en soute">acquis ailleurs</span>' : ""}${l.sellPrice == null ? ' <span class="carry-tag">vend ailleurs</span>' : ""}</span>` +
-        `<span class="jman-profit profit">${l.sellPrice == null ? "—" : "+" + fmt(l.units * (l.margin || 0))}</span>` +
+        `<span class="jman-profit profit">${lineProfitText(l.units, l, pair)}</span>` +
         `<button class="jman-del" data-leg="${i}" data-name="${esc(l.name)}" title="Retirer">✕</button></div>`
       ).join("") || '<div class="muted jman-empty">Aucune commodité.</div>';
       const sctx = legSuggestCtx(leg, lines, f);
@@ -1228,11 +1464,11 @@ function renderJourney() {
      ${suggestBlock}
      <div class="journey-meta">${n} saut${n > 1 ? "s" : ""} · marge cumulée <b class="profit">${fmt(journeyMargin(JOURNEY))}</b> aUEC/SCU</div>`;
 
-  renderJourneyRecap({ n, totalProfit, totalScu, systems: new Set(stations.map((s) => s.system)).size });
+  renderJourneyRecap({ n, totalProfit, totalScu, totalFees, systems: new Set(stations.map((s) => s.system)).size });
 }
 
 // Récap du voyage (colonne de gauche, sous le vaisseau) : remplit l'espace avec des KPIs utiles.
-function renderJourneyRecap({ n, totalProfit, totalScu, systems }) {
+function renderJourneyRecap({ n, totalProfit, totalScu, totalFees, systems }) {
   const recap = $("journeyRecap");
   if (!recap) return;
   recap.hidden = false;
@@ -1240,7 +1476,7 @@ function renderJourneyRecap({ n, totalProfit, totalScu, systems }) {
   const kpi = (v, lbl) => `<div class="recap-kpi"><b>${v}</b><span>${lbl}</span></div>`;
   recap.innerHTML =
     `<div class="recap-head">◈ Résumé du voyage</div>
-     <div class="recap-profit">${MARKET ? "+" + fmt(totalProfit) : "…"} <span>aUEC</span></div>
+     <div class="recap-profit"${totalFees > 0 ? ` title="Frais d'autoload ≈ ${fmt(totalFees)} aUEC déjà déduits — estimation (±3 %)"` : ""}>${MARKET ? (totalFees > 0 ? "≈ +" : "+") + fmt(totalProfit) : "…"} <span>aUEC</span></div>
      <div class="recap-kpis">
        ${kpi(n, "saut" + (n > 1 ? "s" : ""))}
        ${kpi(MARKET ? fmt(totalScu) : "…", "SCU")}
@@ -1449,8 +1685,10 @@ async function loadShips() {
 // ---------- Persistance & permaliens ----------
 // L'état (filtres, tri, vue, vaisseau) est sauvé dans localStorage ET encodé dans le
 // hash de l'URL, pour reprendre là où on s'est arrêté et partager une vue précise.
-const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem", "destTerminal", "chainOrigin", "hops", "station"];
-const STATE_CHECKS = ["useCargo", "useBudget", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiCommodity"];
+// `alk` = coefficient d'autoload global : partageable, comme tous les réglages. Les relevés PAR
+// STATION, eux, restent locaux — c'est la même frontière que pour les corrections de prix.
+const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem", "destTerminal", "chainOrigin", "hops", "station", "alk"];
+const STATE_CHECKS = ["useCargo", "useBudget", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiCommodity", "autoload"];
 // safeKey / encodeState / decodeState viennent de logic.mjs.
 
 let restoring = false; // évite de resauver pendant qu'on applique un état
@@ -1570,10 +1808,62 @@ function resetAllOverrides() {
   refresh();
 }
 
+// Enregistre un relevé de tarif d'autoload pour la station affichée. On mémorise le montant et la
+// quantité observés en plus de `k` : c'est la MESURE qui fait foi, `k` n'en est que la lecture — si
+// la grille change à un patch, un relevé conservé reste réinterprétable.
+function saveStationReading() {
+  if (stationSel == null) return;
+  const t = MARKET.terminals[stationSel];
+  const amount = Number($("alAmount").value);
+  const scu = Math.floor(Number($("alScu").value));
+  const k = kFromReading(amount, scu, t.maxBox);
+  if (k == null) { showToast("⚠ Relevé inutilisable — indique le montant payé et la quantité chargée"); return; }
+  AUTOLOAD_K[alKey(t.name)] = { k, amount, scu };
+  saveAutoloadK();
+  refresh();
+}
+function forgetStationReading(key) { delete AUTOLOAD_K[key]; saveAutoloadK(); refresh(); }
+function resetAllReadings() {
+  if (!Object.keys(AUTOLOAD_K).length) return;
+  if (!confirm("Oublier tous tes relevés de tarif d'autoload ?")) return;
+  AUTOLOAD_K = {};
+  saveAutoloadK();
+  refresh();
+}
+
 // ---------- Vue « Corrections » : liste + édition par station ----------
 function resolveStation() {
   const v = $("station").value.trim();
   stationSel = stationMap.has(v) ? stationMap.get(v) : null;
+}
+
+// Relevé du tarif d'autoload d'une station. L'utilisateur ne saisit PAS `k` : personne ne lit un
+// coefficient en jeu, on lit une facture. Il donne un montant observé pour une quantité, et `k` s'en
+// déduit. Les champs ne portent PAS la classe `.editv` : le handler global de l'édition inline
+// l'attrape partout dans le document et écrirait dans les corrections de prix.
+function stationFeeHTML(S) {
+  const t = MARKET.terminals[S];
+  const head = `<div class="fee-head">◈ Frais d'autoload — ${esc(t.name)}</div>`;
+  const wrap = (body) => `<div class="fee-panel">${head}${body}</div>`;
+  // Deux non-dits distincts, et aucun ne doit se lire « 0 aUEC » : le champ absent (instantané de
+  // market.json antérieur au build qui l'ajoute) et le service réellement indisponible.
+  if (t.autoload == null) return wrap('<p class="fee-off">Donnée d\'autoload absente de cet export UEX : aucun frais n\'est facturé à cette station tant qu\'elle manque.</p>');
+  if (t.autoload !== true) return wrap('<p class="fee-off">Cette station ne propose pas l\'autoload : aucun frais n\'y est facturé, quel que soit ton réglage.</p>');
+  const rec = AUTOLOAD_K[alKey(t.name)];
+  const k = kFor(t.name);
+  const scu = rec ? rec.scu : 32;
+  const note = `<div class="fee-note">Tarif retenu : <b>k = ${k.toLocaleString("fr-FR", { maximumFractionDigits: 3 })}</b> ${rec ? "(ton relevé)" : "(k global)"} — soit ≈ <b>${fmt(autoloadFee(scu, t.maxBox, k))}</b> aUEC pour ${fmt(scu)} SCU${t.maxBox ? `, caisses de ${fmt(t.maxBox)} SCU max` : ""}.</div>`;
+  return wrap(
+    `<div class="fee-row">
+       <span>Montant observé</span>
+       <input id="alAmount" type="number" min="0" step="1" value="${rec ? rec.amount : ""}" placeholder="ex : 1159" aria-label="Montant payé en aUEC" />
+       <span>aUEC pour</span>
+       <input id="alScu" type="number" min="1" step="1" value="${scu}" aria-label="Quantité en SCU" />
+       <span>SCU</span>
+       <button id="alSave" type="button" class="copy-btn">Enregistrer</button>
+       ${rec ? `<button type="button" class="corr-del al-del" data-key="${esc(alKey(t.name))}" title="Oublier ce relevé" aria-label="Oublier ce relevé">✕</button>` : ""}
+     </div>${note}`
+  );
 }
 
 // Tableau éditable des commodités d'une station (prix/stock à l'achat, prix/demande à la vente).
@@ -1593,9 +1883,25 @@ function stationTableHTML(S, q) {
       : '<span class="muted">—</span>';
     rows.push(`<tr><td class="loc"><div class="commodity-cell">${commodityIcon(c.kind)}<span>${esc(c.name)}${illegalTag(c.illegal)}</span></div></td><td>${buyCell}</td><td>${sellCell}</td></tr>`);
   });
-  if (!rows.length) return `<p class="empty">Aucune commodité ${q ? "correspondante " : ""}à ${esc(t.name)}.</p>`;
+  const fee = stationFeeHTML(S);
+  if (!rows.length) return `${fee}<p class="empty">Aucune commodité ${q ? "correspondante " : ""}à ${esc(t.name)}.</p>`;
   return `<div class="station-title">◈ ${esc(t.name)}${sysBadge(t.system)} — clique un chiffre pour le corriger localement</div>
+    ${fee}
     <table class="station-table"><thead><tr><th>Commodité</th><th>Achat (prix · stock)</th><th>Vente (prix · demande)</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
+}
+
+// Liste des relevés d'autoload, à côté des corrections locales et sur le même modèle : ils sont de
+// la même nature (mesures faites en jeu, purement locales), mais ils ne comptent PAS dans le badge
+// « ✎ Corrections (n) » et « Tout réinitialiser » ne les touche pas — ils ont leur propre store.
+function autoloadListHTML() {
+  const keys = Object.keys(AUTOLOAD_K);
+  if (!keys.length) return "";
+  const items = keys.sort().map((key) => {
+    const o = AUTOLOAD_K[key];
+    const terminal = key.slice(key.indexOf("|") + 1);
+    return `<div class="corr-item autoload"><div><b>${esc(terminal)}</b> <span class="corr-side">autoload</span><div class="loc-sub">k = <b>${o.k.toLocaleString("fr-FR", { maximumFractionDigits: 3 })}</b> · ${fmt(o.amount)} aUEC observés pour ${fmt(o.scu)} SCU</div></div><button class="corr-del al-del" data-key="${esc(key)}" title="Oublier ce relevé">✕</button></div>`;
+  }).join("");
+  return `<div class="corr-list-head"><span>${keys.length} relevé${keys.length > 1 ? "s" : ""} d'autoload</span><button id="resetAllK" class="reset-ov">Tout oublier</button></div>${items}`;
 }
 
 // Liste de toutes les corrections locales, avec suppression individuelle.
@@ -1621,7 +1927,7 @@ function renderCorrections() {
   const q = $("search").value.trim().toLowerCase();
   const station = stationSel != null ? stationTableHTML(stationSel, q) : '<p class="manifest-hint">Cherche une station ci-dessus pour voir et corriger ses prix et stocks.</p>';
   $("correctionsStation").innerHTML = station;
-  $("correctionsList").innerHTML = correctionsListHTML();
+  $("correctionsList").innerHTML = correctionsListHTML() + autoloadListHTML();
   notifySuperseded();
 }
 
@@ -1785,6 +2091,10 @@ function syncToggles() {
   // Multi-commodité : remplir la soute n'a pas de sens sans soute bornée -> coche grisée.
   $("multiCommodity").disabled = cargoOff;
   $("multiCommodityLabel").classList.toggle("disabled", cargoOff);
+  // Frais d'autoload : le coefficient global n'a de sens que l'interrupteur actif -> champ masqué
+  // sinon (il reste dans l'état, donc dans le lien). La coche, elle, n'est PAS grisée sans soute :
+  // le budget ou le plafond de stock bornent aussi le volume, et un volume borné suffit à facturer.
+  $("alkField").hidden = !$("autoload").checked;
 }
 
 async function init() {
@@ -1796,10 +2106,12 @@ async function init() {
   // d'une seconde de thread bloqué pour taper « Laranite », et deux recalculs sur des valeurs
   // absurdes quand on tape « 696 » dans la soute (6 puis 69 SCU).
   // Menus et cases à cocher restent IMMÉDIATS : ils n'émettent qu'un seul événement.
-  ["cargo", "budget", "search"].forEach((id) => $(id).addEventListener("input", refreshDebounced));
+  ["cargo", "budget", "search", "alk"].forEach((id) => $(id).addEventListener("input", refreshDebounced));
   ["system", "freshness", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiCommodity"].forEach((id) =>
     $(id).addEventListener("input", refresh)
   );
+  // L'interrupteur d'autoload fait aussi apparaître/disparaître le champ du coefficient global.
+  $("autoload").addEventListener("input", () => { syncToggles(); refresh(); });
   ["useCargo", "useBudget"].forEach((id) =>
     $(id).addEventListener("change", () => {
       syncToggles();
@@ -1834,9 +2146,19 @@ async function init() {
   // Contrôles « Corrections » : recherche de station + suppression / reset (délégué).
   $("station").addEventListener("input", () => { resolveStation(); refresh(); });
   $("corrections").addEventListener("click", (e) => {
+    // Les relevés d'autoload se testent AVANT les corrections : leur ✕ porte aussi `.corr-del`
+    // (même bouton à l'écran) et tomberait sinon dans la branche qui écrit dans OVERRIDES.
+    const alDel = e.target.closest(".al-del");
+    if (alDel) { forgetStationReading(alDel.dataset.key); return; }
     const del = e.target.closest(".corr-del");
     if (del) { delete OVERRIDES[del.dataset.key]; saveOverrides(); updateOvBadge(); refresh(); return; }
+    if (e.target.closest("#alSave")) { saveStationReading(); return; }
+    if (e.target.closest("#resetAllK")) { resetAllReadings(); return; }
     if (e.target.closest("#resetAll")) resetAllOverrides();
+  });
+  // Validation du relevé d'autoload à la touche Entrée (les deux champs sont dans le même panneau).
+  $("corrections").addEventListener("keydown", (e) => {
+    if ((e.target.id === "alAmount" || e.target.id === "alScu") && e.key === "Enter") { e.preventDefault(); saveStationReading(); }
   });
   // Manifeste : ajustement des SCU + ajout (suggéré ou libre) + retrait d'une ligne.
   $("manifest").addEventListener("input", (e) => {
@@ -1957,6 +2279,7 @@ async function init() {
     else if (e.key === "6") switchView("commodities");
   });
   loadOverrides();
+  loadAutoloadK();
   loadJourneyEdits();
   updateOvBadge();
   syncToggles();

@@ -15,6 +15,7 @@ reconstruites/redéployées **quand UEX a réellement changé** — et le site e
 - [Déploiement (une seule fois)](#déploiement-une-seule-fois)
 - [Architecture](#architecture)
 - [Corrections locales](#corrections-locales)
+- [Frais d'autoload](#frais-dautoload)
 - [Tests](#tests)
 - [Personnalisation](#personnalisation)
 - [Sources de données](#sources-de-données)
@@ -37,6 +38,7 @@ Autres éléments :
 - **Vaisseau** : autocomplétion par sous-chaîne (128 modèles UEX), remplit la soute automatiquement, affiche la photo.
 - **Contraintes désactivables** : couper le budget → meilleure route pour la soute ; couper la soute → meilleure route pour le budget.
 - **Multi commodité** (vue Trajets) : balaie tout le marché et propose les **chargements combinés** A→B — la soute se remplit par marge décroissante, plafonnée par le stock et la demande. Seuls les chargements d'**au moins 2 commodités** sont listés (un trajet qui tient en une seule commodité est déjà dans la liste normale). Nécessite la soute activée ; la coche est grisée sinon.
+- **Frais d'autoload** (interrupteur **inactif par défaut**, à côté de « Multi commodité ») : déduit du profit le coût du chargement et du déchargement automatiques, facturé **des deux côtés** du trajet. Ces frais ne dépendent **ni du prix ni de la commodité** (c'est de la manutention, pas une commission) : indolores sur du fret cher (≈ 0,2 % sur 96 SCU d'or), décisifs sur du fret pauvre (≈ 29 % sur les mêmes 96 SCU de déchets) — exactement là où le classement se joue. Actif, les colonnes profit, profit/heure, **marge et ROI** passent en **net** et **le tri suit le net** ; sans quoi le tableau continuerait de classer sur un profit qu'on n'encaisse pas. La marge nette répartit les frais sur le volume transporté — une même colonne garde donc la même définition dans les deux modes de la vue. Seule la **jambe de voyage** retient la marge de marché : elle est persistée et voyage dans le lien, où des frais estimés au moment du clic n'auraient plus de sens. Les montants sont **estimés** et portent un `≈` : [pourquoi](#frais-dautoload).
 - **Mode Butin** (vue Commodités) : quand le coût d'acquisition est nul, la marge n'a plus de sens — seul compte le **prix de revente**. Ce mode liste **tout ce qui se vend** chez UEX, y compris les ~36 commodités sans aucun point d'achat, et n'affiche que **où l'écouler**. Sa heatmap se calcule **par rang** et non par ratio : les prix de revente s'étalent sur cinq ordres de grandeur (34 M aUEC/SCU pour le Saldynium contre 1 000 pour l'Iron Ore), une échelle linéaire écraserait tout le board.
 - **Décomposition SCU en caisses** (32/24/16/8/4/2/1) sur le manifeste et en infobulle.
 - **Manifeste ajustable** : chaque ligne se modifie à la main — tu peux **dépasser le stock UEX** (vol de fret, relevé périmé…) ; le champ passe en ambre pour le signaler.
@@ -62,11 +64,13 @@ Tous les filtres ne s'appliquent pas à toutes les vues — comportement **garan
 | Exclure avant-postes | ✅ | ✅ | ✅ | ✅ | — | ✅ |
 | Légales uniquement | ✅ | ✅ | ✅ | ✅ | — | ✅ |
 | Stock & demande | ✅ | ✅ | ✅ | ✅⁴ | — | — |
+| Frais d'autoload | ✅ | ✅ | ✅ | ✅ | — | —⁵ |
 
 ¹ Le budget se reconstitue à chaque vente → non pertinent pour une chaîne.
 ² Une chaîne est multi-commodité par nature.
 ³ Le terminal de départ est déjà choisi → le menu « système d'achat » serait redondant.
 ⁴ La chaîne plafonne **toujours** au stock/demande de chaque saut.
+⁵ Pas de quantité → pas de caisses → pas de frais : le board raisonne au SCU, et Corrections n'affiche aucun profit (elle ne fait qu'**héberger** les tarifs relevés, [voir plus bas](#frais-dautoload)).
 
 ## Démarrage rapide (local)
 
@@ -166,12 +170,53 @@ jamais partagé ni mis dans l'URL) et **intelligent** :
 - Elle est **périmée automatiquement** dès qu'UEX republie ce point avec un relevé plus récent (retour à la valeur UEX, petit flash de notification).
 - Sémantique respectée : un **stock d'achat à 0 = terminal vide** (plafonne à 0) ; une **demande brute à 0 = quantité inconnue** (ignorée) ; mais une **demande que _tu_ corriges à 0 = « pas de demande »** (plafonne à 0).
 
+## Frais d'autoload
+
+Le montant affiché est une **estimation assumée**, pas la facture du jeu. Voici précisément ce qui est
+mesuré et ce qui est extrapolé.
+
+**Mesuré** : 18 relevés en jeu (Star Citizen 4.9) sur **deux stations Pyro** (les Admin d'Endgame et de
+Ruin Station) — identiques à l'achat et à la vente, et identiques quelle que soit la commodité. Ils
+donnent une grille unique dont la station n'est qu'un multiplicateur `k` :
+
+```
+frais ≈ k × (150 + 30 × nombre_de_caisses + 20 × SCU)
+```
+
+Les trois constantes ne sont pas choisies, elles se **déduisent** des relevés, et sont ancrées sur la
+première station (`k = 1`) ; la seconde vaut `k = 1,4`. Confrontée aux 18 relevés, la formule s'écarte de
+**moins de 3 %** (2,8 % au pire, 1,6 % en moyenne) — c'est un test, qui tombera si le jeu change sa grille.
+
+**Extrapolé** : tout le reste, à commencer par la station. Ces deux stations sont les seules mesurées sur
+les **161 terminaux** qu'expose UEX, et `k` varie déjà de **40 %** de l'une à l'autre : l'incertitude sur
+la station est donc d'un ordre de grandeur au-dessus de celle de la formule. Les stations non relevées
+prennent un **`k` global réglable** (défaut 1,2, milieu des deux mesures). S'y ajoute le nombre de
+caisses, qui dépend du plafond de conteneur du terminal (`max_container_size` d'UEX), **replié sur 32
+quand UEX renvoie 0** : ce repli sous-estime les frais plutôt que de les inventer.
+
+D'où le **`≈` sur tout montant** : l'app donne un ordre de grandeur fiable, pas un chiffre exact. Si tu
+relèves le tarif réel d'une station, tu peux **l'enregistrer** (montant observé pour une quantité donnée →
+`k` déduit) : c'est **local**, comme les corrections, jamais partagé ni mis dans l'URL — seuls
+l'interrupteur et le `k` global entrent dans le permalien.
+
+Deux hypothèses complètent le modèle, faute de mesures : le **nombre de caisses est fixé au chargement**
+(au déchargement on sort les caisses qu'on a, seul le tarif change) et **une transaction par commodité**
+(un manifeste à trois commodités paie trois fois la base de 150 — le choix pessimiste). Une ligne qui
+n'est manutentionnée qu'à un bout ne paie qu'**une** opération : le fret chargé ici pour être écoulé
+plus loin (« vend ailleurs ») n'est pas déchargé à l'arrivée, celui déjà en soute (« acquis ailleurs » :
+butin, minage, salvage) n'a pas été chargé au départ. Un terminal qu'UEX déclare sans autoload
+(`is_auto_load`) n'est jamais facturé.
+
+Les relevés bruts et le raisonnement complet sont dans
+[`docs/superpowers/specs/2026-08-10-frais-autoload-design.md`](docs/superpowers/specs/2026-08-10-frais-autoload-design.md).
+
 ## Tests
 
 - **Unitaires** ([`logic.test.mjs`](logic.test.mjs), [`scripts/build-data.test.mjs`](scripts/build-data.test.mjs)) :
   couvrent les fonctions pures — calcul de routes/boucles/marché, score, contraintes de volume, moteur de
-  corrections, persistance, **résumés & points de commodités**, et **filtrage par vue** (chaîne, commodités).
-  Runner intégré `node --test`, **zéro dépendance**.
+  corrections, persistance, **résumés & points de commodités**, **filtrage par vue** (chaîne, commodités)
+  et **frais d'autoload** (les 18 relevés en fixture, écart ≤ 3 % ; interrupteur inactif → profits
+  strictement inchangés). Runner intégré `node --test`, **zéro dépendance**.
 - **E2E de fumée** ([`e2e/smoke.pw.mjs`](e2e/smoke.pw.mjs), Playwright) : non-régression des bugs vécus
   (carte vaisseau au reload, demande corrigée à 0, contrôles qui ne fuient plus, persistance des corrections,
   navigation, schéma) et **cohérence des filtres par vue** (« légales » agit sur Trajets/Boucles/Commodités,
