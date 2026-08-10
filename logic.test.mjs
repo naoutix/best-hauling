@@ -790,6 +790,39 @@ test("enRouteDeals : meilleure vente par commodité depuis l'origine", () => {
   assert.equal(gold.margin, 200);
 });
 
+// Marché conçu pour opposer le prix au gain : « Cher » paie mieux au SCU mais n'a presque plus de
+// capacité, « Vaste » paie un peu moins et prend toute la soute.
+const MKT_DEMANDE = () => ({
+  terminals: [
+    { name: "Départ", system: "Stanton", planet: "Hurston", outpost: false }, // 0
+    { name: "Cher", system: "Stanton", planet: "Crusader", outpost: false },  // 1
+    { name: "Vaste", system: "Stanton", planet: "ArcCorp", outpost: false },  // 2
+  ],
+  commodities: [
+    { name: "Gold", kind: "metal", illegal: false,
+      buys: [[0, 50, 500, NOW, 5]],
+      sells: [[1, 100, 5, NOW, 3], [2, 99, 500, NOW, 3]] },
+  ],
+});
+
+test("enRouteDeals : la vente retenue est celle qui RAPPORTE le plus, pas celle au prix le plus haut", () => {
+  // « Cher » plafonne à 5 SCU (demande 5) -> 5 × 50 = 250. « Vaste » prend les 96 SCU -> 96 × 49 = 4 704.
+  // Retenir le prix le plus haut divise le gain par 19 : computeUnits plafonne ensuite par cette
+  // demande, et la vraie destination a déjà été écartée en amont, donc elle n'apparaît nulle part.
+  const f = { useCargo: true, cargo: 96, useBudget: false, budget: 0, capStock: true };
+  const [d] = enRouteDeals(MKT_DEMANDE(), 0, "", null, f);
+  assert.equal(d.sell.terminal, "Vaste");
+  assert.equal(d.sell.demand, 500);
+});
+
+test("enRouteDeals : sans plafond de volume, le prix redevient le seul critère sensé", () => {
+  // capStock inactif : computeUnits ignore stock et demande, donc toutes les destinations chargent
+  // autant. À volume égal, le prix le plus haut EST l'optimum — et c'est le comportement d'origine.
+  const f = { useCargo: true, cargo: 96, useBudget: false, budget: 0, capStock: false };
+  assert.equal(enRouteDeals(MKT_DEMANDE(), 0, "", null, f)[0].sell.terminal, "Cher");
+  assert.equal(enRouteDeals(MKT_DEMANDE(), 0, "")[0].sell.terminal, "Cher"); // sans f : inchangé
+});
+
 test("enRouteDeals : filtre par système d'arrivée", () => {
   const deals = enRouteDeals(MKT(), 0, "Stanton");
   const gold = deals.find((d) => d.commodity === "Gold");
@@ -838,6 +871,78 @@ test("buildChainAdjacency : meilleure marge par paire de terminaux", () => {
   const to1 = legs.find((l) => l.to === 1);
   assert.equal(to1.commodity, "Gold");    // Gold (marge 50) bat Drug (marge 30) sur 0->1
   assert.equal(to1.margin, 50);
+});
+
+test("manifestsFrom : quand le BUDGET borne, l'ordre de remplissage ne laisse pas la soute vide", () => {
+  // Remplir par marge décroissante n'est optimal que si la soute est la seule contrainte. Sous
+  // budget, la ligne chère le draine d'abord : « Lourde » coûte 50 000/SCU, donc 2 SCU épuisent les
+  // 100 000 et rapportent 20 000, soute à 2/96. « Légère » à 1 000/SCU remplit les 96 SCU pour
+  // 864 000 — 43× plus, sur exactement les mêmes lignes candidates.
+  const mkt = {
+    terminals: [
+      { name: "A", system: "Stanton", planet: "Hurston", outpost: false },
+      { name: "B", system: "Stanton", planet: "Crusader", outpost: false },
+    ],
+    commodities: [
+      { name: "Lourde", kind: "metal", illegal: false, buys: [[0, 50_000, 96, NOW, 5]], sells: [[1, 60_000, 999, NOW, 3]] },
+      { name: "Légère", kind: "metal", illegal: false, buys: [[0, 1_000, 96, NOW, 5]], sells: [[1, 10_000, 999, NOW, 3]] },
+    ],
+  };
+  const f = { useCargo: true, cargo: 96, useBudget: true, budget: 100_000, legalOnly: false, noOutpost: false, maxAge: 0 };
+  const [t] = manifestsFrom(mkt, 0, "", f, idResolve);
+  assert.equal(t.profit, 864_000);
+  assert.equal(t.lines[0].name, "Légère");
+  assert.equal(t.lines[0].units, 96);
+});
+
+test("manifestsFrom : sans budget bornant, le remplissage par marge reste inchangé", () => {
+  // Soute seule contrainte -> le glouton par marge EST optimal, et on ne doit rien changer.
+  const f = { useCargo: true, cargo: 100, useBudget: false, budget: 0, legalOnly: false, noOutpost: false, maxAge: 0 };
+  const [t] = manifestsFrom(MKT(), 0, "", f, idResolve);
+  assert.equal(t.lines[0].name, "Gold"); // marge 200 > Drug 30
+});
+
+test("buildChainAdjacency : à soute bornée, le segment retenu est celui qui REMPLIT, pas le plus margé", () => {
+  // « Rare » marge 1 000 mais un seul SCU en stock -> 1 000 aUEC. « Vrac » marge 900 sur 96 SCU ->
+  // 86 400. Garder le plus margé évince définitivement le bon segment du graphe : bestChain ne peut
+  // plus le retrouver, puisqu'un seul segment survit par paire de terminaux.
+  const mkt = {
+    terminals: [
+      { name: "A", system: "Stanton", planet: "Hurston", outpost: false },
+      { name: "B", system: "Stanton", planet: "Crusader", outpost: false },
+    ],
+    commodities: [
+      { name: "Rare", kind: "metal", illegal: false, buys: [[0, 100, 1, NOW, 5]], sells: [[1, 1100, 500, NOW, 3]] },
+      { name: "Vrac", kind: "metal", illegal: false, buys: [[0, 100, 96, NOW, 5]], sells: [[1, 1000, 500, NOW, 3]] },
+    ],
+  };
+  const f = { legalOnly: false, noOutpost: false, useCargo: true, cargo: 96 };
+  assert.equal(buildChainAdjacency(mkt, f, idResolve).get(0)[0].commodity, "Vrac");
+  // Sans soute bornée, aucun volume n'est calculable : la marge reste le seul critère disponible.
+  const sansSoute = { legalOnly: false, noOutpost: false, useCargo: false, cargo: 0 };
+  assert.equal(buildChainAdjacency(mkt, sansSoute, idResolve).get(0)[0].commodity, "Rare");
+});
+
+test("bestChain : le faisceau ne coupe pas un préfixe modeste qui mène au meilleur circuit", () => {
+  // 60 sauts à 9 600 aUEC qui ne mènent nulle part, et un saut à 960 qui ouvre sur 960 000. Trié par
+  // profit cumulé, le bon préfixe arrive 61e : un faisceau de 40 le décapite au premier saut et la
+  // chaîne à 960 960 devient introuvable. C'est le mécanisme mesuré sur les vraies données, où
+  // 39 origines sur 107 perdaient plus de 5 %, jusqu'à ×4,53.
+  const adj = new Map();
+  const impasses = Array.from({ length: 60 }, (_, i) => ({
+    to: i + 1, commodity: `Impasse${i}`, kind: "metal", illegal: false,
+    margin: 100, buyPrice: 10, sellPrice: 110, stock: 96, demand: 96, demandKnown: true, fee: null,
+  }));
+  adj.set(0, [...impasses, {
+    to: 61, commodity: "Modeste", kind: "metal", illegal: false,
+    margin: 10, buyPrice: 10, sellPrice: 20, stock: 96, demand: 96, demandKnown: true, fee: null,
+  }]);
+  adj.set(61, [{
+    to: 62, commodity: "Jackpot", kind: "metal", illegal: false,
+    margin: 10_000, buyPrice: 10, sellPrice: 10_010, stock: 96, demand: 96, demandKnown: true, fee: null,
+  }]);
+  assert.equal(bestChain(adj, 0, 2, { cargo: 96, beam: 40 }).profit, 9_600); // l'ancien défaut
+  assert.equal(bestChain(adj, 0, 2, { cargo: 96 }).profit, 960_960);         // le faisceau par défaut
 });
 
 test("buildChainAdjacency : noOutpost écarte les segments vers/depuis un avant-poste", () => {
@@ -1997,32 +2102,34 @@ test("buildChainAdjacency : estampille sur chaque saut les frais de ses DEUX ter
   assert.equal(r.profit, 100 * 95 - 2 * OP1);
 });
 
-test("buildChainAdjacency : la commodité d'un saut se choisit sur le NET, pas sur la marge seule", () => {
-  // Les frais ne dépendent que du volume — mais les volumes, eux, diffèrent d'une commodité à
-  // l'autre. « Rare » a la plus forte marge et 2 SCU en stock : ses 200 aUEC ne couvrent pas ses
-  // deux opérations. Retenue sur sa seule marge, elle faisait élaguer le saut ENTIER par bestChain
-  // et la vue Chaîne annonçait « aucune chaîne rentable » alors que « Courante » remplissait la
-  // soute et rapportait.
+test("buildChainAdjacency : les frais peuvent renverser le choix de commodité d'un saut", () => {
+  // Le segment se choisit déjà sur le gain RÉALISABLE, stock compris. Les frais ajoutent une couche
+  // que le gain brut ne voit pas : la manutention se paie au volume, donc elle pénalise la grosse
+  // cargaison bien plus que la petite. « Grosse » rapporte davantage brut (96 × 60 = 5 760 contre
+  // 8 × 400 = 3 200) mais paie deux opérations de 96 SCU ; nette, elle passe DERRIÈRE « Petite ».
   const mkt = () => ({
     terminals: [TERM_NET("Depart"), TERM_NET("Sobre")],
     commodities: [
-      { name: "Rare", kind: "metal", illegal: false, buys: [[0, 100, 2, NOW, 5]], sells: [[1, 200, 999, NOW, 3]] },
-      { name: "Courante", kind: "metal", illegal: false, buys: [[0, 100, 96, NOW, 5]], sells: [[1, 150, 999, NOW, 3]] },
+      { name: "Grosse", kind: "metal", illegal: false, buys: [[0, 100, 96, NOW, 5]], sells: [[1, 160, 999, NOW, 3]] },
+      { name: "Petite", kind: "metal", illegal: false, buys: [[0, 100, 8, NOW, 5]], sells: [[1, 500, 999, NOW, 3]] },
     ],
   });
   const f = { legalOnly: false, noOutpost: false, useCargo: true, cargo: 96 };
-  // Sans frais : le critère historique (marge maximale) est conservé au caractère près.
-  assert.equal(buildChainAdjacency(mkt(), f, idResolve).get(0)[0].commodity, "Rare");
-  assert.equal(bestChain(buildChainAdjacency(mkt(), f, idResolve), 0, 1, { cargo: 96 }).profit, 2 * 100);
-  // Avec frais : « Rare » perd de l'argent, « Courante » en gagne -> c'est elle qui tient le saut.
+  const brutGrosse = 96 * 60, brutPetite = 8 * 400;
+  const netGrosse = brutGrosse - 2 * autoloadFee(96, 32, 1);
+  const netPetite = brutPetite - 2 * autoloadFee(8, 32, 1);
+  // Non vacuisant : les frais doivent VRAIMENT inverser l'ordre, sinon le test ne prouve rien.
+  assert.ok(brutGrosse > brutPetite && netGrosse < netPetite, "la fixture doit inverser le classement");
+
+  // Sans frais : le gain réalisable départage, donc la grosse cargaison.
+  assert.equal(buildChainAdjacency(mkt(), f, idResolve).get(0)[0].commodity, "Grosse");
+  assert.equal(bestChain(buildChainAdjacency(mkt(), f, idResolve), 0, 1, { cargo: 96 }).profit, brutGrosse);
+  // Avec frais : la manutention renverse le classement.
   const avec = buildChainAdjacency(mkt(), f, idResolve, feeNet);
-  assert.equal(avec.get(0)[0].commodity, "Courante");
+  assert.equal(avec.get(0)[0].commodity, "Petite");
   const chaine = bestChain(avec, 0, 1, { cargo: 96 });
   assert.ok(chaine, "un saut rentable ne doit pas disparaître du graphe");
-  assert.equal(chaine.profit, 96 * 50 - 2 * autoloadFee(96, 32, 1));
-  // Contre-épreuve : le graphe d'AVANT — celui qui retenait « Rare » — ne produit AUCUNE chaîne.
-  const surLaMarge = new Map([[0, [{ ...avec.get(0)[0], commodity: "Rare", margin: 100, stock: 2 }]]]);
-  assert.equal(bestChain(surLaMarge, 0, 1, { cargo: 96 }), null);
+  assert.equal(chaine.profit, netPetite);
 });
 
 test("buildChainAdjacency : sans soute bornée, le classement reste la marge (aucun volume calculable)", () => {

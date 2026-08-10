@@ -215,7 +215,9 @@ export function effValue(o, price, vol, dataUpdated) {
 }
 
 // ---------- Manifeste : remplissage glouton ----------
-// `items` déjà triés par marge décroissante. Plafonné par stock/demande ET budget.
+// `items` déjà triés par ordre de priorité — par marge décroissante quand la soute est la seule
+// contrainte, par rendement du capital quand le budget borne (`manifestsFrom` essaie les deux et
+// garde le meilleur). Plafonné par stock/demande ET budget.
 export function fillCargo(items, cargo, budget) {
   let cargoLeft = cargo;
   let budgetLeft = budget;
@@ -456,7 +458,13 @@ export function chainLegNet(leg, cargo) {
   return { units, profit: units * leg.margin - haulFee(units, leg.fee) };
 }
 
-export function bestChain(adj, start, hops, { cargo = Infinity, beam = 40 } = {}) {
+// Le faisceau tronque à chaque saut sur le profit CUMULÉ : un premier saut modeste qui ouvre sur un
+// circuit énorme est décapité avant d'avoir pu le montrer. Mesuré sur data/market.json (96 SCU,
+// 3 sauts) : à 40, 39 origines sur 107 rendaient plus de 5 % sous l'optimum du graphe, jusqu'à ×4,53
+// (Sunset Mesa, 582 816 -> 2 637 576). À 400, plus aucune. Le coût est payé une fois par action
+// utilisateur — l'app ne calcule qu'UNE chaîne — soit 7 ms sur le pire cas de l'UI (4 sauts) contre
+// 0,8 ms : imperceptible, là où la sous-optimalité, elle, se voyait.
+export function bestChain(adj, start, hops, { cargo = Infinity, beam = 400 } = {}) {
   let paths = [{ path: [start], visited: new Set([start]), profit: 0, legs: [] }];
   let best = null;
   for (let h = 0; h < hops; h++) {
@@ -576,13 +584,19 @@ export function enRouteDeals(market, origin, destSystem, destTerminal = null, f 
   market.commodities.forEach((c) => {
     const b = c.buys.find((x) => x[0] === origin);
     if (!b) return;
-    // Profit net d'une vente candidate, dans les termes exacts de routeMetrics. Volume non borné =
-    // aucun frais calculable (routeMetrics laisse déjà ces routes au brut) -> on reprend le prix.
+    // Profit RÉALISABLE d'une vente candidate, dans les termes exacts de routeMetrics. Le prix au SCU
+    // ne suffit pas : `computeUnits` plafonne ensuite par la demande du terminal, si bien qu'une
+    // vente très chère mais presque saturée rapporte moins qu'une vente un peu moins chère qui prend
+    // toute la soute — et la bonne destination, écartée ici, n'apparaît alors nulle part.
+    // Sans `f` (aucune contrainte connue) ou sur un volume non borné, il n'y a rien à comparer que
+    // le prix : c'est aussi le cas où toutes les destinations chargent autant, donc où le prix le
+    // plus haut EST l'optimum. `routeMetrics` laisse déjà ces routes au brut.
     const score = (s) => {
-      if (!autoloadFor || !f) return s[1];
+      if (!f) return s[1];
       const u = computeUnits(b[1], b[2], s[2], f);
       if (!isFinite(u)) return s[1];
-      return u * (s[1] - b[1]) - haulFee(u, { buy: buyPoint, sell: autoloadFor(market.terminals[s[0]]) });
+      const fee = autoloadFor ? haulFee(u, { buy: buyPoint, sell: autoloadFor(market.terminals[s[0]]) }) : 0;
+      return u * (s[1] - b[1]) - fee;
     };
     let best = null, bestScore = 0;
     for (const s of c.sells) {
@@ -670,19 +684,34 @@ export function manifestsFrom(market, origin, destSystem, f, resolve, destTermin
   const budget = f.useBudget && f.budget > 0 ? f.budget : Infinity;
   const buyPoint = autoloadFor ? autoloadFor(ot) : null;
   const trips = [];
+  // Deux ordres de remplissage, parce qu'aucun n'est optimal seul. Par marge décroissante : optimal
+  // quand la SOUTE est la seule contrainte. Par rendement du capital : préférable quand le BUDGET
+  // borne, car une ligne chère draine sinon le budget et laisse la soute à moitié vide (50 000/SCU
+  // épuise 100 000 aUEC en 2 SCU). Mais le rendement n'est pas non plus l'optimum — c'est un sac à
+  // dos à deux contraintes — et il dégrade certains cas. On garde donc le meilleur des deux : jamais
+  // pire qu'aujourd'hui par construction, et le second passage ne coûte que sous budget borné.
+  const parMarge = (a, b) => b.margin - a.margin;
+  const parRendement = (a, b) => (b.margin / b.buyPrice) - (a.margin / a.buyPrice) || parMarge(a, b);
   for (const [dest, items] of byDest) {
-    items.sort((a, b) => b.margin - a.margin);
-    const { lines, profit } = fillCargo(items, f.cargo, budget);
-    if (!lines.length) continue;
     const dt = market.terminals[dest];
     const fee = autoloadFor ? { buy: buyPoint, sell: autoloadFor(dt) } : null;
+    // Un remplissage jusqu'à son profit FINAL. Comparer les deux ordres sur le brut choisirait sur
+    // un chiffre qui n'est pas celui qui classe le manifeste : les frais grossissent avec le volume,
+    // donc le remplissage le plus chargé n'est pas toujours le plus rentable une fois déduits.
     // Une ligne dont les frais dépassent la marge fait perdre de l'argent : la charger quand même
     // classerait ce manifeste sous un autre qui, lui, l'aurait laissée au sol. La place libérée ne
-    // se recycle pas — les candidates suivantes sont triées par marge décroissante, donc pires.
-    const kept = fee ? lines.filter((l) => l.units * l.margin > lineHaulFee(l.units, l, fee)) : lines;
-    if (!kept.length) continue;
-    const net = fee ? manifestTotals(kept, fee).profit : profit;
-    trips.push({ origin: ot, originIdx: origin, dest: dt, destIdx: dest, cross: ot.system !== dt.system, lines: kept, profit: net, fee, cargo: f.cargo });
+    // se recycle pas — les candidates suivantes sont moins rentables, par construction du tri.
+    const evalue = (rempli) => {
+      const kept = fee ? rempli.lines.filter((l) => l.units * l.margin > lineHaulFee(l.units, l, fee)) : rempli.lines;
+      return { lines: kept, profit: fee ? manifestTotals(kept, fee).profit : rempli.profit };
+    };
+    let meilleur = evalue(fillCargo([...items].sort(parMarge), f.cargo, budget));
+    if (isFinite(budget)) {
+      const alt = evalue(fillCargo([...items].sort(parRendement), f.cargo, budget));
+      if (alt.profit > meilleur.profit) meilleur = alt;
+    }
+    if (!meilleur.lines.length) continue;
+    trips.push({ origin: ot, originIdx: origin, dest: dt, destIdx: dest, cross: ot.system !== dt.system, lines: meilleur.lines, profit: meilleur.profit, fee, cargo: f.cargo });
   }
   return trips.sort((a, b) => b.profit - a.profit);
 }
@@ -794,9 +823,12 @@ export function multiTrips(market, f, resolve, limit = 300, minLines = 2, autolo
 export function buildChainAdjacency(market, f, resolve, autoloadFor = null) {
   const best = new Map(); // Map<u, Map<v, leg>>
   const cargo = f.useCargo && f.cargo > 0 ? f.cargo : Infinity;
+  // Un seul segment survit par paire de terminaux : le retenir sur la marge nue évince pour de bon
+  // une commodité un peu moins margée mais disponible en volume, et bestChain ne peut plus la
+  // retrouver. On arbitre donc sur le gain RÉALISABLE, plafonné par stock et demande.
   // Sans soute bornée aucun volume n'est calculable (chainLegNet rend 0 pour tout le monde) : le
   // net ne discriminerait plus rien, on s'en tient alors à la marge.
-  const parLeNet = !!autoloadFor && isFinite(cargo);
+  const parLeNet = isFinite(cargo);
   const mieux = (cand, cur) =>
     parLeNet ? chainLegNet(cand, cargo).profit > chainLegNet(cur, cargo).profit : cand.margin > cur.margin;
   market.commodities.forEach((c) => {
