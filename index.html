@@ -73,6 +73,12 @@
             <label class="toggle"><input id="useBudget" type="checkbox" checked /> Budget (aUEC)</label>
             <input id="budget" type="number" min="0" step="1000" value="1000000" />
           </div>
+          <!-- Coefficient d'autoload : ne sert que si l'interrupteur est actif, donc masqué sinon
+               (cf. syncToggles). Id volontairement court : la clé d'état EST l'id, il finit dans l'URL. -->
+          <div class="field" id="alkField" hidden>
+            <label for="alk">Coefficient autoload (k)</label>
+            <input id="alk" type="number" min="0" step="0.05" value="1.2" title="Tarif d'une station rapporté à Endgame (k = 1). Défaut 1,2 : milieu des deux seules stations mesurées (1,0 et 1,4). S'applique à toute station dont tu n'as pas relevé le tarif." />
+          </div>
           <div class="field">
             <label for="search">Commodité</label>
             <input id="search" type="text" placeholder="ex : Laranite" title="Filtrer par commodité (raccourci : /)" />
@@ -96,6 +102,7 @@
             <label><input id="legalOnly" type="checkbox" /> Commodités légales uniquement</label>
             <label><input id="capStock" type="checkbox" /> Limiter au stock &amp; à la demande (UEX)</label>
             <label id="multiCommodityLabel" title="Vue « Trajets » : remplit la soute avec PLUSIEURS commodités d'un même point A vers un même point B (nécessite la soute)."><input id="multiCommodity" type="checkbox" /> Multi commodité <span class="hint-tag">Trajets</span></label>
+            <label id="autoloadLabel" title="Retranche les frais de chargement/déchargement automatique aux terminaux : les colonnes profit passent en NET et le classement suit ce net. C'est une estimation (±3 %), signalée par « ≈ »."><input id="autoload" type="checkbox" /> Frais d'autoload <span class="hint-tag">Net</span></label>
           </div>
         </section>
 

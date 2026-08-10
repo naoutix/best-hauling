@@ -5,11 +5,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   tripMinutes, loopMinutes, ageDays, pairAge, freshnessFactor, availabilityFactor, tighterVolume,
-  normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits, scuBoxes, bestChain,
+  normalizeScores, bySort, computeUnits, effValue, fillCargo, addableUnits, scuBoxes, cargoBoxes, bestChain,
+  AUTOLOAD, autoloadFee, autoloadPoint, haulFee, lineHaulFee,
   manifestTotals, freeAddUnits, manifestLine, stationLabel, parseStationLabel,
   ovKey, effFromStore, setInStore, safeKey, encodeState, decodeState,
   profitPerHour, rawScoreOf, routePasses, loopPasses,
-  routeMetrics, loopMetrics, dealFrom, enRouteDeals, bestManifest, buildChainAdjacency,
+  routeMetrics, loopMetrics, netMarginRoi, dealFrom, enRouteDeals, bestManifest, buildChainAdjacency,
   pairEligible, suggestionsFrom,
   manifestsFrom, multiTrips, tripMetrics, legFromTrip,
   commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
@@ -380,6 +381,178 @@ test("scuBoxes : 0 ou négatif -> aucune caisse", () => {
   assert.deepEqual(scuBoxes(0), []);
   assert.deepEqual(scuBoxes(-5), []);
   assert.deepEqual(scuBoxes(null), []);
+});
+
+test("scuBoxes : maxBox plafonne la taille de caisse", () => {
+  // Un terminal à max_container_size = 16 ne peut PAS sortir une caisse de 32.
+  assert.deepEqual(scuBoxes(32, 16), [{ size: 16, count: 2 }]);
+  assert.deepEqual(scuBoxes(24, 8), [{ size: 8, count: 3 }]);
+  // Le plafond n'a pas à être une taille standard : on descend à la plus grande caisse qui tient.
+  assert.deepEqual(scuBoxes(32, 24), [{ size: 24, count: 1 }, { size: 8, count: 1 }]);
+  // Contre-épreuve : sans plafond, ces mêmes volumes font moins de caisses.
+  assert.deepEqual(scuBoxes(32), [{ size: 32, count: 1 }]);
+  assert.deepEqual(scuBoxes(24), [{ size: 24, count: 1 }]);
+});
+
+test("scuBoxes : sans maxBox (ou plafond inexploitable), comportement strictement inchangé", () => {
+  // Les appelants d'affichage existants passent un seul argument : leur sortie ne doit pas bouger.
+  for (const n of [0, 1, 7, 40, 96, 123, 1000, 4608]) {
+    assert.deepEqual(scuBoxes(n, undefined), scuBoxes(n));
+    assert.deepEqual(scuBoxes(n, null), scuBoxes(n));
+    assert.deepEqual(scuBoxes(n, 32), scuBoxes(n));      // 32 = plus grande caisse : plafond sans effet
+    // Un plafond aberrant ne doit pas faire disparaître du volume (aucune caisse ne tiendrait).
+    assert.deepEqual(scuBoxes(n, 0), scuBoxes(n));
+    assert.deepEqual(scuBoxes(n, -1), scuBoxes(n));
+  }
+});
+
+test("scuBoxes : plafonnée, la somme des caisses redonne toujours N", () => {
+  for (const n of [0, 1, 7, 40, 96, 123, 1000, 4608]) {
+    for (const maxBox of [1, 2, 4, 8, 16, 24, 32]) {
+      const total = scuBoxes(n, maxBox).reduce((a, b) => a + b.size * b.count, 0);
+      assert.equal(total, n, `${n} SCU plafonnés à ${maxBox}`);
+      assert.ok(scuBoxes(n, maxBox).every((b) => b.size <= maxBox), `caisse > ${maxBox}`);
+    }
+  }
+});
+
+test("cargoBoxes : les caisses se comptent PAR LIGNE, jamais sur le total des SCU", () => {
+  // Une caisse ne contient qu'une commodité. Quatre lignes de 8 SCU font quatre caisses de 8 —
+  // les décomposer ensemble en annoncerait UNE de 32, qui n'existe pas, et ce décompte sert à
+  // expliquer un montant facturé, lui, ligne par ligne.
+  const lignes = [8, 8, 8, 8].map((units) => ({ units }));
+  assert.deepEqual(cargoBoxes(lignes, 32), [{ size: 8, count: 4 }]);
+  assert.deepEqual(scuBoxes(32, 32), [{ size: 32, count: 1 }]); // contre-épreuve : le total mentirait
+  // Tailles mélangées : regroupées par taille, plus grande d'abord.
+  assert.deepEqual(cargoBoxes([{ units: 32 }, { units: 24 }, { units: 8 }], 32), [
+    { size: 32, count: 1 }, { size: 24, count: 1 }, { size: 8, count: 1 },
+  ]);
+  // Le plafond du terminal s'applique à chaque ligne, et le volume ne s'évapore jamais.
+  assert.deepEqual(cargoBoxes([{ units: 32 }, { units: 32 }], 16), [{ size: 16, count: 4 }]);
+  assert.deepEqual(cargoBoxes([], 32), []);
+  assert.deepEqual(cargoBoxes([{ units: 0 }], 32), []);
+  for (const lignes2 of [[{ units: 7 }, { units: 41 }, { units: 96 }], [{ units: 123 }]]) {
+    const total = cargoBoxes(lignes2, 24).reduce((a, b) => a + b.size * b.count, 0);
+    assert.equal(total, lignes2.reduce((a, l) => a + l.units, 0));
+  }
+});
+
+test("cargoBoxes : le décompte de caisses est celui que facture manifestTotals", () => {
+  // L'invariant qui manquait : l'infobulle annonçait « 32 SCU en 1 caisse » sous un montant
+  // calculé sur quatre. Le nombre de caisses affiché doit redonner le montant déduit.
+  const pair = { buy: { maxBox: 32, k: 1 }, sell: { maxBox: 32, k: 1 } };
+  const lignes = [8, 8, 8, 8].map((units) => ({ units, buyPrice: 10, margin: 100 }));
+  const { fees, scu } = manifestTotals(lignes, pair);
+  const caisses = cargoBoxes(lignes, 32).reduce((a, b) => a + b.count, 0);
+  assert.equal(caisses, 4);
+  // Deux opérations, une transaction par commodité (hypothèse 2) : la formule doit tomber juste.
+  assert.equal(fees, 2 * (lignes.length * AUTOLOAD.base + AUTOLOAD.perBox * caisses + AUTOLOAD.perScu * scu));
+  // Et le décompte du TOTAL, lui, ne redonne PAS le montant : c'est le bug qu'on interdit.
+  const surLeTotal = scuBoxes(scu, 32).reduce((a, b) => a + b.count, 0);
+  assert.notEqual(fees, 2 * (AUTOLOAD.base + AUTOLOAD.perBox * surLeTotal + AUTOLOAD.perScu * scu));
+});
+
+// ---------- Frais d'autoload ----------
+// Les 18 relevés en jeu (Star Citizen 4.9) qui ont produit la grille AUTOLOAD, recopiés depuis
+// docs/superpowers/specs/2026-08-10-frais-autoload-design.md. Les deux stations sont
+// max_container_size = 32, donc « ×n caisses de b SCU » se lit (scu = b*n, maxBox = b).
+// Ce test est le garde-fou du modèle : un changement de grille à un patch du jeu doit le faire
+// tomber plutôt que de laisser l'app classer sur des frais devenus faux.
+const RELEVES = [
+  // Admin — Endgame (Pyro, Rough & Ready) : c'est l'ancrage, k = 1 par définition.
+  { station: "Endgame", k: 1, boxSize: 8, count: 1, observe: 340 },
+  { station: "Endgame", k: 1, boxSize: 8, count: 2, observe: 530 },
+  { station: "Endgame", k: 1, boxSize: 8, count: 3, observe: 720 },
+  { station: "Endgame", k: 1, boxSize: 16, count: 1, observe: 510 },
+  { station: "Endgame", k: 1, boxSize: 16, count: 2, observe: 870 },
+  { station: "Endgame", k: 1, boxSize: 24, count: 1, observe: 645 },
+  { station: "Endgame", k: 1, boxSize: 24, count: 2, observe: 1139 },
+  { station: "Endgame", k: 1, boxSize: 24, count: 3, observe: 1634 },
+  { station: "Endgame", k: 1, boxSize: 32, count: 1, observe: 830 },
+  { station: "Endgame", k: 1, boxSize: 32, count: 2, observe: 1509 },
+  { station: "Endgame", k: 1, boxSize: 32, count: 3, observe: 2190 },
+  // Admin — Ruin Station (Pyro) : même grille, k = 1,4.
+  { station: "Ruin", k: 1.4, boxSize: 16, count: 1, observe: 711 },
+  { station: "Ruin", k: 1.4, boxSize: 16, count: 2, observe: 1215 },
+  { station: "Ruin", k: 1.4, boxSize: 24, count: 1, observe: 901 },
+  { station: "Ruin", k: 1.4, boxSize: 24, count: 2, observe: 1593 },
+  { station: "Ruin", k: 1.4, boxSize: 32, count: 1, observe: 1159 },
+  { station: "Ruin", k: 1.4, boxSize: 32, count: 2, observe: 2111 },
+  { station: "Ruin", k: 1.4, boxSize: 32, count: 3, observe: 3063 },
+];
+const ecartRelatif = (r) =>
+  Math.abs(autoloadFee(r.boxSize * r.count, r.boxSize, r.k) - r.observe) / r.observe;
+
+test("autoloadFee : les 18 relevés en jeu sont approchés à 3 % près", () => {
+  assert.equal(RELEVES.length, 18, "les 18 relevés de la spec doivent tous être confrontés");
+  for (const r of RELEVES) {
+    const e = ecartRelatif(r);
+    assert.ok(e <= 0.03, `${r.station} ${r.count}×${r.boxSize} SCU : écart ${(e * 100).toFixed(1)} %`);
+  }
+  // Garde anti-test-vide : la barre des 3 % ne doit pas être confortable. L'écart réel culmine à
+  // 2,8 % — si un jour il tombait à zéro partout, c'est le modèle ou la fixture qui aurait bougé.
+  const max = Math.max(...RELEVES.map(ecartRelatif));
+  assert.ok(max > 0.02, `écart max ${(max * 100).toFixed(1)} % : la tolérance ne mesure plus rien`);
+});
+
+test("autoloadFee : k discrimine bien les deux stations (contre-épreuve)", () => {
+  // Sans le coefficient de station, les relevés de Ruin sortent largement de la tolérance :
+  // c'est ce qui prouve que k porte une information et n'est pas un paramètre décoratif.
+  const ruin = RELEVES.filter((r) => r.station === "Ruin");
+  const pire = Math.max(...ruin.map((r) => ecartRelatif({ ...r, k: 1 })));
+  assert.ok(pire > 0.2, `Ruin au tarif Endgame ne dévie que de ${(pire * 100).toFixed(1)} %`);
+});
+
+test("autoloadFee : le fractionnement se paie", () => {
+  // Relevé n°2 de la spec : 32 SCU en deux caisses de 16 coûtent plus cher qu'en une de 32.
+  assert.ok(autoloadFee(32, 16, 1) > autoloadFee(32, 32, 1));
+  assert.equal(autoloadFee(32, 16, 1) - autoloadFee(32, 32, 1), AUTOLOAD.perBox);
+});
+
+test("autoloadFee : 0 SCU -> aucun frais", () => {
+  // La base de 150 facture une transaction, pas une visite : sans SCU chargé il n'y a pas de
+  // transaction. Facturer la base à vide rendrait négatif le profit d'une route qu'on n'emprunte
+  // pas — et pénaliserait les routes non bornées, où les SCU sont inconnus.
+  assert.equal(autoloadFee(0, 32, 1), 0);
+  assert.equal(autoloadFee(-5, 32, 1.4), 0);
+  assert.equal(autoloadFee(null, 32, 1), 0);
+});
+
+test("autoloadFee : k = 0 -> aucun frais", () => {
+  // k = 0 est le levier « ce terminal ne facture rien » (autoload absent, ou relevé à zéro).
+  assert.equal(autoloadFee(96, 32, 0), 0);
+  assert.equal(autoloadFee(96, 32, -1), 0);
+});
+
+test("autoloadFee : montant entier, jamais un flottant à afficher tel quel", () => {
+  assert.equal(autoloadFee(32, 32, 1), AUTOLOAD.base + AUTOLOAD.perBox + AUTOLOAD.perScu * 32);
+  for (const k of [1, 1.2, 1.4, 1.41]) {
+    for (const scu of [1, 7, 32, 96, 123]) {
+      const f = autoloadFee(scu, 32, k);
+      assert.equal(f, Math.round(f), `${scu} SCU à k=${k} rend ${f}`);
+    }
+  }
+});
+
+test("autoloadFee : à volume égal, un terminal plus plafonné coûte plus cher", () => {
+  // Corollaire direct de perBox : c'est ce qui justifie de descendre maxBox jusqu'ici plutôt que
+  // de facturer partout sur des caisses de 32.
+  const couts = [32, 24, 16, 8, 4, 2, 1].map((maxBox) => autoloadFee(96, maxBox, 1));
+  for (let i = 1; i < couts.length; i++) {
+    assert.ok(couts[i] > couts[i - 1], `plafonds décroissants : ${couts.join(" < ")}`);
+  }
+});
+
+test("autoloadFee : à taille de caisse constante, le coût croît avec le volume", () => {
+  // La croissance n'est PAS garantie SCU par SCU (31 SCU font 4 caisses, 32 une seule : le
+  // fractionnement rend 31 plus cher que 32). Elle l'est à caisse constante, seul cas qui a un sens.
+  let prec = 0;
+  for (let caisses = 1; caisses <= 8; caisses++) {
+    const f = autoloadFee(32 * caisses, 32, 1.2);
+    assert.ok(f > prec, `${caisses} caisses coûtent ${f}, pas plus que ${prec}`);
+    prec = f;
+  }
+  assert.ok(autoloadFee(31, 32, 1) > autoloadFee(32, 32, 1), "31 SCU en 4 caisses > 32 SCU en 1");
 });
 
 // ---------- addableUnits (suggestions) ----------
@@ -1061,17 +1234,18 @@ test("manifestTotals : somme profit/investissement/SCU sur les lignes", () => {
     { units: 10, buyPrice: 5, margin: 3 },   // profit 30, invest 50
     { units: 4, buyPrice: 20, margin: 7 },   // profit 28, invest 80
   ];
-  assert.deepEqual(manifestTotals(lines), { profit: 58, invest: 130, scu: 14 });
+  // `fees` est toujours rendu : sans contexte de frais il vaut 0 et `profit` reste le total brut.
+  assert.deepEqual(manifestTotals(lines), { profit: 58, invest: 130, scu: 14, fees: 0 });
 });
 
 test("manifestTotals : liste vide -> zéros", () => {
-  assert.deepEqual(manifestTotals([]), { profit: 0, invest: 0, scu: 0 });
+  assert.deepEqual(manifestTotals([]), { profit: 0, invest: 0, scu: 0, fees: 0 });
 });
 
 test("manifestTotals : tolère units/margin/buyPrice manquants (carry-only)", () => {
   // Ligne « carry » : pas vendable ici -> margin null ; unité définie mais buyPrice absent.
   const lines = [{ units: 8, margin: null }, { units: 3, buyPrice: 10, margin: 2 }];
-  assert.deepEqual(manifestTotals(lines), { profit: 6, invest: 30, scu: 11 });
+  assert.deepEqual(manifestTotals(lines), { profit: 6, invest: 30, scu: 11, fees: 0 });
 });
 
 // ---------- Manifeste : unités d'un ajout libre ----------
@@ -1519,4 +1693,388 @@ test("suggestionsFrom : une commodité déjà chargée n'est pas re-suggérée",
   };
   const m = { lines: [{ name: "Frais" }], originIdx: 0, destIdx: 1, origin: { name: "Ville", system: "S" }, dest: { name: "Dest", system: "S" }, f: {} };
   assert.deepEqual(suggestionsFrom(market, m, (n, t, s, price, vol) => ({ price, vol, ovol: true })), []);
+});
+
+// ---------- Frais d'autoload dans le moteur : le profit devient NET ----------
+// Deux points de frais : l'ancrage Endgame (k = 1, caisses de 32) et une station à la fois plus
+// chère et plus plafonnée — les deux seules variables qui font bouger une facture.
+const PT_A = { maxBox: 32, k: 1 };
+const PT_B = { maxBox: 16, k: 1.4 };
+
+test("autoloadPoint : sans autoload le terminal ne facture rien mais garde son plafond de caisse", () => {
+  assert.deepEqual(autoloadPoint({ name: "T", autoload: true, maxBox: 16 }, 1.4), { maxBox: 16, k: 1.4 });
+  // k = 0 = « ne facture rien ». Le maxBox survit quand même : c'est encore ce terminal qui décide
+  // de la taille des caisses, y compris quand c'est le joueur qui les empile à la main.
+  assert.deepEqual(autoloadPoint({ name: "T", autoload: false, maxBox: 16 }, 1.4), { maxBox: 16, k: 0 });
+  // Instantané de market.json antérieur au build qui ajoute les champs -> aucun frais, pas un crash.
+  assert.deepEqual(autoloadPoint({ name: "T" }, 1.4), { maxBox: undefined, k: 0 });
+  assert.equal(autoloadPoint(null, 1.4), null);
+});
+
+test("haulFee : deux opérations par chargement, chacune au tarif de SA station", () => {
+  assert.equal(haulFee(32, { buy: PT_A, sell: PT_B }), autoloadFee(32, 32, 1) + autoloadFee(32, 32, 1.4));
+  assert.equal(haulFee(32, null), 0);                             // interrupteur inactif
+  assert.equal(haulFee(Infinity, { buy: PT_A, sell: PT_B }), 0);  // route non bornée : aucun volume
+});
+
+test("haulFee : les caisses sont faites au CHARGEMENT, pas au déchargement (hypothèse 1)", () => {
+  // A caisse par 32, B par 16 : le SENS du trajet change donc la facture des DEUX opérations, car
+  // rien ne re-caisse la cargaison en vol. C'est l'erreur que la signature rend impossible.
+  const depuisA = haulFee(32, { buy: PT_A, sell: PT_B });
+  const depuisB = haulFee(32, { buy: PT_B, sell: PT_A });
+  assert.equal(depuisA, autoloadFee(32, 32, 1) + autoloadFee(32, 32, 1.4));
+  assert.equal(depuisB, autoloadFee(32, 16, 1.4) + autoloadFee(32, 16, 1));
+  assert.ok(depuisB > depuisA, `${depuisB} devrait dépasser ${depuisA} : deux caisses au lieu d'une`);
+});
+
+test("haulFee : un terminal sans autoload ne facture rien, l'autre extrémité paie quand même", () => {
+  const sansService = { maxBox: 16, k: 0 };
+  assert.equal(haulFee(32, { buy: sansService, sell: sansService }), 0);
+  // Chargé à la main en A (16 SCU par caisse), déchargé par l'autoload de B : B facture, et il
+  // facture DEUX caisses — celles qu'on lui apporte.
+  assert.equal(haulFee(32, { buy: sansService, sell: PT_A }), autoloadFee(32, 16, 1));
+});
+
+// --- Trajets simples / En route (routeMetrics) ---
+const M_ROUTE = { buyPrice: 100, buyStock: 500, sellDemand: 300, margin: 50, distance: 0, sameSystem: true, buyUpdated: NOW, sellUpdated: NOW };
+
+test("routeMetrics : sans contexte le profit reste brut, avec contexte il paie deux opérations", () => {
+  const f = F({ useCargo: true, cargo: 96 });
+  const brut = routeMetrics(M_ROUTE, f);
+  assert.equal(brut.profit, 96 * 50);       // valeur historique, au caractère près
+  assert.equal(brut.fees, 0);
+  const frais = haulFee(96, { buy: PT_A, sell: PT_B });
+  const net = routeMetrics(M_ROUTE, f, { buy: PT_A, sell: PT_B });
+  assert.equal(net.fees, frais);
+  assert.equal(net.profit, 96 * 50 - frais);
+  assert.ok(frais > 0 && net.profit < brut.profit, "les frais doivent réellement mordre");
+  assert.equal(net.units, brut.units);                 // seul le profit bouge
+  assert.equal(net.investment, brut.investment);       // les frais ne sont pas du capital immobilisé
+  assert.equal(net.profitHour, (net.profit * 60) / 6); // le profit/heure suit le net, donc le tri aussi
+  assert.ok(net.rawScore < brut.rawScore);             // et le score avec lui
+});
+
+test("routeMetrics : route non bornée -> aucun frais calculable (pas de volume connu)", () => {
+  const r = routeMetrics(M_ROUTE, F(), { buy: PT_A, sell: PT_B });
+  assert.equal(r.profit, null);
+  assert.equal(r.fees, 0);
+  assert.ok(r.rawScore > 0);   // le score reste assis sur la marge brute par SCU, comme avant
+});
+
+// --- Boucles (loopMetrics) ---
+test("loopMetrics : QUATRE opérations, les caisses faites au départ de chaque jambe", () => {
+  const out = { buyPrice: 100, stock: 500, demand: 300, margin: 50, updated: NOW };
+  const back = { buyPrice: 80, stock: 400, demand: 200, margin: 30, updated: NOW };
+  const f = F({ useCargo: true, cargo: 100 });
+  const brut = loopMetrics(out, back, 0, false, f);
+  assert.equal(brut.profit, 100 * 50 + 100 * 30);   // valeur historique
+  assert.equal(brut.fees, 0);
+  const aller = haulFee(100, { buy: PT_A, sell: PT_B });   // chargé en A, déchargé en B
+  const retour = haulFee(100, { buy: PT_B, sell: PT_A });  // chargé en B, déchargé en A
+  const net = loopMetrics(out, back, 0, false, f, { a: PT_A, b: PT_B });
+  assert.equal(net.fees, aller + retour);
+  assert.equal(net.profit, brut.profit - aller - retour);
+  // Non vacuisant : si les deux jambes coûtaient pareil, inverser les paires ne se verrait pas.
+  assert.ok(aller !== retour, `aller ${aller} et retour ${retour} devraient différer`);
+  assert.ok(net.profit < brut.profit);
+});
+
+// --- Manifeste (manifestTotals) ---
+test("manifestTotals : une transaction PAR COMMODITÉ, à volume total identique (hypothèse 2)", () => {
+  const pair = { buy: PT_A, sell: PT_A };
+  const ligne = (units) => ({ units, buyPrice: 10, margin: 100 });
+  const t1 = manifestTotals([ligne(96)], pair);
+  const t3 = manifestTotals([ligne(32), ligne(32), ligne(32)], pair);
+  assert.equal(t1.scu, t3.scu);                          // même volume, même fret
+  // Deux commodités de plus = deux transactions de plus, facturées à CHAQUE extrémité.
+  assert.equal(t3.fees - t1.fees, 2 * 2 * AUTOLOAD.base);
+  assert.equal(t3.profit, 96 * 100 - t3.fees);
+  assert.equal(t3.invest, 96 * 10);                      // l'investissement, lui, ne bouge pas
+  assert.equal(manifestTotals([ligne(32), ligne(32), ligne(32)]).profit, 96 * 100); // sans contexte : brut
+});
+
+// --- Lignes qui ne subissent QU'UNE opération (carry / acquired) ---
+const C_LIBRE = { name: "Fret", kind: "metal", illegal: false };
+const PRIX = (price, vol) => ({ price, vol, ovol: false });
+
+test("manifestTotals : une ligne « vend ailleurs » paie le chargement, jamais un déchargement", () => {
+  // Par définition (manifestLine), cette ligne est chargée ici pour être écoulée PLUS LOIN : elle
+  // reste en soute à l'arrivée. Lui facturer les deux opérations doublait son coût, et comme sa
+  // colonne profit affiche « — », le total baissait sans qu'aucune ligne ne le montre.
+  const carry = manifestLine(C_LIBRE, PRIX(100, 500), null, NOW, 0, 32, 32);
+  assert.equal(carry.carry, true);
+  assert.equal(carry.sellPrice, null);
+  const t = manifestTotals([carry], { buy: PT_A, sell: PT_B });
+  assert.equal(t.fees, autoloadFee(32, 32, 1));                    // le seul chargement, en A
+  assert.notEqual(t.fees, haulFee(32, { buy: PT_A, sell: PT_B })); // contre-épreuve : pas deux
+  assert.equal(t.profit, -t.fees);   // marge nulle ici : la ligne ne coûte QUE sa manutention
+  assert.equal(t.scu, 32);
+  assert.equal(t.invest, 32 * 100);  // elle est bien achetée : le capital, lui, est immobilisé
+});
+
+test("manifestTotals : une ligne « acquis ailleurs » paie le déchargement, jamais un chargement", () => {
+  // Symétrique : butin, minage ou salvage — le fret était DÉJÀ en soute, l'autoload du terminal de
+  // départ ne l'a jamais chargé (il ne s'y vend même pas).
+  const acquis = manifestLine(C_LIBRE, null, PRIX(500, 500), 0, NOW, 32, 32);
+  assert.equal(acquis.acquired, true);
+  assert.equal(acquis.margin, 500);
+  const t = manifestTotals([acquis], { buy: PT_A, sell: PT_B });
+  assert.equal(t.fees, autoloadFee(32, 32, 1.4));  // le seul déchargement, en B…
+  // …mais caissé au plafond du CHARGEMENT (hypothèse 1) : c'est aussi ce que le « 📦 » affiche.
+  assert.equal(t.fees, lineHaulFee(32, acquis, { buy: PT_A, sell: PT_B }));
+  assert.equal(t.profit, 32 * 500 - t.fees);
+  assert.equal(t.invest, 0);                       // rien n'a été acheté ici
+});
+
+test("lineHaulFee : une ligne ordinaire paie les deux opérations, et rien ne change sans contexte", () => {
+  const ordinaire = manifestLine(C_LIBRE, PRIX(100, 500), PRIX(300, 500), NOW, NOW, 32, 32);
+  assert.equal(ordinaire.carry, false);
+  assert.equal(ordinaire.acquired, false);
+  assert.equal(lineHaulFee(32, ordinaire, { buy: PT_A, sell: PT_B }), haulFee(32, { buy: PT_A, sell: PT_B }));
+  // Une ligne sans les deux bouts (ni achat ni vente ici) ne manutentionne rien du tout.
+  const nulle = manifestLine(C_LIBRE, null, null, 0, 0, 32, 32);
+  assert.equal(lineHaulFee(32, nulle, { buy: PT_A, sell: PT_B }), 0);
+  // Interrupteur inactif : aucune de ces lignes ne coûte quoi que ce soit.
+  for (const l of [ordinaire, nulle]) assert.equal(lineHaulFee(32, l, null), 0);
+  assert.equal(manifestTotals([ordinaire]).fees, 0);
+});
+
+// --- Marché : le classement suit le net (manifestsFrom / bestManifest / multiTrips / chaîne) ---
+// Marché taillé pour le classement NET : une commodité, deux destinations aux profits BRUTS très
+// proches, dont la mieux payée décharge dans une station qui facture le double du tarif d'ancrage.
+// Sans frais elle gagne ; avec, elle perd. C'est exactement ce que la fonctionnalité promet.
+const TERM_NET = (name) => ({ name, system: "Pyro", planet: "", outpost: false, autoload: true, maxBox: 32 });
+const MKT_NET = () => ({
+  terminals: [TERM_NET("Depart"), TERM_NET("Cher"), TERM_NET("Sobre")],
+  commodities: [
+    { name: "Fret", kind: "metal", illegal: false,
+      buys: [[0, 100, 100, NOW, 5]],
+      sells: [[1, 200, 100, NOW, 3], [2, 195, 100, NOW, 3]] },
+  ],
+});
+const K_NET = { Depart: 1, Cher: 2, Sobre: 1 };
+const feeNet = (t) => autoloadPoint(t, K_NET[t.name]);
+const OP1 = autoloadFee(100, 32, 1);   // une opération de 100 SCU au tarif d'ancrage
+const OP2 = autoloadFee(100, 32, 2);   // la même à « Cher »
+
+test("manifestsFrom : la destination gagnante suit le profit NET, pas le brut", () => {
+  const f = F({ useCargo: true, cargo: 100 });
+  const brut = manifestsFrom(MKT_NET(), 0, "", f, idResolve);
+  assert.deepEqual(brut.map((t) => t.dest.name), ["Cher", "Sobre"]);  // 10 000 > 9 500
+  assert.equal(brut[0].profit, 10_000);
+  assert.equal(brut[0].fee, null);
+  const net = manifestsFrom(MKT_NET(), 0, "", f, idResolve, null, feeNet);
+  assert.deepEqual(net.map((t) => t.dest.name), ["Sobre", "Cher"]);   // le classement s'inverse
+  assert.equal(net[0].profit, 9_500 - 2 * OP1);
+  assert.equal(net[1].profit, 10_000 - OP1 - OP2);
+  assert.ok(net[0].profit > net[1].profit);
+  // bestManifest hérite de ce tri : c'est lui que consomment « En route » et les jambes de voyage.
+  assert.equal(bestManifest(MKT_NET(), 0, "", f, idResolve, null, feeNet).dest.name, "Sobre");
+  assert.equal(bestManifest(MKT_NET(), 0, "", f, idResolve).dest.name, "Cher");
+});
+
+test("enRouteDeals : la destination retenue suit le profit NET quand les frais sont actifs", () => {
+  // enRouteDeals ne garde qu'UNE vente par commodité : choisie sur le prix affiché, la meilleure en
+  // net n'entrait jamais dans la liste, et le tableau montrait une destination pendant que la carte
+  // Manifeste du même écran (bestManifest, qui tranche déjà sur le net) en affichait une autre.
+  const f = F({ useCargo: true, cargo: 100 });
+  const brut = enRouteDeals(MKT_NET(), 0, "");
+  assert.deepEqual(brut.map((d) => d.sell.terminal), ["Cher"]);      // 200 > 195
+  const net = enRouteDeals(MKT_NET(), 0, "", null, f, feeNet);
+  assert.deepEqual(net.map((d) => d.sell.terminal), ["Sobre"]);      // 9 500 − 2 opérations > 10 000 − 1 − 2×k
+  // Non vacuisant : c'est bien le net qui départage, et il départage dans l'autre sens.
+  assert.ok(100 * 95 - 2 * OP1 > 100 * 100 - OP1 - OP2);
+  // Et c'est la MÊME destination que celle du manifeste affiché juste au-dessus.
+  assert.equal(bestManifest(MKT_NET(), 0, "", f, idResolve, null, feeNet).dest.name, net[0].sell.terminal);
+});
+
+test("enRouteDeals : sans contexte de frais, le critère reste le prix de vente le plus élevé", () => {
+  // Le garde-fou de non-régression : l'interrupteur inactif ne doit RIEN changer à cette vue.
+  const f = F({ useCargo: true, cargo: 100 });
+  assert.deepEqual(enRouteDeals(MKT(), 0, "", null, f).map((d) => d.sell.terminal), ["C", "B"]);
+  assert.deepEqual(enRouteDeals(MKT(), 0, ""), enRouteDeals(MKT(), 0, "", null, f, null));
+  // Une commodité dont AUCUNE vente ne bat le prix d'achat reste absente, frais ou pas.
+  const perdant = {
+    terminals: [TERM_NET("Depart"), TERM_NET("Sobre")],
+    commodities: [{ name: "Fret", kind: "metal", illegal: false, buys: [[0, 300, 100, NOW, 5]], sells: [[1, 200, 100, NOW, 3]] }],
+  };
+  assert.deepEqual(enRouteDeals(perdant, 0, ""), []);
+  assert.deepEqual(enRouteDeals(perdant, 0, "", null, f, feeNet), []);
+});
+
+test("tripMetrics : le trajet emporte son contexte de frais ; profit et profit/heure suivent", () => {
+  const f = F({ useCargo: true, cargo: 100 });
+  const [gagnant] = manifestsFrom(MKT_NET(), 0, "", f, idResolve, null, feeNet);
+  const frais = 2 * OP1;
+  const m = tripMetrics(gagnant);
+  assert.equal(m.fees, frais);
+  assert.equal(m.profit, 9_500 - frais);
+  assert.equal(m.profitHour, ((9_500 - frais) * 60) / 6);
+  assert.equal(m.investment, 100 * 100);                    // inchangé : les frais ne sont pas du fret
+  // Contre-épreuve : le même chargement sans son contexte reste chiffré au brut.
+  const brut = tripMetrics({ ...gagnant, fee: null });
+  assert.equal(brut.fees, 0);
+  assert.equal(brut.profit, 9_500);
+  assert.ok(m.profit < brut.profit);
+});
+
+test("tripMetrics : marge et ROI sont NETS des frais, mais la jambe de voyage garde la marge de marché", () => {
+  // Ce que le joueur encaisse par SCU, pas l'écart de prix affiché aux terminaux : marge et ROI
+  // suivent le profit net. La jambe, elle, est PERSISTÉE et voyage dans le permalien `j=` — y figer
+  // une marge nette la ferait survivre à l'extinction de l'interrupteur, mêlée à des marges brutes.
+  const f = F({ useCargo: true, cargo: 100 });
+  const [gagnant] = manifestsFrom(MKT_NET(), 0, "", f, idResolve, null, feeNet);
+  const m = tripMetrics(gagnant);
+  const brut = tripMetrics({ ...gagnant, fee: null });
+  assert.ok(m.fees > 0, "sans frais facturés le test ne prouverait rien");
+  assert.equal(brut.margin, 95);                        // 195 − 100, prix de marché
+  assert.equal(m.margin, m.profit / m.units);           // net : profit amputé des frais, par SCU
+  assert.ok(m.margin < brut.margin, "la marge nette doit être strictement sous la marge de marché");
+  assert.equal(m.roi, Math.round((m.profit / m.investment) * 1000) / 10);
+  assert.ok(m.roi < brut.roi);
+  // La marge de MARCHÉ reste disponible, et c'est elle que la jambe de voyage retient.
+  assert.equal(m.marginGross, 95);
+  assert.equal(legFromTrip({ ...gagnant, ...m }).margin, 95);
+  // Sans frais, les deux notions se confondent : aucune régression quand l'interrupteur est éteint.
+  assert.equal(brut.margin, brut.marginGross);
+  assert.equal(legFromTrip({ ...gagnant, ...brut }).margin, 95);
+});
+
+test("netMarginRoi : les frais se répartissent sur le volume, sauf s'il n'y a rien à répartir", () => {
+  // 10 SCU, marge de marché 500/SCU, 1 000 aUEC de frais -> 100/SCU à retrancher.
+  assert.deepEqual(netMarginRoi(500, 1_000, 10, 1_000), { margin: 400, roi: 40 });
+  // Le ROI net se déduit bien de la marge nette : 400/1 000 = 40 %, et non 50 %.
+  assert.notEqual(netMarginRoi(500, 1_000, 10, 1_000).roi, netMarginRoi(500, 1_000, 10, 0).roi);
+  // Sans frais : exactement la marge de marché et l'ancien ROI (non-régression, interrupteur éteint).
+  assert.deepEqual(netMarginRoi(500, 1_000, 10, 0), { margin: 500, roi: 50 });
+  // Route non bornée : aucun volume sur quoi étaler un coût fixe -> valeurs de marché intactes.
+  assert.deepEqual(netMarginRoi(500, 1_000, null, 1_000), { margin: 500, roi: 50 });
+  // Prix d'achat nul (butin) : pas de division par zéro.
+  assert.deepEqual(netMarginRoi(500, 0, 10, 1_000), { margin: 400, roi: 0 });
+});
+
+test("multiTrips : le tri ET la troncature portent sur le net (le garde-fou coupait sur le brut)", () => {
+  const f = F({ useCargo: true, cargo: 100 });
+  // limit 1 : un seul trajet survit au garde-fou de perf — ce doit être le meilleur en NET, sans
+  // quoi le tableau ne contiendrait même pas la ligne que l'utilisateur cherche.
+  assert.deepEqual(multiTrips(MKT_NET(), f, idResolve, 1, 1).map((t) => t.dest.name), ["Cher"]);
+  assert.deepEqual(multiTrips(MKT_NET(), f, idResolve, 1, 1, feeNet).map((t) => t.dest.name), ["Sobre"]);
+});
+
+test("manifestsFrom : une commodité dont les frais dépassent la marge reste au sol", () => {
+  // « Maigre » : 100 SCU à marge 5 rapportent 500 et coûtent deux fois OP1. La charger ferait
+  // passer ce manifeste derrière un manifeste qui, lui, l'aurait laissée à quai.
+  const mkt = () => ({
+    terminals: [TERM_NET("Depart"), TERM_NET("Sobre")],
+    commodities: [
+      { name: "Riche", kind: "metal", illegal: false, buys: [[0, 100, 50, NOW, 5]], sells: [[1, 300, 50, NOW, 3]] },
+      { name: "Maigre", kind: "metal", illegal: false, buys: [[0, 100, 100, NOW, 5]], sells: [[1, 105, 100, NOW, 3]] },
+    ],
+  });
+  const f = F({ useCargo: true, cargo: 200 });
+  const brut = manifestsFrom(mkt(), 0, "", f, idResolve)[0];
+  assert.deepEqual(brut.lines.map((l) => l.name), ["Riche", "Maigre"]); // sans frais, on prend tout
+  assert.equal(brut.profit, 50 * 200 + 100 * 5);
+  const net = manifestsFrom(mkt(), 0, "", f, idResolve, null, feeNet)[0];
+  assert.deepEqual(net.lines.map((l) => l.name), ["Riche"]);
+  assert.equal(net.profit, 50 * 200 - 2 * autoloadFee(50, 32, 1));
+  // Contre-épreuve chiffrée : c'est bien parce que ses 500 aUEC de marge ne couvrent pas ses deux
+  // opérations d'autoload que « Maigre » reste à quai — pas parce qu'elle serait filtrée ailleurs.
+  assert.ok(100 * 5 < 2 * OP1, `500 de marge devrait rester sous ${2 * OP1} de frais`);
+});
+
+test("buildChainAdjacency : estampille sur chaque saut les frais de ses DEUX terminaux", () => {
+  const f = { legalOnly: false, noOutpost: false };
+  const sans = buildChainAdjacency(MKT_NET(), f, idResolve);
+  assert.equal(sans.get(0)[0].fee, null);           // interrupteur inactif : rien d'estampillé
+  const avec = buildChainAdjacency(MKT_NET(), f, idResolve, feeNet);
+  const versCher = avec.get(0).find((l) => l.to === 1);
+  assert.deepEqual(versCher.fee, { buy: { maxBox: 32, k: 1 }, sell: { maxBox: 32, k: 2 } });
+  // Et bestChain chiffre net sans jamais voir un terminal : il ne lit que ce que porte le leg.
+  assert.deepEqual(bestChain(sans, 0, 1, { cargo: 100 }).path, [0, 1]);  // brut : « Cher » paie mieux
+  const r = bestChain(avec, 0, 1, { cargo: 100 });
+  assert.deepEqual(r.path, [0, 2]);                                      // net : « Sobre » l'emporte
+  assert.equal(r.profit, 100 * 95 - 2 * OP1);
+});
+
+test("buildChainAdjacency : la commodité d'un saut se choisit sur le NET, pas sur la marge seule", () => {
+  // Les frais ne dépendent que du volume — mais les volumes, eux, diffèrent d'une commodité à
+  // l'autre. « Rare » a la plus forte marge et 2 SCU en stock : ses 200 aUEC ne couvrent pas ses
+  // deux opérations. Retenue sur sa seule marge, elle faisait élaguer le saut ENTIER par bestChain
+  // et la vue Chaîne annonçait « aucune chaîne rentable » alors que « Courante » remplissait la
+  // soute et rapportait.
+  const mkt = () => ({
+    terminals: [TERM_NET("Depart"), TERM_NET("Sobre")],
+    commodities: [
+      { name: "Rare", kind: "metal", illegal: false, buys: [[0, 100, 2, NOW, 5]], sells: [[1, 200, 999, NOW, 3]] },
+      { name: "Courante", kind: "metal", illegal: false, buys: [[0, 100, 96, NOW, 5]], sells: [[1, 150, 999, NOW, 3]] },
+    ],
+  });
+  const f = { legalOnly: false, noOutpost: false, useCargo: true, cargo: 96 };
+  // Sans frais : le critère historique (marge maximale) est conservé au caractère près.
+  assert.equal(buildChainAdjacency(mkt(), f, idResolve).get(0)[0].commodity, "Rare");
+  assert.equal(bestChain(buildChainAdjacency(mkt(), f, idResolve), 0, 1, { cargo: 96 }).profit, 2 * 100);
+  // Avec frais : « Rare » perd de l'argent, « Courante » en gagne -> c'est elle qui tient le saut.
+  const avec = buildChainAdjacency(mkt(), f, idResolve, feeNet);
+  assert.equal(avec.get(0)[0].commodity, "Courante");
+  const chaine = bestChain(avec, 0, 1, { cargo: 96 });
+  assert.ok(chaine, "un saut rentable ne doit pas disparaître du graphe");
+  assert.equal(chaine.profit, 96 * 50 - 2 * autoloadFee(96, 32, 1));
+  // Contre-épreuve : le graphe d'AVANT — celui qui retenait « Rare » — ne produit AUCUNE chaîne.
+  const surLaMarge = new Map([[0, [{ ...avec.get(0)[0], commodity: "Rare", margin: 100, stock: 2 }]]]);
+  assert.equal(bestChain(surLaMarge, 0, 1, { cargo: 96 }), null);
+});
+
+test("buildChainAdjacency : sans soute bornée, le classement reste la marge (aucun volume calculable)", () => {
+  const f = { legalOnly: false, noOutpost: false }; // ni useCargo ni cargo
+  const adj = buildChainAdjacency(MKT(), f, idResolve, feeNet);
+  assert.equal(adj.get(0).find((l) => l.to === 1).commodity, "Gold"); // marge 50 > Drug 30
+});
+
+// Chaîne : deux itinéraires A->…->D aux profits BRUTS proches, dont le mieux payé transite par une
+// station qui facture trois fois le tarif d'ancrage. Les frais sont posés sur le leg, exactement
+// comme le fait buildChainAdjacency.
+const PT_K3 = { maxBox: 32, k: 3 };
+const legF = (to, margin, fee = null) => ({ to, margin, stock: 999, demand: 999, buyPrice: 100, fee });
+const CHAINE = (frais) => new Map([
+  ["A", [legF("B", 300, frais ? { buy: PT_A, sell: PT_K3 } : null),
+         legF("C", 290, frais ? { buy: PT_A, sell: PT_A } : null)]],
+  ["B", [legF("D", 100, frais ? { buy: PT_K3, sell: PT_A } : null)]],
+  ["C", [legF("D", 100, frais ? { buy: PT_A, sell: PT_A } : null)]],
+  ["D", []],
+]);
+
+test("bestChain : deux opérations par saut, et l'itinéraire retenu suit le net", () => {
+  const brut = bestChain(CHAINE(false), "A", 2, { cargo: 50 });
+  assert.deepEqual(brut.path, ["A", "B", "D"]);        // (300 + 100) × 50
+  assert.equal(brut.profit, 20_000);
+  const parOp = autoloadFee(50, 32, 1);
+  const net = bestChain(CHAINE(true), "A", 2, { cargo: 50 });
+  assert.deepEqual(net.path, ["A", "C", "D"]);         // B facture trois fois le tarif d'ancrage
+  assert.equal(net.legs[0].profit, 290 * 50 - 2 * parOp);
+  assert.equal(net.profit, (290 + 100) * 50 - 4 * parOp);
+  assert.ok(net.profit < brut.profit, "les frais doivent réellement mordre");
+});
+
+test("bestChain : un saut dont les frais mangent la marge est écarté, comme un saut sans marge", () => {
+  // 50 SCU à marge 40 rapportent 2 000 et coûtent deux fois 1 240 : le saut fait perdre de l'argent.
+  const perdant = new Map([["A", [legF("B", 40, { buy: PT_A, sell: PT_A })]], ["B", []]]);
+  assert.equal(bestChain(perdant, "A", 1, { cargo: 50 }), null);
+  const gratuit = new Map([["A", [legF("B", 40)]], ["B", []]]);
+  assert.equal(bestChain(gratuit, "A", 1, { cargo: 50 }).profit, 2_000); // contre-épreuve sans frais
+});
+
+test("interrupteur inactif : aucune fonction de métriques ne facture quoi que ce soit", () => {
+  // Le garde-fou de l'existant : sans contexte, les six vues rendent EXACTEMENT leurs valeurs d'avant.
+  const f = F({ useCargo: true, cargo: 100 });
+  assert.equal(routeMetrics(M_ROUTE, f).fees, 0);
+  const seg = { buyPrice: 100, stock: 500, demand: 300, margin: 50, updated: NOW };
+  assert.equal(loopMetrics(seg, seg, 0, false, f).fees, 0);
+  const t = manifestsFrom(MKT_NET(), 0, "", f, idResolve)[0];
+  assert.equal(t.fee, null);
+  assert.equal(t.profit, 10_000);
+  assert.equal(tripMetrics(t).fees, 0);
+  assert.equal(manifestTotals(t.lines).fees, 0);
+  assert.equal(buildChainAdjacency(MKT_NET(), { legalOnly: false, noOutpost: false }, idResolve).get(0)[0].fee, null);
+  assert.equal(bestChain(ADJ, "A", 2, { cargo: 50 }).profit, 1_750); // fixture historique, sans `fee`
 });

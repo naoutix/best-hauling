@@ -8,8 +8,8 @@ Charger et décharger sa soute automatiquement au terminal se paie. L'app ignore
 elle classe les routes sur un profit brut que le joueur n'encaisse jamais s'il utilise l'autoload.
 
 L'écart n'est pas cosmétique. Les frais ne dépendent **pas** du prix de la commodité : ils
-frappent donc proportionnellement à l'inverse de la valeur du fret. Sur un aller-retour de
-96 SCU (≈ 5 200 aUEC de frais) :
+frappent donc proportionnellement à l'inverse de la valeur du fret. Sur un aller simple de
+96 SCU (≈ 5 200 aUEC de frais — un aller-retour compte quatre opérations, donc le double) :
 
 | Fret | Valeur de 96 SCU | Poids des frais |
 |------|------------------|-----------------|
@@ -133,6 +133,10 @@ Les frais s'appliquent **deux fois par trajet** — chargement à l'achat, déch
 chacun avec le `k` de sa propre station. Sont concernés `routeMetrics`, `loopMetrics` (quatre
 opérations : A→B et B→A), `tripMetrics`, `bestManifest` et `buildChainAdjacency` (deux par saut).
 
+Deux fois, *quand les deux ont lieu* : une ligne de manifeste chargée ici pour être écoulée
+ailleurs n'est pas déchargée à l'arrivée, et une ligne déjà en soute (butin, minage, salvage) n'a
+pas été chargée au départ. Ces lignes-là ne paient qu'**une** opération.
+
 Trois hypothèses, faute de mesures, à réviser si le jeu les contredit :
 
 1. **Le nombre de caisses est fixé par le terminal d'achat.** Au déchargement on sort les caisses
@@ -145,10 +149,19 @@ Trois hypothèses, faute de mesures, à réviser si le jeu les contredit :
 
 Un interrupteur **Autoload** à côté de « Multi commodité », **inactif par défaut**. Actif :
 
-- les colonnes profit et profit/heure passent en net ;
+- les colonnes profit, profit/heure, marge et ROI passent en net ;
 - le détail des frais apparaît en infobulle ;
 - **le tri suit le profit net** — c'est tout l'intérêt de la fonctionnalité ;
 - tout montant estimé porte un `≈`.
+
+La marge nette répartit les frais sur le volume transporté (`marge − frais / SCU`), et le ROI s'en
+déduit. Une même colonne garde ainsi la même définition dans les deux modes de la vue Trajets.
+Deux cas ne se répartissent pas et rendent les valeurs de marché intactes : aucun frais, et volume
+inconnu — une route non bornée n'a pas de SCU sur quoi étaler un coût fixe.
+
+Exception unique : la **jambe de voyage** (`legFromTrip`) retient la marge de marché. Elle est
+persistée et encodée dans le permalien `j=`, où une marge nette survivrait à l'extinction de
+l'interrupteur et se cumulerait avec les marges brutes des jambes venues des autres vues.
 
 Un terminal dont `autoload` vaut `false` ne se voit facturer aucun frais : le service n'y existe
 pas. L'interrupteur et le `k` global entrent dans le permalien ; les relevés par station restent

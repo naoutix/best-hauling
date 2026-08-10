@@ -2,7 +2,7 @@
 // Lancer : `node --test` (ou `npm test`).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeKind, routesForCommodity, buildBestLegs, buildMarket, sellDemand } from "./build-data.mjs";
+import { normalizeKind, routesForCommodity, buildBestLegs, buildMarket, sellDemand, maxBoxSize } from "./build-data.mjs";
 import { readFileSync } from "node:fs";
 
 test("normalizeKind corrige la casse, les fautes de frappe et les valeurs vides", () => {
@@ -97,8 +97,8 @@ test("buildBestLegs ignore les marges nulles ou négatives et les mêmes termina
 
 test("buildMarket déduplique les terminaux et compacte achats/ventes en tuples", () => {
   const term = new Map([
-    [10, { name: "A", system: "Stanton", planet: "Hurston", outpost: false }],
-    [20, { name: "B", system: "Pyro", planet: "", outpost: true }],
+    [10, { name: "A", system: "Stanton", planet: "Hurston", outpost: false, autoload: true, maxBox: 32 }],
+    [20, { name: "B", system: "Pyro", planet: "", outpost: true, autoload: false, maxBox: 24 }],
   ]);
   const byCommodity = new Map([
     [1, {
@@ -111,7 +111,7 @@ test("buildMarket déduplique les terminaux et compacte achats/ventes en tuples"
   ]);
   const m = buildMarket(byCommodity, term);
   assert.equal(m.commodities.length, 1); // la commodité sans vente est écartée
-  assert.deepEqual(m.terminals[0], { name: "A", system: "Stanton", planet: "Hurston", outpost: false });
+  assert.deepEqual(m.terminals[0], { name: "A", system: "Stanton", planet: "Hurston", outpost: false, autoload: true, maxBox: 32 });
   const c = m.commodities[0];
   assert.deepEqual(c.buys[0], [0, 100, 50, 111, 4]);  // [idxTerminal, prix, stock, maj, statut]
   assert.deepEqual(c.sells[0], [1, 250, 80, 222, 2]); // [idxTerminal, prix, demande, maj, statut]
@@ -166,6 +166,12 @@ test("une commodité « vente seule » ne produit ni route ni segment (inerte po
 // `npm run build` dans update-data.yml, donc il ne peut pas bloquer un déploiement sur un aléa UEX.
 const MARKET = JSON.parse(readFileSync(new URL("../data/market.json", import.meta.url), "utf8"));
 
+// `autoload` / `maxBox` ne sont volontairement PAS vérifiés ici : `node --test` tourne AVANT
+// `npm run build` (update-data.yml) et la CI ne re-commite jamais les data/*.json. L'instantané
+// versionné ne portera donc les deux champs qu'après un build local recommité — les exiger ici
+// rendrait la CI rouge sur une PR par ailleurs correcte. Présence et repli sont couverts sur
+// fixture plus bas, là où ils sont de toute façon mieux testés (l'instantané du jour ne contient
+// qu'un seul terminal muet sur la taille de caisse, et aucun plafonné à 1 SCU).
 test("data/market.json : forme des terminaux", () => {
   assert.ok(MARKET.terminals.length > 0, "aucun terminal");
   for (const t of MARKET.terminals) {
@@ -223,4 +229,43 @@ test("sellDemand : `null` (inconnu) et `0` (saturé) ne se confondent pas", () =
   assert.equal(sellDemand({ scu_sell: 0, scu_sell_stock: 50 }), null);
   assert.notEqual(sellDemand({}), 0);
   assert.equal(sellDemand({ scu_sell: 50, scu_sell_stock: 50 }), 0);
+});
+
+// ---------- Frais d'autoload : ce que le terminal impose à la manutention ----------
+test("maxBoxSize : le 0 d'UEX (champ non renseigné) se replie sur 32", () => {
+  assert.equal(maxBoxSize({ max_container_size: 0 }), 32);
+  assert.equal(maxBoxSize({}), 32);                          // champ absent du relevé
+  assert.equal(maxBoxSize({ max_container_size: null }), 32);
+});
+
+test("maxBoxSize : une vraie limite basse est conservée, jamais remontée à 32", () => {
+  // Contre-épreuve du test précédent : sans elle, un `return 32` constant passerait au vert et le
+  // repli n'aurait plus rien d'une règle. C'est aussi le cas qui coûte le plus cher au joueur —
+  // un terminal plafonné à 1 SCU découpe 32 SCU en 32 caisses.
+  assert.equal(maxBoxSize({ max_container_size: 1 }), 1);
+  assert.equal(maxBoxSize({ max_container_size: 16 }), 16);
+  assert.equal(maxBoxSize({ max_container_size: 24 }), 24);
+  assert.equal(maxBoxSize({ max_container_size: 32 }), 32);
+  assert.notEqual(maxBoxSize({ max_container_size: 1 }), maxBoxSize({ max_container_size: 0 }));
+});
+
+test("buildMarket publie autoload et maxBox par terminal", () => {
+  const term = new Map([
+    [10, { name: "Auto", system: "Pyro", planet: "", outpost: false, autoload: true, maxBox: 16 }],
+    // Pas d'autoload, mais un plafond de caisse tout de même : c'est encore lui qui décide du
+    // découpage quand le joueur empile à la main.
+    [20, { name: "Manuel", system: "Stanton", planet: "", outpost: false, autoload: false, maxBox: 32 }],
+  ]);
+  const byCommodity = new Map([
+    [1, {
+      name: "Laranite", kind: "metal", illegal: false,
+      buys: [buy({ id: 10, price: 100, stock: 50 })],
+      sells: [buy({ id: 20, price: 250, demand: 80 })],
+    }],
+  ]);
+  const m = buildMarket(byCommodity, term);
+  assert.equal(m.terminals[0].autoload, true);
+  assert.equal(m.terminals[0].maxBox, 16);
+  assert.equal(m.terminals[1].autoload, false);
+  assert.equal(m.terminals[1].maxBox, 32);
 });

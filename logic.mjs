@@ -133,29 +133,42 @@ export function computeUnits(price, stock, demand, f, demandKnown = false) {
 // en amont). m = { buyPrice, buyStock, sellDemand, margin, distance, sameSystem, buyUpdated,
 // sellUpdated, demandKnown }. Renvoie units/investment (null si non bornés) + profit/minutes/
 // profitHour/rawScore. `evaluate` (app.js) applique d'abord les corrections puis délègue ici.
-export function routeMetrics(m, f) {
+// `autoload` = { buy, sell } (points de frais résolus par l'appelant, qui seul connaît les
+// terminaux) ; null = interrupteur inactif -> `fees` à 0 et profit BRUT, comme avant.
+// Une route non bornée n'a pas de volume : aucun frais n'y est calculable (son profit est déjà
+// null), et son score reste donc assis sur la marge brute par SCU.
+export function routeMetrics(m, f, autoload = null) {
   const units = computeUnits(m.buyPrice, m.buyStock, m.sellDemand, f, m.demandKnown);
   const bounded = isFinite(units);
-  const profit = bounded ? units * m.margin : null;
+  const fees = bounded ? haulFee(units, autoload) : 0;
+  const profit = bounded ? units * m.margin - fees : null;
   const minutes = tripMinutes(m.distance, !m.sameSystem);
   const profitHour = profitPerHour(profit, minutes);
   const rawScore = rawScoreOf(profitHour, m.margin, pairAge(m.buyUpdated, m.sellUpdated), m.buyStock, m.sellDemand);
   return {
     units: bounded ? units : null,
     investment: bounded ? units * m.buyPrice : null,
-    profit, minutes, profitHour, rawScore,
+    profit, minutes, profitHour, rawScore, fees,
   };
 }
 
 // Idem pour une boucle A⇄B (deux segments). out/back = { buyPrice, stock, demand, margin,
 // updated, demandKnown }. La boucle n'est bornée que si SES DEUX segments le sont.
-export function loopMetrics(out, back, distance, cross, f) {
+// `autoload` = { a, b } : les points de frais des deux EXTRÉMITÉS (une boucle n'a pas un terminal
+// d'achat et un de vente, elle a deux stations qui sont tour à tour l'un et l'autre). D'où QUATRE
+// opérations facturées : charge en A + décharge en B pour l'aller, charge en B + décharge en A
+// pour le retour. Les paires sont inversées entre les deux jambes parce que les caisses de chaque
+// jambe sont faites à SON terminal de départ (hypothèse 1).
+export function loopMetrics(out, back, distance, cross, f, autoload = null) {
   const loopMargin = out.margin + back.margin;
   const uOut = computeUnits(out.buyPrice, out.stock, out.demand, f, out.demandKnown);
   const uBack = computeUnits(back.buyPrice, back.stock, back.demand, f, back.demandKnown);
   const bounded = isFinite(uOut) && isFinite(uBack);
   const minutes = loopMinutes(distance, cross);
-  const profit = bounded ? uOut * out.margin + uBack * back.margin : null;
+  const fees = bounded && autoload
+    ? haulFee(uOut, { buy: autoload.a, sell: autoload.b }) + haulFee(uBack, { buy: autoload.b, sell: autoload.a })
+    : 0;
+  const profit = bounded ? uOut * out.margin + uBack * back.margin - fees : null;
   const profitHour = profitPerHour(profit, minutes);
   const rawScore = rawScoreOf(
     profitHour, loopMargin, pairAge(out.updated, back.updated),
@@ -167,8 +180,20 @@ export function loopMetrics(out, back, distance, cross, f) {
     unitsBack: bounded ? uBack : null,
     units: bounded ? uOut + uBack : null,
     investment: bounded ? Math.max(uOut * out.buyPrice, uBack * back.buyPrice) : null,
-    profit, minutes, profitHour, rawScore,
+    profit, minutes, profitHour, rawScore, fees,
   };
+}
+
+// ---------- Marge et ROI nets des frais d'autoload (vue « Trajets », mode à une commodité) ----------
+// La marge de marché (vente − achat) ne dit pas ce que le joueur encaisse par SCU dès que la
+// manutention se paie. On répartit donc les frais sur le volume réellement transporté.
+// Deux cas où il n'y a RIEN à répartir et où les valeurs de marché sont rendues telles quelles :
+// aucun frais (interrupteur éteint, ou terminal sans autoload), et volume inconnu — une route non
+// bornée (soute et budget coupés) n'a pas de SCU sur quoi étaler un coût fixe.
+// Le ROI se déduit de la marge nette : (marge × units − frais) / (achat × units) = marge_nette / achat.
+export function netMarginRoi(margin, buyPrice, units, fees) {
+  const net = fees > 0 && units > 0 ? margin - fees / units : margin;
+  return { margin: net, roi: buyPrice > 0 ? Math.round((net / buyPrice) * 1000) / 10 : 0 };
 }
 
 // ---------- Corrections locales : décision de fraîcheur (pure, sans effet de bord) ----------
@@ -214,15 +239,25 @@ export function fillCargo(items, cargo, budget) {
 // ---------- Manifeste : totaux, unités d'ajout libre, assemblage d'une ligne ----------
 // Totaux d'un manifeste (liste de lignes { units, buyPrice, margin }). Source unique de vérité
 // pour profit/investissement/SCU — utilisée par toutes les vues (En route + jambes de voyage).
-export function manifestTotals(lines) {
-  let profit = 0, invest = 0, scu = 0;
+// `autoload` = { buy, sell } (points de frais des deux terminaux du chargement) ; null = aucun
+// frais, `profit` reste le total brut. HYPOTHÈSE 2 de la spec : une transaction PAR COMMODITÉ,
+// donc autant de fois la base de 150 qu'il y a de lignes — c'est le choix pessimiste, faute de
+// mesure. `profit` est NET des frais ; `fees` les expose à part pour l'infobulle et le détail.
+// Chaque ligne paie les opérations qu'elle subit RÉELLEMENT (cf. lineHaulFee) : une ligne chargée
+// ici pour être vendue ailleurs n'est pas déchargée à l'arrivée, une ligne déjà en soute n'a pas
+// été chargée au départ.
+// L'investissement, lui, reste le capital immobilisé à l'achat : les frais sont une charge
+// d'exploitation, pas de la marchandise.
+export function manifestTotals(lines, autoload = null) {
+  let profit = 0, invest = 0, scu = 0, fees = 0;
   for (const l of lines) {
     const u = l.units || 0;
     profit += u * (l.margin || 0);
     invest += u * (l.buyPrice || 0);
     scu += u;
+    fees += lineHaulFee(u, l, autoload);
   }
-  return { profit, invest, scu };
+  return { profit: profit - fees, invest, scu, fees };
 }
 
 // Unités pour un ajout LIBRE au manifeste (commodité choisie à la main, éventuellement carry-only) :
@@ -293,30 +328,135 @@ export function hydrateManifestLine(market, fromIdx, toIdx, c, units, resolve) {
 
 // ---------- Décomposition en caisses SCU standard ----------
 // Répartit N SCU en conteneurs standard (plus grand d'abord). Renvoie [{size, count}, ...].
+// `maxBox` (optionnel) plafonne la taille de caisse : un terminal dont max_container_size vaut 16
+// ne peut pas sortir une caisse de 32, et le nombre de caisses est ce qui décide des frais
+// d'autoload. Absent ou inexploitable (sous la plus petite caisse), on garde la grille complète :
+// mieux vaut une décomposition optimiste qu'un volume qui s'évapore faute de caisse capable.
 export const SCU_BOX_SIZES = [32, 24, 16, 8, 4, 2, 1];
-export function scuBoxes(n) {
+export function scuBoxes(n, maxBox) {
   n = Math.max(0, Math.floor(n || 0));
+  const sizes = maxBox >= 1 ? SCU_BOX_SIZES.filter((s) => s <= maxBox) : SCU_BOX_SIZES;
   const out = [];
-  for (const size of SCU_BOX_SIZES) {
+  for (const size of sizes) {
     const count = Math.floor(n / size);
     if (count > 0) { out.push({ size, count }); n -= count * size; }
   }
   return out;
 }
 
+// Caisses d'un chargement à PLUSIEURS commodités. Une caisse n'en contient qu'une seule : le
+// décompte se fait donc ligne par ligne, jamais sur le total des SCU. Décomposer le total
+// inventerait des caisses pleines qui n'existent pas (quatre commodités de 8 SCU font quatre
+// caisses de 8, pas une de 32) — et ce décompte sert à EXPLIQUER un montant que manifestTotals
+// facture, lui, une ligne à la fois. Un « 📦 1×32 » à côté d'un montant calculé sur quatre caisses
+// serait l'incohérence la plus visible qui soit.
+export function cargoBoxes(lines, maxBox) {
+  const parTaille = new Map();
+  for (const l of lines) {
+    for (const b of scuBoxes(l.units, maxBox)) parTaille.set(b.size, (parTaille.get(b.size) || 0) + b.count);
+  }
+  return [...parTaille].sort((a, b) => b[0] - a[0]).map(([size, count]) => ({ size, count }));
+}
+
+// ---------- Frais d'autoload ----------
+// Charger et décharger la soute automatiquement se paie, et la facture ne dépend NI du prix NI de
+// la commodité : c'est de la manutention, pas une commission. Ces trois nombres ne sont pas
+// choisis, ils se DÉDUISENT de 18 relevés en jeu (4.9) sur deux stations Pyro — le détail des
+// mesures est dans docs/superpowers/specs/2026-08-10-frais-autoload-design.md :
+//   base   150 : constante retrouvée à l'aUEC près sur les quatre séries d'Endgame
+//                (340−190 = 510−360 = 645−494,7 = 830−680) ;
+//   perBox  30 : à Ruin, 32 SCU en deux caisses de 16 coûtent exactement 56 de plus qu'en une
+//                caisse de 32, soit 30 une fois le coefficient de station retiré ;
+//   perScu  20 : la pente de la grille, identique aux deux stations à trois décimales près — ce
+//                qui est précisément ce qui autorise à réduire la station à un simple facteur.
+// `k` est ce facteur : 1 = tarif Endgame (l'ancrage), 1,4 = Ruin Station. Le modèle colle aux
+// 18 relevés à 2,8 % près : c'est une ESTIMATION, tout montant affiché doit porter un « ≈ ».
+export const AUTOLOAD = { base: 150, perBox: 30, perScu: 20 };
+
+// Frais d'UNE opération (un chargement ou un déchargement) de `scu` SCU dans un terminal plafonné
+// à `maxBox` SCU par caisse, au coefficient de station `k`. Renvoie un entier d'aUEC.
+export function autoloadFee(scu, maxBox, k) {
+  const units = Math.max(0, Math.floor(scu || 0));
+  // Rien à manutentionner, ou station qui ne facture pas (k = 0) : aucun frais. La base de 150
+  // paie une transaction, pas une visite — la faire payer à vide grèverait un trajet qu'on
+  // n'effectue pas, et surtout les routes non bornées, où computeUnits ne rend aucun volume.
+  if (!isFinite(units) || units <= 0 || !(k > 0)) return 0;
+  const boxes = scuBoxes(units, maxBox).reduce((a, b) => a + b.count, 0);
+  return Math.round(k * (AUTOLOAD.base + AUTOLOAD.perBox * boxes + AUTOLOAD.perScu * units));
+}
+
+// ---------- Contexte de frais : un point par terminal, une paire par chargement ----------
+// Tout le moteur reçoit ce contexte en PARAMÈTRE OPTIONNEL, et son absence (null) est le chemin
+// par défaut : sans lui, chaque fonction rend exactement les valeurs brutes qu'elle rendait avant
+// que les frais n'existent. L'interrupteur de l'interface est donc littéralement « passer null ».
+//
+// Un « point de frais » décrit ce qu'UN terminal facture : { maxBox, k }. Un terminal qui ne
+// propose pas l'autoload prend k = 0 — il ne facture rien — mais GARDE son maxBox : c'est encore
+// lui qui décide de la taille des caisses, même quand c'est le joueur qui les empile à la main.
+// Les deux champs peuvent manquer du terminal (instantané de market.json antérieur au build qui
+// les ajoute, ou coquille servie depuis le cache du service worker) : lecture défensive.
+export function autoloadPoint(terminal, k) {
+  if (!terminal) return null;
+  return { maxBox: terminal.maxBox, k: terminal.autoload === true ? k : 0 };
+}
+
+// Frais des DEUX opérations d'un chargement de `scu` SCU : chargement au terminal d'achat,
+// déchargement au terminal de vente, chacun au tarif de SA station.
+// `pair` = { buy, sell } (points de frais) ; null/absent -> aucun frais.
+// HYPOTHÈSE 1 de la spec : le nombre de caisses est fixé au CHARGEMENT. On décharge les caisses
+// qu'on a — seul le tarif change — d'où le maxBox du terminal d'ACHAT des deux côtés. Le passer
+// en paramètre plutôt que de le laisser au site d'appel évite l'erreur symétrique (re-caisser la
+// cargaison en vol au plafond du terminal d'arrivée), qu'aucune signature ne saurait interdire.
+export function haulFee(scu, pair) {
+  if (!pair) return 0;
+  const { buy, sell } = pair;
+  const maxBox = buy ? buy.maxBox : sell && sell.maxBox; // sans achat connu, le seul plafond connu
+  return (buy ? autoloadFee(scu, maxBox, buy.k) : 0) + (sell ? autoloadFee(scu, maxBox, sell.k) : 0);
+}
+
+// Frais d'UNE LIGNE de manifeste, qui ne subit pas toujours les DEUX opérations — et c'est
+// manifestLine qui le dit, en balisant les deux côtés manquants :
+//   - `carry` (« vend ailleurs ») : chargée ici, elle reste en soute à l'arrivée. Rien n'est
+//     déchargé, et sa colonne profit affiche « — » : lui facturer un déchargement retranchait du
+//     total un montant qu'aucune ligne à l'écran ne montrait.
+//   - `acquired` (« acquis ailleurs » : butin, minage, salvage) : déjà à bord au départ. L'autoload
+//     du terminal d'achat ne l'a jamais chargée.
+// L'extrémité qui ne manutentionne rien passe à k = 0 au lieu d'être retirée de la paire : elle
+// garde ainsi son `maxBox`, donc le décompte de caisses reste celui du terminal de chargement
+// (hypothèse 1) — c'est-à-dire exactement celui que le « 📦 » de la ligne affiche.
+export function lineHaulFee(units, line, pair) {
+  if (!pair) return 0;
+  const { carry, acquired } = line || {};
+  if (!carry && !acquired) return haulFee(units, pair);
+  const muet = (p) => (p ? { maxBox: p.maxBox, k: 0 } : p);
+  return haulFee(units, {
+    buy: acquired ? muet(pair.buy) : pair.buy,
+    sell: carry ? muet(pair.sell) : pair.sell,
+  });
+}
+
 // ---------- Chaîne multi-sauts (A -> B -> C ...) ----------
 // Meilleure chaîne de `hops` sauts depuis `start`, sans revisiter un terminal.
-// adj : Map<terminal, leg[]> ; leg = { to, margin, stock, demand, buyPrice, ... }.
+// adj : Map<terminal, leg[]> ; leg = { to, margin, stock, demand, buyPrice, fee?, ... }.
 // Recherche par faisceau (beam) : approximation robuste et bornée en temps. Chaque saut
 // remplit la soute (`cargo`), plafonnée par stock/demande ; le budget se reconstitue à la
 // vente donc n'est pas une contrainte de chaîne. Renvoie { path, legs, profit } ou null.
+// Les frais d'autoload arrivent ici PAR LE LEG (`leg.fee` = { buy, sell }, posé par
+// buildChainAdjacency) : bestChain ne voit ni terminaux ni filtres, et c'est le seul canal
+// disponible. Sans ce champ — donc par défaut — les profits sont strictement ceux d'avant.
+// Volume réellement emportable sur un saut, et ce qu'il RAPPORTE une fois ses deux opérations
+// payées. Exporté parce que buildChainAdjacency doit classer les candidates d'une paire sur le
+// profit que bestChain leur donnera vraiment : un autre plafond de volume et le classement
+// porterait sur un saut qui n'existe pas.
+export function chainLegNet(leg, cargo) {
+  let u = cargo;
+  u = Math.min(u, leg.stock);                     // stock 0 = terminal vide -> saut exclu
+  if (leg.demand != null || leg.demandKnown) u = Math.min(u, leg.demand); // null = inconnu ; 0 = saturé
+  const units = isFinite(u) ? Math.max(0, u) : 0; // sans borne de volume : rien (chaîne = soute finie)
+  return { units, profit: units * leg.margin - haulFee(units, leg.fee) };
+}
+
 export function bestChain(adj, start, hops, { cargo = Infinity, beam = 40 } = {}) {
-  const legUnits = (leg) => {
-    let u = cargo;
-    u = Math.min(u, leg.stock);                     // stock 0 = terminal vide -> saut exclu
-    if (leg.demand != null || leg.demandKnown) u = Math.min(u, leg.demand); // null = inconnu ; 0 = saturé
-    return isFinite(u) ? Math.max(0, u) : 0; // sans borne de volume : rien (chaîne = soute finie)
-  };
   let paths = [{ path: [start], visited: new Set([start]), profit: 0, legs: [] }];
   let best = null;
   for (let h = 0; h < hops; h++) {
@@ -325,9 +465,12 @@ export function bestChain(adj, start, hops, { cargo = Infinity, beam = 40 } = {}
       const u = p.path[p.path.length - 1];
       for (const leg of adj.get(u) || []) {
         if (leg.margin <= 0 || p.visited.has(leg.to)) continue;
-        const units = legUnits(leg);
-        if (units <= 0) continue;
-        const legProfit = units * leg.margin;
+        // Deux opérations par saut (chargement au départ, déchargement à l'arrivée). Un saut dont
+        // les frais mangent la marge fait PERDRE de l'argent : on l'écarte, exactement comme un
+        // saut de marge nulle plus haut — sans quoi l'invariant « chaque saut ajoute un profit
+        // positif » tomberait et la meilleure chaîne pourrait être plus courte que la retenue.
+        const { units, profit: legProfit } = chainLegNet(leg, cargo);
+        if (units <= 0 || legProfit <= 0) continue;
         const visited = new Set(p.visited);
         visited.add(leg.to);
         next.push({
@@ -394,10 +537,14 @@ export function decodeState(str) {
 }
 
 // ---------- Marché interactif : recherche de trajets (En route, manifeste, chaîne) ----------
-// `market` = { terminals:[{name,system,planet,outpost}], commodities:[{name,kind,illegal,buys,sells}] }
+// `market` = { terminals:[{name,system,planet,outpost,autoload,maxBox}],
+//              commodities:[{name,kind,illegal,buys,sells}] }
 // où chaque buy/sell est un tuple compact [idxTerminal, prix, volume, updated, statut].
+// `autoload`/`maxBox` peuvent manquer d'un instantané antérieur : toute lecture est défensive.
 // `resolve(commodity, terminalName, side, price, vol, updated)` applique les corrections locales et
 // renvoie au moins { price, vol, ovol } (identité si aucune correction). PURES si `resolve` l'est.
+// `autoloadFor(terminal)` -> point de frais { maxBox, k } de ce terminal (voir autoloadPoint).
+// null = interrupteur inactif, et c'est le défaut : aucun frais n'est alors calculé nulle part.
 
 // Construit un objet « route » (compatible evaluate/routeRowHTML) depuis un achat + une vente bruts.
 export function dealFrom(market, c, b, s) {
@@ -417,19 +564,41 @@ export function dealFrom(market, c, b, s) {
 // Meilleure vente par commodité depuis le terminal `origin`. `destTerminal` (index) force un
 // terminal d'arrivée précis ; sinon `destSystem` filtre par système ("" = n'importe où).
 // Données brutes (les corrections sont appliquées ensuite par evaluate) -> pas de `resolve`.
-export function enRouteDeals(market, origin, destSystem, destTerminal = null) {
+// `f` + `autoloadFor` (optionnels) font retenir la destination sur le profit NET au lieu du prix
+// affiché. C'était le dernier point d'entrée aveugle aux frais : deux stations qui paient presque
+// pareil ne facturent pas pareil la manutention, et comme cette fonction ne garde qu'UNE vente par
+// commodité, la meilleure en net n'entrait jamais dans la liste — le tableau montrait alors une
+// destination pendant que la carte Manifeste, sur le MÊME écran, en affichait une autre.
+// Sans eux — donc par défaut — le critère reste le prix de vente le plus élevé, à l'identique.
+export function enRouteDeals(market, origin, destSystem, destTerminal = null, f = null, autoloadFor = null) {
   const deals = [];
+  const buyPoint = autoloadFor ? autoloadFor(market.terminals[origin]) : null;
   market.commodities.forEach((c) => {
     const b = c.buys.find((x) => x[0] === origin);
     if (!b) return;
-    let best = null;
+    // Profit net d'une vente candidate, dans les termes exacts de routeMetrics. Volume non borné =
+    // aucun frais calculable (routeMetrics laisse déjà ces routes au brut) -> on reprend le prix.
+    const score = (s) => {
+      if (!autoloadFor || !f) return s[1];
+      const u = computeUnits(b[1], b[2], s[2], f);
+      if (!isFinite(u)) return s[1];
+      return u * (s[1] - b[1]) - haulFee(u, { buy: buyPoint, sell: autoloadFor(market.terminals[s[0]]) });
+    };
+    let best = null, bestScore = 0;
     for (const s of c.sells) {
       if (s[0] === origin) continue;
       if (destTerminal != null) { if (s[0] !== destTerminal) continue; }
       else if (destSystem && market.terminals[s[0]].system !== destSystem) continue;
-      if (!best || s[1] > best[1]) best = s;
+      // Une vente qui ne bat pas le prix d'achat n'a jamais été un candidat : ce filtre était en
+      // sortie de boucle (`best[1] > b[1]`), le remonter ici ne change rien au critère brut et
+      // empêche une vente à volume nul — donc à frais nuls, donc au « meilleur » net — de faire
+      // disparaître du tableau une commodité qui, ailleurs, se vend avec profit.
+      if (s[1] <= b[1]) continue;
+      const sc = score(s);
+      // Égalité -> le prix brut départage, comme avant (le critère brut ne change donc jamais d'avis).
+      if (!best || sc > bestScore || (sc === bestScore && s[1] > best[1])) { best = s; bestScore = sc; }
     }
-    if (best && best[1] > b[1]) deals.push(dealFrom(market, c, b, best));
+    if (best) deals.push(dealFrom(market, c, b, best));
   });
   return deals;
 }
@@ -471,7 +640,11 @@ export function suggestionsFrom(market, m, resolve) {
 // TOUS les manifestes depuis `origin` : un par destination atteignable, soute remplie par marge
 // décroissante (fillCargo). Trié par profit décroissant. `bestManifest` n'en garde que le premier ;
 // la vue « Trajets » en mode multi-commodité les garde tous. Renvoie [] si la soute n'est pas bornée.
-export function manifestsFrom(market, origin, destSystem, f, resolve, destTerminal = null) {
+// Le tri se fait sur le profit NET dès que `autoloadFor` est fourni — c'est ici que la destination
+// gagnante se décide, un net calculé après coup par l'appelant arriverait trop tard. Chaque trajet
+// emporte le contexte de frais qui l'a produit (`fee`), pour que tripMetrics et les recalculs de
+// manifeste d'app.js n'aient pas à le reconstruire — ni à risquer de le reconstruire autrement.
+export function manifestsFrom(market, origin, destSystem, f, resolve, destTerminal = null, autoloadFor = null) {
   if (!f.useCargo || !(f.cargo > 0)) return [];
   const ot = market.terminals[origin];
   const byDest = new Map();
@@ -495,13 +668,21 @@ export function manifestsFrom(market, origin, destSystem, f, resolve, destTermin
   });
 
   const budget = f.useBudget && f.budget > 0 ? f.budget : Infinity;
+  const buyPoint = autoloadFor ? autoloadFor(ot) : null;
   const trips = [];
   for (const [dest, items] of byDest) {
     items.sort((a, b) => b.margin - a.margin);
     const { lines, profit } = fillCargo(items, f.cargo, budget);
     if (!lines.length) continue;
     const dt = market.terminals[dest];
-    trips.push({ origin: ot, originIdx: origin, dest: dt, destIdx: dest, cross: ot.system !== dt.system, lines, profit, cargo: f.cargo });
+    const fee = autoloadFor ? { buy: buyPoint, sell: autoloadFor(dt) } : null;
+    // Une ligne dont les frais dépassent la marge fait perdre de l'argent : la charger quand même
+    // classerait ce manifeste sous un autre qui, lui, l'aurait laissée au sol. La place libérée ne
+    // se recycle pas — les candidates suivantes sont triées par marge décroissante, donc pires.
+    const kept = fee ? lines.filter((l) => l.units * l.margin > lineHaulFee(l.units, l, fee)) : lines;
+    if (!kept.length) continue;
+    const net = fee ? manifestTotals(kept, fee).profit : profit;
+    trips.push({ origin: ot, originIdx: origin, dest: dt, destIdx: dest, cross: ot.system !== dt.system, lines: kept, profit: net, fee, cargo: f.cargo });
   }
   return trips.sort((a, b) => b.profit - a.profit);
 }
@@ -510,18 +691,29 @@ export function manifestsFrom(market, origin, destSystem, f, resolve, destTermin
 // `origin`, soute remplie par marge décroissante (fillCargo). Toujours plafonné par stock/demande
 // (ce qui force à diversifier). Null si la soute n'est pas contrainte.
 // `destTerminal` (index) force un terminal d'arrivée précis ; sinon `destSystem` filtre par système.
-export function bestManifest(market, origin, destSystem, f, resolve, destTerminal = null) {
-  return manifestsFrom(market, origin, destSystem, f, resolve, destTerminal)[0] || null;
+export function bestManifest(market, origin, destSystem, f, resolve, destTerminal = null, autoloadFor = null) {
+  return manifestsFrom(market, origin, destSystem, f, resolve, destTerminal, autoloadFor)[0] || null;
 }
 
 // ---------- Trajets MULTI-COMMODITÉ (vue « Trajets », coche « Multi commodité ») ----------
 // Champs dérivés d'un trajet multi-commodité, à la forme attendue par bySort/normalizeScores et
 // les colonnes du tableau. La marge est la marge MOYENNE pondérée par SCU (profit / SCU chargés).
 // Distance exacte indisponible hors routes.json -> tripMinutes(0, cross), comme « En route ».
+// Les frais viennent du trajet lui-même (`trip.fee`, posé par manifestsFrom) : tripMetrics est la
+// seule fonction de métriques à ne recevoir ni `f` ni terminaux, et un trajet fabriqué à la main
+// (donc sans `fee`) reste chiffré au brut.
+// Marge et ROI sont NETS des frais, dans les deux modes de la vue « Trajets » : ce qui compte est
+// ce que le joueur encaisse par SCU, pas l'écart de prix affiché aux terminaux. Ils suivent donc
+// `profit` (déjà net) et non `brut`. `marginGross` conserve la marge de MARCHÉ pour `legFromTrip` :
+// une jambe de voyage ne doit pas figer une marge nette dans le parcours, où elle se cumulerait
+// avec les marges brutes des jambes venues des autres vues — et où elle survivrait à l'extinction
+// de l'interrupteur, jusque dans le permalien `j=`.
 export function tripMetrics(trip) {
-  const { profit, invest, scu } = manifestTotals(trip.lines);
+  const { profit, invest, scu, fees } = manifestTotals(trip.lines, trip.fee);
   const minutes = tripMinutes(0, trip.cross);
   const profitHour = profitPerHour(profit, minutes);
+  const brut = fees ? profit + fees : profit;
+  const marginGross = scu > 0 ? brut / scu : 0;
   const margin = scu > 0 ? profit / scu : 0;
   const roi = invest > 0 ? Math.round((profit / invest) * 1000) / 10 : 0;
   // Fiabilité : le relevé le PLUS VIEUX du chargement et les volumes les plus contraints.
@@ -538,7 +730,7 @@ export function tripMetrics(trip) {
   // « Trajets » reste utilisable en mode multi (ligne de tête = plus grosse marge, prix moyens/SCU).
   const buyPrice = scu > 0 ? invest / scu : 0;
   return {
-    units: scu, investment: invest, profit, margin, roi, minutes, profitHour, rawScore,
+    units: scu, investment: invest, profit, margin, marginGross, roi, minutes, profitHour, rawScore, fees,
     nLines: trip.lines.length, commodity: trip.lines[0] ? trip.lines[0].name : "",
     buyPrice, sellPrice: buyPrice + margin,
   };
@@ -546,12 +738,15 @@ export function tripMetrics(trip) {
 
 // Jambe de voyage depuis un trajet multi-commodité (le manifeste de la jambe est recalculé par la
 // vue Voyage, donc on ne retient que la commodité de tête comme libellé).
+// La jambe retient la marge de MARCHÉ (`marginGross`), jamais la marge nette : elle est persistée
+// et voyage dans le permalien `j=`, où des frais estimés au moment du clic n'auraient plus aucun
+// sens — l'interrupteur peut être éteint depuis, ou le tarif de la station avoir changé.
 export function legFromTrip(t) {
   const top = t.lines[0] || {};
   return {
     from: t.origin.name, fromSystem: t.origin.system, to: t.dest.name, toSystem: t.dest.system,
     commodity: top.name || "", buyPrice: top.buyPrice || 0, sellPrice: top.sellPrice || 0,
-    margin: t.margin || 0,
+    margin: (t.marginGross != null ? t.marginGross : t.margin) || 0,
   };
 }
 
@@ -563,8 +758,10 @@ export function legFromTrip(t) {
 // remplissage optimal tient en UNE commodité est déjà couvert par la vue « Trajets » normale, on
 // ne garde donc ici que les chargements réellement combinés. minLines:1 rend tout.
 // Trié par profit décroissant puis TRONQUÉ à `limit` (garde-fou de perf : un tri utilisateur
-// ultérieur ne réordonne que ces `limit` meilleurs trajets par profit).
-export function multiTrips(market, f, resolve, limit = 300, minLines = 2) {
+// ultérieur ne réordonne que ces `limit` meilleurs trajets par profit). Ce profit est le NET dès
+// que `autoloadFor` est fourni : la troncature décide QUELS trajets existent, un trajet meilleur
+// en net serait donc coupé par le garde-fou avant même d'atteindre le tableau.
+export function multiTrips(market, f, resolve, limit = 300, minLines = 2, autoloadFor = null) {
   const origins = new Set();
   market.commodities.forEach((c) => c.buys.forEach((b) => origins.add(b[0])));
   const out = [];
@@ -572,7 +769,7 @@ export function multiTrips(market, f, resolve, limit = 300, minLines = 2) {
     const ot = market.terminals[origin];
     if (f.sysFilter && ot.system !== f.sysFilter) continue; // filtre système = système d'ACHAT
     if (f.noOutpost && ot.outpost) continue;
-    for (const trip of manifestsFrom(market, origin, "", f, resolve)) {
+    for (const trip of manifestsFrom(market, origin, "", f, resolve, null, autoloadFor)) {
       if (trip.lines.length < minLines) continue;
       if (f.sameOnly && trip.cross) continue;
       if (f.q && !trip.lines.some((l) => l.name.toLowerCase().includes(f.q))) continue;
@@ -582,16 +779,33 @@ export function multiTrips(market, f, resolve, limit = 300, minLines = 2) {
   return out.sort((a, b) => b.profit - a.profit).slice(0, limit);
 }
 
-// Graphe des meilleurs segments : pour chaque paire (départ -> arrivée), la commodité de marge
-// maximale (corrections comprises). Renvoie Map<idxTerminal, leg[]> pour bestChain.
-export function buildChainAdjacency(market, f, resolve) {
+// Graphe des meilleurs segments : pour chaque paire (départ -> arrivée), la meilleure commodité
+// (corrections comprises). Renvoie Map<idxTerminal, leg[]> pour bestChain.
+// C'est le SEUL endroit de la chaîne où les deux terminaux d'un saut coexistent : le contexte de
+// frais y est donc estampillé sur le leg (`fee`), que bestChain consomme sans jamais voir un
+// terminal.
+// Le critère de « meilleure » dépend des frais, et c'est indispensable : les frais ne dépendent que
+// du VOLUME, or les volumes ne sont PAS égaux d'une commodité à l'autre (stock et demande diffèrent).
+// La plus forte marge peut n'avoir que 2 SCU disponibles et se faire manger par la base de 150 —
+// bestChain élague alors le saut ENTIER, et la vue Chaîne annonce « aucune chaîne rentable » alors
+// que la commodité voisine, elle, remplissait la soute et rapportait. On classe donc sur le profit
+// net au volume emportable dès que les frais sont actifs, et sur la marge sinon : le critère
+// historique est conservé au caractère près tant que l'interrupteur est inactif.
+export function buildChainAdjacency(market, f, resolve, autoloadFor = null) {
   const best = new Map(); // Map<u, Map<v, leg>>
+  const cargo = f.useCargo && f.cargo > 0 ? f.cargo : Infinity;
+  // Sans soute bornée aucun volume n'est calculable (chainLegNet rend 0 pour tout le monde) : le
+  // net ne discriminerait plus rien, on s'en tient alors à la marge.
+  const parLeNet = !!autoloadFor && isFinite(cargo);
+  const mieux = (cand, cur) =>
+    parLeNet ? chainLegNet(cand, cargo).profit > chainLegNet(cur, cargo).profit : cand.margin > cur.margin;
   market.commodities.forEach((c) => {
     if (f.legalOnly && c.illegal) return;
     c.buys.forEach((b) => {
       const bt = market.terminals[b[0]];
       if (f.noOutpost && bt.outpost) return;
       const eb = resolve(c.name, bt.name, "buy", b[1], b[2], b[3]);
+      const bp = autoloadFor ? autoloadFor(bt) : null;
       c.sells.forEach((s) => {
         if (s[0] === b[0]) return;
         const st = market.terminals[s[0]];
@@ -604,9 +818,8 @@ export function buildChainAdjacency(market, f, resolve) {
         let m = best.get(b[0]);
         if (!m) { m = new Map(); best.set(b[0], m); }
         const cur = m.get(s[0]);
-        if (!cur || margin > cur.margin) {
-          m.set(s[0], { to: s[0], commodity: c.name, kind: c.kind, illegal: c.illegal, margin, buyPrice: eb.price, sellPrice: es.price, stock: eb.vol, demand: es.vol, demandKnown: es.ovol });
-        }
+        const cand = { to: s[0], commodity: c.name, kind: c.kind, illegal: c.illegal, margin, buyPrice: eb.price, sellPrice: es.price, stock: eb.vol, demand: es.vol, demandKnown: es.ovol, fee: autoloadFor ? { buy: bp, sell: autoloadFor(st) } : null };
+        if (!cur || mieux(cand, cur)) m.set(s[0], cand);
       });
     });
   });
