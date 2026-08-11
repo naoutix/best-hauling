@@ -2,7 +2,7 @@
 // Lancer : `node --test` (ou `npm test`).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeKind, routesForCommodity, buildBestLegs, buildMarket, sellDemand, maxBoxSize, numField } from "./build-data.mjs";
+import { normalizeKind, routesForCommodity, buildBestLegs, buildMarket, sellDemand, maxBoxSize, numField, MIN_TERMINALS, MIN_ROUTES } from "./build-data.mjs";
 import { readFileSync } from "node:fs";
 
 test("normalizeKind corrige la casse, les fautes de frappe et les valeurs vides", () => {
@@ -206,6 +206,29 @@ test("data/market.json : chaque commodité est vendable et bien formée", () => 
       }
     }
   }
+});
+
+// ---------- Plancher de volumétrie : une donnée amont dégradée ne doit pas se publier ----------
+// Le garde-fou lui-même vit dans main() (juste avant mkdir + les writeFile), donc hors de portée d'un
+// test unitaire : ce qui se teste ici, ce sont ses deux seuils et le réglage qu'ils imposent.
+test("plancher de volumétrie : des seuils réellement bloquants", () => {
+  // Un seuil à 0 (ou négatif) rendrait la comparaison `term.size < MIN_TERMINALS` toujours fausse :
+  // le garde-fou existerait dans le code sans jamais pouvoir se déclencher.
+  assert.ok(Number.isInteger(MIN_TERMINALS) && MIN_TERMINALS > 0, `MIN_TERMINALS = ${MIN_TERMINALS}`);
+  assert.ok(Number.isInteger(MIN_ROUTES) && MIN_ROUTES > 0, `MIN_ROUTES = ${MIN_ROUTES}`);
+});
+
+test("plancher de volumétrie : un instantané sain passe LARGEMENT au-dessus des seuils", () => {
+  // Contre-épreuve du test précédent : le garde-fou doit rester une alarme, pas un faux positif qui
+  // annulerait une publication normale. On compare aux deux mêmes grandeurs que main() — le nombre
+  // de terminaux du marché et le nombre de routes publiées — sur l'instantané versionné.
+  // Aucun nombre exact n'est asserté : data/*.json est rafraîchi par la CI et varie à chaque relevé.
+  const routes = JSON.parse(readFileSync(new URL("../data/routes.json", import.meta.url), "utf8"));
+  assert.ok(MARKET.terminals.length > MIN_TERMINALS, `${MARKET.terminals.length} terminaux <= seuil ${MIN_TERMINALS}`);
+  assert.ok(routes.length > MIN_ROUTES, `${routes.length} routes <= seuil ${MIN_ROUTES}`);
+  // Marge d'au moins ×2 : un seuil frôlé se déclencherait au premier creux d'UEX.
+  assert.ok(MARKET.terminals.length >= 2 * MIN_TERMINALS, "seuil terminaux trop proche du nominal");
+  assert.ok(routes.length >= 2 * MIN_ROUTES, "seuil routes trop proche du nominal");
 });
 
 test("data/market.json : les commodités « vente seule » du mode Butin sont présentes", () => {
