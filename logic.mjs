@@ -833,6 +833,14 @@ export function buildChainAdjacency(market, f, resolve, autoloadFor = null) {
     parLeNet ? chainLegNet(cand, cargo).profit > chainLegNet(cur, cargo).profit : cand.margin > cur.margin;
   market.commodities.forEach((c) => {
     if (f.legalOnly && c.illegal) return;
+    // `resolve` ne dépend que de (c, s), jamais du point d'achat : sans mémo le même point de vente
+    // est re-résolu une fois par achat (facteur ~4 sur les données réelles), chaque appel allouant
+    // une clé et un objet pour rien. Le mémo est LOCAL (remis à zéro à chaque commodité) : un cache
+    // global survivrait à une correction saisie par l'utilisateur et resservirait une valeur périmée.
+    // Il est peuplé APRÈS les gardes, jamais avant : pré-résoudre toutes les ventes ferait payer
+    // celles que `s[0]===b[0]`, `noOutpost`, `sameOnly` et surtout `maxAge` écartent — avec un filtre
+    // de fraîcheur serré on résoudrait plus de points qu'aujourd'hui, et le correctif coûterait.
+    const ventesRes = new Map(); // tuple de vente -> valeur effective (corrections comprises)
     c.buys.forEach((b) => {
       const bt = market.terminals[b[0]];
       if (f.noOutpost && bt.outpost) return;
@@ -844,7 +852,8 @@ export function buildChainAdjacency(market, f, resolve, autoloadFor = null) {
         if (f.noOutpost && st.outpost) return;
         if (f.sameOnly && bt.system !== st.system) return;          // même système uniquement
         if (f.maxAge) { const a = pairAge(b[3], s[3]); if (a == null || a > f.maxAge) return; } // fraîcheur
-        const es = resolve(c.name, st.name, "sell", s[1], s[2], s[3]);
+        let es = ventesRes.get(s);
+        if (es === undefined) { es = resolve(c.name, st.name, "sell", s[1], s[2], s[3]); ventesRes.set(s, es); }
         const margin = es.price - eb.price;
         if (margin <= 0) return;
         let m = best.get(b[0]);

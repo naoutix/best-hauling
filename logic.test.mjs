@@ -699,6 +699,26 @@ test("decodeState : chaîne vide -> null", () => {
   assert.equal(decodeState(undefined), null);
 });
 
+test("encodeState : un champ VIDÉ disparaît de l'état — c'est ce qui le signale comme vidé", () => {
+  // Contrat dont dépend applyState : l'écriture omet les valeurs vides (URL courte), donc à la
+  // relecture d'un état VENU DE L'APP une clé absente veut dire « champ vidé », pas « jamais
+  // renseigné ». Sans cette lecture symétrique, un budget effacé revenait au 1 000 000 du HTML
+  // au rechargement, et le destinataire du lien voyait un autre classement que son émetteur.
+  const s = decodeState(encodeState({ v: "routes", cargo: "", budget: "", system: "Pyro" }));
+  assert.equal(s.cargo, undefined);
+  assert.equal(s.budget, undefined);
+  assert.equal(s.system, "Pyro");
+});
+
+test("decodeState : seule la vue signe un état de l'app (une ancre quelconque n'en est pas un)", () => {
+  // `v` est écrite à CHAQUE sauvegarde et n'est jamais vide : c'est la signature qui autorise à lire
+  // les clés absentes comme « vidées ». N'importe quelle ancre se décode aussi en objet — vider tous
+  // les champs sur cette foi accueillerait l'arrivant sans soute ni budget.
+  assert.equal(decodeState("top").v, undefined);
+  assert.equal(decodeState("section-2").v, undefined);
+  assert.equal(decodeState(encodeState({ v: "loops", cargo: "" })).v, "loops");
+});
+
 // ---------- routeMetrics / loopMetrics (cœurs de calcul dérivés) ----------
 test("routeMetrics : borné par la soute -> units/profit/investment/temps", () => {
   const m = { buyPrice: 100, buyStock: 500, sellDemand: 300, margin: 50, distance: 0, sameSystem: true, buyUpdated: NOW, sellUpdated: NOW };
@@ -1188,6 +1208,23 @@ test("valueTiers : une seule commodité est en tête", () => {
   assert.equal(valueTiers([]).size, 0);
 });
 
+test("valueTiers : le palier dépend de l'ENSEMBLE reçu — d'où le calcul avant la recherche", () => {
+  // Contrat que renderCommodities doit respecter : la couleur d'une tuile prétend situer la
+  // commodité dans TOUT le board. Restreindre l'ensemble reçu (ici : ne garder que les « Iron »)
+  // remonte mécaniquement la tête de liste en t-hot — la commodité la MOINS payée du jeu
+  // s'affichait alors dans le palier des 15 % les mieux payées, rien qu'en tapant « iron ».
+  const board = [
+    ...rowsOf([34_000_000, 25_000, 12_000, 9_600, 8_000, 6_000, 5_000, 4_500]),
+    { name: "Iron", bestSell: 3900 }, { name: "Iron (Ore)", bestSell: 1000 },
+  ];
+  const complet = valueTiers(board);
+  assert.equal(complet.get("Iron"), "t-low");
+  assert.equal(complet.get("Iron (Ore)"), "t-low");
+  const filtre = valueTiers(board.filter((c) => c.name.startsWith("Iron")));
+  assert.equal(filtre.get("Iron"), "t-hot"); // rang 0 sur 2 : la preuve par l'absurde
+  assert.notEqual(filtre.get("Iron"), complet.get("Iron"));
+});
+
 test("enRouteDeals : destTerminal force le terminal d'arrivée", () => {
   const toC = enRouteDeals(MKT(), 0, "", 2); // force C (idx 2)
   const gold = toC.find((d) => d.commodity === "Gold");
@@ -1550,6 +1587,52 @@ test("bestManifest reste le 1er de manifestsFrom (comportement inchangé)", () =
   assert.equal(bestManifest(MKT(), 0, "", f, idResolve).dest.name, manifestsFrom(MKT(), 0, "", f, idResolve)[0].dest.name);
 });
 
+// ---------- Fraîcheur (maxAge) sur le chemin des manifestes ----------
+// manifestsFrom est le SEUL point d'application du filtre pour « En route », les manifestes de jambe
+// du compagnon de voyage et le mode multi-commodité : ni bestManifest ni multiTrips ne refiltrent.
+// MKT() date ses relevés à NOW (une seconde de 2001, figée pour les calculs déterministes) alors que
+// pairAge se compare à l'horloge réelle : on redate donc tout à RECENT, puis on vieillit le SEUL
+// relevé que le test veut voir écarté.
+const MKT_FRAIS = () => {
+  const m = MKT();
+  m.commodities.forEach((c) => {
+    c.buys.forEach((b) => (b[3] = RECENT));
+    c.sells.forEach((s) => (s[3] = RECENT));
+  });
+  return m;
+};
+
+test("manifestsFrom : maxAge écarte les destinations aux relevés trop vieux", () => {
+  // Gold vers C (la destination la plus rentable) date de 10 jours ; tout le reste est frais.
+  const mkt = MKT_FRAIS();
+  mkt.commodities[0].sells[1][3] = RECENT - 10 * 86400;
+  assert.deepEqual(manifestsFrom(mkt, 0, "", F({ useCargo: true, cargo: 400, maxAge: 3 }), idResolve).map((t) => t.dest.name), ["B"]);
+  // Contre-épreuve : 0 = filtre inactif, la destination périmée revient (et reprend la tête).
+  assert.deepEqual(manifestsFrom(mkt, 0, "", F({ useCargo: true, cargo: 400, maxAge: 0 }), idResolve).map((t) => t.dest.name), ["C", "B"]);
+});
+
+test("manifestsFrom : une date INCONNUE des deux côtés est écartée comme un relevé périmé", () => {
+  // pairAge(0, 0) renvoie null : le couple n'est pas « frais faute de preuve », il est inéligible.
+  // Ici Gold n'a plus de date nulle part -> C (qui n'a que Gold) disparaît, B garde Drug.
+  const mkt = MKT_FRAIS();
+  mkt.commodities[0].buys[0][3] = 0;
+  mkt.commodities[0].sells.forEach((s) => (s[3] = 0));
+  const trips = manifestsFrom(mkt, 0, "", F({ useCargo: true, cargo: 400, maxAge: 3 }), idResolve);
+  assert.deepEqual(trips.map((t) => t.dest.name), ["B"]);
+  assert.deepEqual(trips[0].lines.map((l) => l.name), ["Drug"]); // Gold, sans date, n'est pas chargé
+  // Contre-épreuve : sans filtre de fraîcheur, une date inconnue ne gêne personne.
+  assert.equal(manifestsFrom(mkt, 0, "", F({ useCargo: true, cargo: 400, maxAge: 0 }), idResolve).length, 2);
+});
+
+test("bestManifest : maxAge peut changer la destination retenue", () => {
+  const mkt = MKT_FRAIS();
+  mkt.commodities[0].sells[1][3] = RECENT - 10 * 86400; // la vente vers C date de 10 j
+  assert.equal(bestManifest(mkt, 0, "", F({ useCargo: true, cargo: 400, maxAge: 0 }), idResolve).dest.name, "C");
+  assert.equal(bestManifest(mkt, 0, "", F({ useCargo: true, cargo: 400, maxAge: 3 }), idResolve).dest.name, "B");
+  // Sans repli possible (destination forcée sur C), le manifeste n'existe simplement pas.
+  assert.equal(bestManifest(mkt, 0, "", F({ useCargo: true, cargo: 400, maxAge: 3 }), idResolve, 2), null);
+});
+
 test("multiTrips : ne garde que les chargements COMBINÉS (≥ 2 commodités)", () => {
   // Vers C, Gold seul sature les 400 SCU -> chargement à 1 commodité, déjà couvert par la vue
   // « Trajets » normale, donc écarté du mode multi.
@@ -1589,6 +1672,22 @@ test("multiTrips : legalOnly exclut les commodités illégales du chargement", (
 
 test("multiTrips : limit tronque la liste (garde-fou de perf)", () => {
   assert.equal(multiTrips(MKT(), F({ useCargo: true, cargo: 400 }), idResolve, 1, 1).length, 1);
+});
+
+test("multiTrips : maxAge écarte les trajets aux relevés trop vieux (hérité de manifestsFrom)", () => {
+  // multiTrips délègue TOUT le filtre de fraîcheur à manifestsFrom : sans couverture ici, un
+  // manifestsFrom qui cesserait de l'appliquer ne serait signalé par rien côté « Trajets multi ».
+  const mkt = MKT_FRAIS();
+  mkt.commodities[0].sells[1][3] = RECENT - 10 * 86400; // Gold vers C : 10 jours
+  const noms = (o) => multiTrips(mkt, F({ useCargo: true, cargo: 400, ...o }), idResolve, 300, 1).map((t) => t.dest.name);
+  assert.deepEqual(noms({ maxAge: 0 }), ["C", "B"]); // filtre inactif
+  assert.deepEqual(noms({ maxAge: 3 }), ["B"]);
+  // Date inconnue des deux côtés : même sort qu'un relevé périmé.
+  const inconnu = MKT_FRAIS();
+  inconnu.commodities[0].buys[0][3] = 0;
+  inconnu.commodities[0].sells.forEach((s) => (s[3] = 0));
+  assert.equal(multiTrips(inconnu, F({ useCargo: true, cargo: 400, maxAge: 3 }), idResolve, 300, 1).length, 1);
+  assert.equal(multiTrips(inconnu, F({ useCargo: true, cargo: 400, maxAge: 0 }), idResolve, 300, 1).length, 2);
 });
 
 test("tripMetrics : totaux, marge moyenne pondérée par SCU et ROI", () => {
