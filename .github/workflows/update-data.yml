@@ -11,11 +11,13 @@ on:
 # la CI ne RE-commite jamais les JSON reconstruits (pas de bruit dans l'historique).
 # Les data/*.json versionnés sont un INSTANTANÉ de démarrage : ils font tourner `npm run serve`
 # et une nouvelle clone hors-ligne sans rejouer un build contre l'API UEX (cf. README « Données »).
+# Minimum global : tout job qui ne demande rien de plus ne peut que lire le dépôt. Publier sur
+# Pages, forger un jeton OIDC ou écrire dans le tracker se demandent JOB PAR JOB, plus bas.
+# Accordés ici, ces trois droits l'étaient aux trois jobs — dont `build`, qui exécute du code et
+# parse du JSON venu d'une API tierce. Une exécution de code arbitraire y suffisait alors à publier
+# sur le site que voient tous les utilisateurs, sans jamais passer par le job `deploy`.
 permissions:
   contents: read
-  pages: write
-  id-token: write
-  issues: write
 
 # Ne pas annuler un déploiement en cours (recommandé pour Pages).
 concurrency:
@@ -25,11 +27,17 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read      # lire le dépôt, rien d'autre : ce job ne publie ni n'écrit nulle part
     # Exposé au job deploy : "true" seulement si les données UEX ont changé (ou build forcé).
     outputs:
       changed: ${{ steps.build.outputs.changed }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          # Sans cela, actions/checkout laisse le GITHUB_TOKEN en clair dans .git/config — dans le
+          # workspace même où tourne ensuite build-data.mjs contre une API tierce.
+          persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
@@ -68,6 +76,9 @@ jobs:
     needs: build
     if: needs.build.outputs.changed != 'false'  # rien à déployer si les données n'ont pas changé
     runs-on: ubuntu-latest
+    permissions:
+      pages: write        # le SEUL job qui publie
+      id-token: write     # exigé par actions/deploy-pages (OIDC vers l'environnement Pages)
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -80,6 +91,8 @@ jobs:
     needs: [build, deploy]
     if: always()
     runs-on: ubuntu-latest
+    permissions:
+      issues: write       # ouvre/commente l'issue de panne, et rien de plus
     steps:
       - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7
         env:

@@ -103,9 +103,16 @@ function normalizeKind(k) {
 // de volume en aval, contrairement à 0 qui signifie « saturé, ne prend plus rien ».
 // Exportée pour être testée : c'est la règle métier la plus structurante du pipeline, et elle
 // vivait au fond de main(), hors de portée de tout test.
+// UEX est une source tierce : elle renvoie parfois ses nombres en chaîne, et rien ne garantit qu'un
+// champ soit numérique du tout. Le `|| 0` d'origine ne rejetait que les valeurs fausses — toute
+// CHAÎNE non vide passait telle quelle, traversait data/market.json et finissait interpolée dans un
+// attribut HTML par editv(). On coerce donc au plus près de la source ; l'échappement au rendu reste
+// la défense qui compte, celle-ci ferme la porte en amont.
+export const numField = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+
 export function sellDemand(p) {
-  const cap = p.scu_sell || 0;
-  return cap > 0 ? Math.max(0, cap - (p.scu_sell_stock || 0)) : null;
+  const cap = numField(p.scu_sell);
+  return cap > 0 ? Math.max(0, cap - numField(p.scu_sell_stock)) : null;
 }
 
 // Taille de caisse maximale acceptée par un terminal : c'est elle qui décide en combien de caisses
@@ -304,7 +311,7 @@ async function main() {
       byCommodity.set(p.id_commodity, c);
     }
     if (p.price_buy > 0) {
-      c.buys.push({ ...loc, price: p.price_buy, stock: p.scu_buy || 0, updated: p.date_modified || 0, status: p.status_buy || 0 });
+      c.buys.push({ ...loc, price: numField(p.price_buy), stock: numField(p.scu_buy), updated: numField(p.date_modified), status: numField(p.status_buy) });
     }
     if (p.price_sell > 0) {
       // Demande = capacité RESTANTE du terminal, jamais son stock. UEX expose `scu_sell` (capacité
@@ -315,7 +322,7 @@ async function main() {
       // vente (peu de stock, donc forte demande) paraissaient les plus contraints.
       // null = capacité inconnue (UEX ne renseigne scu_sell que sur ~11 % des points) -> pas de
       // plafond de volume, contrairement à 0 qui signifie « saturé, ne prend plus rien ».
-      c.sells.push({ ...loc, price: p.price_sell, demand: sellDemand(p), updated: p.date_modified || 0, status: p.status_sell || 0 });
+      c.sells.push({ ...loc, price: numField(p.price_sell), demand: sellDemand(p), updated: numField(p.date_modified), status: numField(p.status_sell) });
     }
   }
 

@@ -387,11 +387,18 @@ function scoreCell(score) {
 // Valeur éditable (clic pour corriger localement). side = "buy"|"sell", field = "price"|"vol".
 // updated = date UEX du point (mémorisée comme base de fraîcheur de la correction).
 function editv(commodity, terminal, side, field, value, ov, updated) {
+  // `data-v` et `data-u` étaient les deux seules interpolations du rendu à ne pas passer par esc().
+  // Elles reçoivent des champs UEX, que le pipeline coerce désormais en nombre (numField) — mais un
+  // instantané déjà déployé, ou un data/ servi depuis le cache du service worker, peut encore
+  // contenir n'importe quoi. Une valeur non numérique n'a de toute façon aucun sens ici : le champ
+  // number de l'éditeur la rejetterait. On la ramène donc à « inconnu » plutôt que de l'écrire.
+  const v = Number.isFinite(Number(value)) ? Number(value) : null;
+  const u = Number.isFinite(Number(updated)) ? Number(updated) : 0;
   // value null = capacité inconnue chez UEX, affichée « n.c. » (cf. fmtVol). On n'injecte pas la
   // chaîne "null" dans data-v, sinon le champ number la rejette à l'ouverture de l'édition.
-  const unknown = value == null;
+  const unknown = value == null || v == null;
   const hint = unknown ? `${VOL_UNKNOWN_HINT}. Clic pour le corriger localement` : "Clic pour corriger localement ce chiffre";
-  return `<span class="editv${unknown ? " nc" : ""}${ov ? " ov" : ""}" data-c="${esc(commodity)}" data-t="${esc(terminal)}" data-s="${side}" data-f="${field}" data-v="${unknown ? "" : value}" data-u="${updated || 0}" role="button" tabindex="0" title="${hint}">${fmtVol(value)}${ov ? '<span class="ovmark" title="Corrigé localement">✎</span>' : ""}</span>`;
+  return `<span class="editv${unknown ? " nc" : ""}${ov ? " ov" : ""}" data-c="${esc(commodity)}" data-t="${esc(terminal)}" data-s="${side}" data-f="${field}" data-v="${unknown ? "" : esc(v)}" data-u="${esc(u)}" role="button" tabindex="0" title="${hint}">${fmtVol(value)}${ov ? '<span class="ovmark" title="Corrigé localement">✎</span>' : ""}</span>`;
 }
 
 // Lit l'état de tous les contrôles de filtre (partagé par les deux vues).
