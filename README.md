@@ -77,8 +77,8 @@ Tous les filtres ne s'appliquent pas à toutes les vues — comportement **garan
 Le site a besoin d'un serveur HTTP (l'app est un module ES et charge des JSON via `fetch` — pas de `file://`).
 
 ```bash
-npm run serve        # sert le dossier sur http://localhost:4173 (serveur maison, sans dépendance)
-# puis ouvre http://localhost:4173/index.html
+npm run serve        # sert le dossier sur http://127.0.0.1:4173 (serveur maison, sans dépendance)
+# puis ouvre http://127.0.0.1:4173/index.html — l'écoute est volontairement limitée à la boucle locale
 ```
 
 Les `data/*.json` versionnés servent d'**amorce** pour le dev local. Pour les régénérer depuis UEX :

@@ -13,6 +13,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          # actions/checkout écrit sinon le GITHUB_TOKEN en clair dans .git/config du workspace,
+          # là même où tournent ensuite du code de test et des dépendances tierces. Ce job ne
+          # pousse rien : il n'a aucun besoin de ce token.
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: 20
@@ -23,11 +28,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          # actions/checkout écrit sinon le GITHUB_TOKEN en clair dans .git/config du workspace,
+          # là même où tournent ensuite du code de test et des dépendances tierces. Ce job ne
+          # pousse rien : il n'a aucun besoin de ce token.
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: 20
+      # `npm install` ne vérifie pas que package-lock.json est en phase avec package.json : quand il
+      # ne l'est plus — un bump de plage oublié dans une PR, par exemple — il résout un arbre neuf,
+      # ignore les hashes d'intégrité verrouillés et réécrit le lock dans le runner, en exécutant au
+      # passage les scripts postinstall de versions que personne n'a relues. Le job passe au vert et
+      # le badge CI atteste d'un arbre que rien n'a validé. `npm ci` échoue bruyamment à la place.
       - name: Installer les dépendances de test
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
       - name: Installer le navigateur Playwright
         run: npx playwright install --with-deps chromium
       - name: Tests E2E de fumée

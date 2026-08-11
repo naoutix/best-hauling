@@ -2,7 +2,7 @@
 // Lancer : `node --test` (ou `npm test`).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeKind, routesForCommodity, buildBestLegs, buildMarket, sellDemand, maxBoxSize } from "./build-data.mjs";
+import { normalizeKind, routesForCommodity, buildBestLegs, buildMarket, sellDemand, maxBoxSize, numField } from "./build-data.mjs";
 import { readFileSync } from "node:fs";
 
 test("normalizeKind corrige la casse, les fautes de frappe et les valeurs vides", () => {
@@ -268,4 +268,25 @@ test("buildMarket publie autoload et maxBox par terminal", () => {
   assert.equal(m.terminals[0].maxBox, 16);
   assert.equal(m.terminals[1].autoload, false);
   assert.equal(m.terminals[1].maxBox, 32);
+});
+
+test("numField : un champ UEX non numérique ne traverse jamais le pipeline", () => {
+  // UEX est une source tierce. Le `|| 0` d'origine ne rejetait que les valeurs fausses : toute
+  // CHAÎNE non vide passait telle quelle, traversait data/market.json et finissait interpolée dans
+  // un attribut HTML par editv(). C'est le chemin d'entrée d'une charge XSS.
+  assert.equal(numField(42), 42);
+  assert.equal(numField("42"), 42);      // UEX renvoie parfois ses nombres en chaîne
+  assert.equal(numField(0), 0);
+  assert.equal(numField(null), 0);
+  assert.equal(numField(undefined), 0);
+  assert.equal(numField(""), 0);
+  assert.equal(numField('0" autofocus onfocus="fetch(evil)'), 0);
+  assert.equal(numField("NaN"), 0);
+  assert.equal(numField(Infinity), 0);   // non fini = inexploitable en volume comme en date
+  assert.equal(numField(-5), -5);        // on coerce, on ne juge pas du signe
+});
+
+test("sellDemand : une capacité UEX non numérique ne devient pas un plafond fantaisiste", () => {
+  assert.equal(sellDemand({ scu_sell: "toto", scu_sell_stock: 0 }), null); // illisible = inconnu
+  assert.equal(sellDemand({ scu_sell: "100", scu_sell_stock: "40" }), 60); // chaînes numériques OK
 });

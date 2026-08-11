@@ -12,13 +12,13 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? "list" : "line",
   use: {
-    baseURL: "http://localhost:4173",
+    baseURL: "http://127.0.0.1:4173",
     trace: "on-first-retry",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
     command: "node scripts/serve.mjs 4173",
-    url: "http://localhost:4173/index.html",
+    url: "http://127.0.0.1:4173/index.html",
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
   },
