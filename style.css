@@ -225,7 +225,8 @@ input[type="number"], input[type="text"], select {
 }
 input:focus, select:focus { outline: none; border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc), 0 0 14px rgba(255, 176, 32, 0.22); }
 input:disabled, select:disabled { opacity: 0.4; cursor: not-allowed; }
-input::placeholder { color: #4d5670; }
+/* --muted plutôt qu'un gris plus sombre : ~6,3:1 sur le fond du champ, au-dessus du 4,5:1 exigé (AA). */
+input::placeholder { color: var(--muted); }
 
 /* ---------- Autocomplétion vaisseau ---------- */
 .ship-field { position: relative; }
@@ -386,6 +387,10 @@ thead th {
   cursor: pointer; user-select: none; white-space: nowrap;
 }
 thead th:hover { color: #fff; background: #0d1420; }
+/* En-têtes triables : focusables au clavier, donc focus visible (même accent que les champs). */
+thead th[data-sort]:focus-visible, thead th[data-sort-loop]:focus-visible {
+  outline: none; color: #fff; background: #0d1420; box-shadow: inset 0 0 0 1px var(--acc);
+}
 th.num { text-align: right; }
 th.sorted-desc::after { content: " ▾"; color: var(--acc); }
 th.sorted-asc::after { content: " ▴"; color: var(--acc); }

@@ -149,28 +149,42 @@ test("Chaîne : le filtre « même système » contraint la chaîne (régression
   expect(new Set(systems.map((s) => s.trim())).size).toBeLessThanOrEqual(1);
 });
 
-test("En route : destination forçable + ajout/retrait libre au manifeste", async ({ page }) => {
+// Pose la vue « En route » sur le premier terminal de départ proposé et rend la carte Manifeste.
+async function enrouteSurLePremierTerminal(page) {
   await page.click("#viewEnroute");
-  await expect(page.locator("#destTerminal")).toBeVisible(); // Feature 1 : champ « terminal d'arrivée »
   const origin = await page.locator("#originList option").first().getAttribute("value");
   await page.fill("#origin", origin);
   await expect(page.locator("#manifest")).toBeVisible();
-  // Si un manifeste avec lignes existe, teste l'ajout LIBRE d'une commodité + le retrait (Feature 2).
-  if (await page.locator("#manifestAddInput").count()) {
-    const have = await page.locator("#manifest .mname").allInnerTexts();
-    const opts = await page.locator("#commodityList option").evaluateAll((els) => els.map((e) => e.value));
-    const toAdd = opts.find((o) => !have.some((h) => h.includes(o)));
-    const before = await page.locator("#manifest .mline").count();
-    await page.fill("#manifestAddInput", toAdd);
-    await page.click("#manifestAddBtn");
-    await expect(page.locator("#manifest .mline")).toHaveCount(before + 1);
-    await page.locator("#manifest .mline-del").last().click();
-    await expect(page.locator("#manifest .mline")).toHaveCount(before);
-  }
+}
+
+test("En route : destination forçable (terminal d'arrivée imposé)", async ({ page }) => {
+  await enrouteSurLePremierTerminal(page);
+  await expect(page.locator("#destTerminal")).toBeVisible(); // Feature 1 : champ « terminal d'arrivée »
   // Forcer un terminal d'arrivée précis ne casse pas le rendu du manifeste.
   const term = await page.locator("#stationList option").first().getAttribute("value");
   await page.fill("#destTerminal", term);
   await expect(page.locator("#manifest")).toBeVisible();
+});
+
+// Séparé du test ci-dessus (#73) : sa précondition, elle, dépend des données. La fusionner rendait
+// le `test.skip` fatal aux assertions « destination forçable », qui n'en dépendent pas.
+test("En route : ajout LIBRE d'une commodité au manifeste, puis retrait", async ({ page }) => {
+  await enrouteSurLePremierTerminal(page);
+  // La carte Manifeste est TOUJOURS rendue, mais pas toujours avec son formulaire d'ajout :
+  // renderManifest se réduit à une `.manifest-hint` quand la soute est désactivée ou qu'aucun
+  // chargement n'est rentable depuis ce terminal — état produit légitime, donc un saut VISIBLE au
+  // rapport. Un `if` muet, lui, laissait ce test au vert même si #manifestAddInput disparaissait,
+  // alors que `.mline-del` n'est asserté nulle part ailleurs.
+  test.skip(!(await page.locator("#manifestAddInput").count()), "aucun chargement rentable depuis ce terminal");
+  const have = await page.locator("#manifest .mname").allInnerTexts();
+  const opts = await page.locator("#commodityList option").evaluateAll((els) => els.map((e) => e.value));
+  const toAdd = opts.find((o) => !have.some((h) => h.includes(o)));
+  const before = await page.locator("#manifest .mline").count();
+  await page.fill("#manifestAddInput", toAdd);
+  await page.click("#manifestAddBtn");
+  await expect(page.locator("#manifest .mline")).toHaveCount(before + 1);
+  await page.locator("#manifest .mline-del").last().click();
+  await expect(page.locator("#manifest .mline")).toHaveCount(before);
 });
 
 test("Compagnon de voyage : sélectionner un trajet affiche le parcours", async ({ page }) => {
@@ -217,11 +231,12 @@ test("Compagnon de voyage : pré-remplit Chaîne + remonte les boucles depuis l'
     const sell = (await routes.nth(i).locator(".term-name").nth(1).innerText()).trim();
     if (loopSet.has(sell)) { await routes.nth(i).locator(".journey-pick").click(); matched = true; break; }
   }
-  if (matched) {
-    await page.click("#viewLoops");
-    expect(await page.locator("#loopRows tr.from-here").count()).toBeGreaterThan(0);
-    await expect(page.locator("#loopRows tr").first()).toHaveClass(/from-here/); // pertinentes en tête
-  }
+  // Précondition de DONNÉES (intersection routes × boucles), pas de code : un `if` muet comptait le
+  // test comme réussi sans exécuter la seule assertion d'ORDRE que ce fichier porte (#73).
+  test.skip(!matched, "aucune route vers un terminal de boucle dans le jeu de données");
+  await page.click("#viewLoops");
+  expect(await page.locator("#loopRows tr.from-here").count()).toBeGreaterThan(0);
+  await expect(page.locator("#loopRows tr").first()).toHaveClass(/from-here/); // pertinentes en tête
 });
 
 test("Compagnon de voyage : cliquer une étape recale En route (position interactive)", async ({ page }) => {
@@ -530,6 +545,29 @@ test("Butin : ajouter un fret trouvé n'invente ni la quantité ni un achat sur 
   await expect(line.locator(".mstock")).toContainText("stock —");
 });
 
+test("Butin : filtrer la recherche ne recolore pas la heatmap du board (#56)", async ({ page }) => {
+  // La couleur d'une tuile situe la commodité dans TOUT le board (t-hot = les 15 % les mieux
+  // payées). Calculée après le filtre de recherche, taper « iron » suffisait à repeindre Iron
+  // (3 900 aUEC/SCU, le bas du classement) en t-hot : rang 0 sur 1 seule ligne restante.
+  await page.click("#viewCommodities");
+  const tuiles = page.locator("#commGrid .comm-tile");
+  await expect(tuiles.first()).toBeVisible({ timeout: 10000 });
+  await page.click('#commBoardModes button[data-board="loot"]');
+  await expect(page.locator("#commGrid .comm-tile.sell-only").first()).toBeVisible({ timeout: 10000 });
+
+  const avant = await tuiles.evaluateAll((els) => els.map((e) => ({ nom: e.dataset.name, cls: e.className })));
+  // La dernière tuile en t-low : la moins bien payée du board, donc celle que le calcul sur les
+  // lignes filtrées faisait basculer le plus haut. Aucune valeur en dur — les données bougent.
+  const cible = [...avant].reverse().find((t) => /\bt-low\b/.test(t.cls));
+  expect(cible, "aucune tuile t-low : la heatmap par rang ne colorerait plus rien").toBeTruthy();
+
+  await page.fill("#search", cible.nom);
+  await expect.poll(() => tuiles.count()).toBeLessThan(avant.length); // la recherche a bien filtré
+  const tuile = page.locator(`#commGrid .comm-tile[data-name="${cible.nom}"]`);
+  await expect(tuile).toHaveClass(/\bt-low\b/);
+  await expect(tuile).not.toHaveClass(/\bt-hot\b/);
+});
+
 // ---------- Chargement du marché : l'échec réseau ne doit pas être collant (#38) ----------
 
 // Le service worker est BLOQUÉ ici : on teste la logique de chargement d'app.js, pas le cache.
@@ -569,6 +607,27 @@ test.describe("chargement du marché", () => {
     await expect(page.locator("#commGrid .comm-tile").first()).toBeVisible({ timeout: 15000 });
     expect(hits).toBe(1); // la promesse en vol est mémorisée, pas re-déclenchée à chaque frappe
   });
+
+  test("marché lent : le rendu tardif d'« En route » n'écrase pas la vue Trajets (#55)", async ({ page }) => {
+    // #empty et #manifest sont PARTAGÉS par Trajets / Boucles / En route. Chaque vue se rappelait
+    // elle-même à l'arrivée du marché : quitter « En route » pendant le fetch faisait donc
+    // repeindre, par-dessus un tableau de trajets plein, le « Choisis un terminal de départ… »
+    // d'une vue qu'on avait quittée. Le correctif rappelle refresh(), qui rend la vue ACTIVE.
+    await page.route("**/data/market.json", async (route) => {
+      await new Promise((r) => setTimeout(r, 1200)); // le marché arrive après le changement de vue
+      return route.continue();
+    });
+
+    await page.click("#viewEnroute"); // 1er besoin du marché -> withMarket en vol
+    await page.click("#viewRoutes");  // ...et on repart avant qu'il n'arrive
+    await expect(page.locator("#rows tr").first()).toBeVisible();
+
+    // Le marché finit par arriver (les datalists se peuplent) : c'est le moment du rendu tardif.
+    await expect(page.locator("#originList option").first()).toBeAttached({ timeout: 15000 });
+    await expect(page.locator("#empty")).toBeHidden(); // et non « Choisis un terminal de départ… »
+    await expect(page.locator("#manifest")).toBeHidden();
+    await expect(page.locator("#routes")).toBeVisible();
+  });
 });
 
 // ---------- Service worker : le cache doit réellement se remplir (#66) ----------
@@ -578,8 +637,17 @@ test("service worker : les données atterrissent vraiment dans le cache", async 
   // après que la page ait consommé le corps -> « Response body is already used ». Le cache ne
   // contenait que les 8 fichiers précachés à l'installation : le repli hors-ligne, qui est toute
   // la raison d'être du mode « réseau d'abord, cache en repli », n'avait jamais rien à servir.
-  await page.reload(); // 1re visite : le SW s'installe ; il ne contrôle la page qu'ensuite
+  // On ATTEND l'activation avant de recharger. Recharger « à l'aveugle » était une course : si le
+  // worker s'active pendant la navigation, le nouveau document est créé NON contrôlé (il n'était
+  // pas encore un client quand `clients.claim()` est passé) et le reste pour toute sa vie — ses
+  // requêtes ne traversent jamais le gestionnaire `fetch`, donc aucun data/*.json n'est mis en
+  // cache. Observé 1 fois sur 12 en parallèle : `controller: null`, cache réduit à la coquille.
+  await page.evaluate(() => navigator.serviceWorker.ready.then(() => {}));
+  await page.reload(); // le worker est actif : la navigation naît contrôlée
   await expect(page.locator("#rows tr").first()).toBeVisible();
+  // Sans contrôleur, l'attente ci-dessous ne prouverait rien : elle échouerait pour la mauvaise
+  // raison (SW hors circuit) au lieu de la bonne (putInCache cassé).
+  await expect.poll(() => page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
 
   const dataEnCache = async () => page.evaluate(async () => {
     const keys = await caches.keys();
@@ -682,4 +750,168 @@ test("effacer le voyage purge les manifestes édités", async ({ page }) => {
   // Sans la purge, ces éditions ressortaient sur un parcours ULTÉRIEUR passant par les mêmes
   // terminaux, badge ✎ compris, alors que l'utilisateur n'avait rien édité dans ce voyage-là.
   expect(await page.evaluate(() => localStorage.getItem("best-hauling-journey-edits-v2"))).toBe("{}");
+});
+
+// ---------- Permalien : l'état encodé doit être fidèle, y compris les champs VIDÉS (#63) ----------
+
+test("permalien : un champ vidé le reste au rechargement (défaut HTML non vide)", async ({ page }) => {
+  // #budget vaut 1 000 000 dans le HTML. Vidé case cochée, l'état est légitime (readFilters donne
+  // budget: 0 -> aucun plafond) mais encodeState omet les valeurs vides : au rechargement, l'input
+  // revenait à 1 000 000, le plafond se réactivait et le classement changeait — chez l'émetteur du
+  // lien comme chez son destinataire.
+  await page.fill("#budget", "12345");
+  await expect(page).toHaveURL(/budget=12345/); // le hash suit bien la saisie
+  await page.fill("#budget", "");
+  await expect(page).not.toHaveURL(/budget=/);  // ...et l'omet une fois le champ vide
+
+  await page.reload();
+  await expect(page.locator("#rows tr").first()).toBeVisible();
+  await expect(page.locator("#budget")).toHaveValue("");
+  await expect(page.locator("#useBudget")).toBeChecked(); // la case, elle, n'a pas bougé
+});
+
+// Ouvre un lien en CHARGEMENT COMPLET : la page est déjà sur /index.html (beforeEach), et un goto
+// qui ne change que le fragment serait une navigation same-document — init() ne serait pas rejoué et
+// le test passerait à vide. Le détour par about:blank force le rechargement, comme le ferait un
+// destinataire ouvrant le lien partagé.
+async function ouvrirPermalien(page, hash) {
+  await page.goto("about:blank");
+  await page.goto("/index.html" + hash);
+  await expect(page.locator("#rows tr").first()).toBeVisible();
+}
+
+test("permalien : une clé absente d'un état SIGNÉ vide le champ, sauf ceux sans option vide", async ({ page }) => {
+  // `v` (la vue) est écrite à chaque sauvegarde et n'est jamais vide : c'est elle qui signe un état
+  // venu de l'app et autorise à lire une clé absente comme « champ vidé ».
+  await ouvrirPermalien(page, "#v=routes");
+  await expect(page.locator("#cargo")).toHaveValue("");
+  await expect(page.locator("#budget")).toHaveValue("");
+  // #hops n'a AUCUNE option vide (2 / 3 / 4) : lui poser "" laisserait le menu visuellement vide
+  // alors que le calcul retomberait silencieusement sur 3 sauts.
+  await expect(page.locator("#hops")).toHaveValue("3");
+});
+
+test("permalien : une ancre quelconque n'est pas un état — les défauts du HTML tiennent", async ({ page }) => {
+  // Sans signature `v`, vider tous les champs accueillerait l'arrivant sans soute ni budget.
+  await ouvrirPermalien(page, "#top");
+  await expect(page.locator("#cargo")).toHaveValue("96");
+  await expect(page.locator("#budget")).toHaveValue("1000000");
+});
+
+// ---------- Accessibilité : tri au clavier, aria-sort, noms accessibles (#57, #58, #59) ----------
+
+test("tri : Entrée puis Espace sur un en-tête trient la table, et aria-sort suit (#58)", async ({ page }) => {
+  const score = page.locator('#routes th[data-sort="score"]');
+  const commodite = page.locator('#routes th[data-sort="commodity"]');
+  await expect(score).toHaveAttribute("aria-sort", "descending"); // tri par défaut, annoncé
+  await expect(commodite).toHaveAttribute("aria-sort", "none");
+
+  // Entrée sur « Commodité » : nouvelle clé -> ordre alphabétique croissant (bySort, dir 1).
+  await commodite.press("Enter");
+  await expect(commodite).toHaveAttribute("aria-sort", "ascending");
+  await expect(score).toHaveAttribute("aria-sort", "none"); // une seule colonne triée à la fois
+  const noms = await page.locator("#rows .cname").allInnerTexts();
+  expect(noms.length).toBeGreaterThan(1);
+  expect(noms).toEqual([...noms].sort((a, b) => a.localeCompare(b, "fr")));
+
+  // Espace sur la même colonne : inversion du sens (et la page ne défile pas, preventDefault).
+  await commodite.press(" ");
+  await expect(commodite).toHaveAttribute("aria-sort", "descending");
+  const inverses = await page.locator("#rows .cname").allInnerTexts();
+  expect(inverses).toEqual([...noms].reverse());
+});
+
+test("tri : les en-têtes de Boucles sont eux aussi actionnables au clavier (#58)", async ({ page }) => {
+  await page.click("#viewLoops");
+  const score = page.locator('#loops th[data-sort-loop="score"]');
+  const profit = page.locator('#loops th[data-sort-loop="profit"]');
+  await expect(score).toHaveAttribute("aria-sort", "descending");
+  await profit.press("Enter");
+  await expect(profit).toHaveAttribute("aria-sort", "descending");
+  await expect(score).toHaveAttribute("aria-sort", "none");
+  await expect(profit).toHaveClass(/sorted-desc/); // l'indicateur ▾ visuel suit la même colonne
+});
+
+test("noms accessibles : soute et budget ont chacun le leur (#57)", async ({ page }) => {
+  // Les deux champs n'étaient rattachés à AUCUN label : un lecteur d'écran annonçait « champ
+  // numérique », sans dire lequel. Le `for` du label, lui, revient à la case à cocher.
+  await expect(page.locator("#cargo")).toHaveAccessibleName(/SCU/i);
+  await expect(page.locator("#budget")).toHaveAccessibleName(/aUEC/i);
+  await expect(page.getByRole("checkbox", { name: /Soute/i })).toHaveAttribute("id", "useCargo");
+  await expect(page.getByRole("checkbox", { name: /Budget/i })).toHaveAttribute("id", "useBudget");
+});
+
+test("rail rétracté : les boutons gardent un nom accessible descriptif (#59)", async ({ page }) => {
+  const toggle = page.locator("#railToggle");
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(toggle).toHaveAccessibleName("Rétracter le menu");
+
+  await toggle.click();
+  await expect(page.locator("#app")).toHaveClass(/rail-collapsed/);
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(toggle).toHaveAccessibleName("Déplier le menu");
+  // Replié, le libellé .rl passe en display:none : sans aria-label le nom accessible tombait au
+  // simple numéro de la vue (« 01 », « 02 »…), illisible pour qui n'a pas l'icône sous les yeux.
+  await expect(page.locator("#viewRoutes")).toHaveAccessibleName("Trajets simples");
+  await expect(page.locator("#viewLoops")).toHaveAccessibleName("Boucles aller-retour");
+  await expect(page.locator("#viewCommodities")).toHaveAccessibleName(/Commodités/);
+  await expect(page.locator("#share")).toHaveAccessibleName(/lien/i);
+  // L'aria-label PRIME sur le contenu : il doit donc reprendre le libellé visible, sinon
+  // « clic Partager » au pilotage vocal ne trouve plus le bouton (SC 2.5.3 « Label in Name »).
+  await expect(page.locator("#share")).toHaveAccessibleName(/Partager/);
+  // Le nom survit à un changement de vue (rien dans app.js ne réécrit ces attributs).
+  await page.click("#viewLoops");
+  await expect(page.locator("#viewRoutes")).toHaveAccessibleName("Trajets simples");
+});
+
+test("rail : le retour de copie et le compteur de corrections restent DANS le nom accessible (#59)", async ({ page, context }) => {
+  // Contrepartie de l'aria-label : ce que app.js écrit dans ces deux boutons doit continuer
+  // d'atteindre un lecteur d'écran, sinon le nom accessible fige un texte périmé.
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.click("#share");
+  await expect(page.locator("#share")).toHaveAccessibleName("✓ Lien copié");
+
+  const span = page.locator('#rows tr:first-child .editv[data-s="buy"][data-f="price"]');
+  await span.click();
+  await span.locator("input").fill("4321");
+  await span.locator("input").press("Enter");
+  await expect(page.locator("#viewCorrections")).toHaveAccessibleName(/Corrections \(1\)/);
+});
+
+test("saisie : pas un history.replaceState par frappe, et « Partager » ne copie jamais un lien périmé (#54)", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.click("#viewCorrections");
+  await expect(page.locator("#stationList option").first()).toBeAttached({ timeout: 15000 });
+  // WebKit plafonne replaceState à 100 appels / 10 s puis lève SecurityError. La suite tourne sur
+  // Chromium (qui se contente d'un avertissement) : on compte donc les appels, et on simule le
+  // plafond en faisant lever la méthode.
+  await page.evaluate(() => {
+    window.__rs = 0;
+    const vrai = history.replaceState.bind(history);
+    history.replaceState = function (...a) {
+      window.__rs++;
+      if (window.__rsPlafonne) throw new DOMException("throttled", "SecurityError");
+      return vrai(...a);
+    };
+  });
+  const saisie = "Levski — Nyx (une station qu'on tape en entier)";
+  await page.locator("#station").pressSequentially(saisie, { delay: 1 });
+  await expect(page.locator("#station")).toHaveValue(saisie);
+  await page.waitForTimeout(400); // le temps que le debounce retombe
+  expect(await page.evaluate(() => window.__rs)).toBeLessThan(10); // avant : 1 par frappe, soit 47
+
+  // Plafond atteint : l'écriture du hash est perdue (l'exception est avalée), la barre d'adresse
+  // reste donc en arrière — mais le lien copié, lui, est reconstruit depuis l'état, sinon le bouton
+  // annonçait « ✓ Lien copié » pour un partage faux.
+  const gare = "Port Olisar — Crusader";
+  await page.evaluate(() => { window.__rsPlafonne = true; });
+  await page.fill("#station", gare);
+  await page.waitForTimeout(400);
+  await page.click("#share");
+  await expect(page.locator("#share")).toHaveText("✓ Lien copié");
+  const copie = await page.evaluate(() => navigator.clipboard.readText());
+  expect(new URLSearchParams(copie.split("#")[1] || "").get("station")).toBe(gare);
+  // Témoin : sans le plafond simulé, le test passerait pour de mauvaises raisons.
+  const barre = await page.evaluate(() => location.hash.replace(/^#/, ""));
+  expect(new URLSearchParams(barre).get("station")).not.toBe(gare);
 });
