@@ -15,7 +15,7 @@ import {
   manifestsFrom, multiTrips, tripMetrics, legFromTrip,
   commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
   legFromRoute, legsFromLoop, legsFromChain, legFromManifest, stopSuggestions, bestLegBetween,
-  manifestJourneyState, manifestIntent, sameIntent,
+  manifestJourneyState, manifestIntent, sameIntent, legsToPin,
   startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   encodeJourney, decodeJourney, removeJourneyStop, freeManifestLine, hydrateManifestLine,
@@ -1699,6 +1699,41 @@ test("manifestJourneyState : une jambe venue d'un permalien reste reconnue", () 
   const j = decodeJourney(encodeJourney(startJourney([jambe("A", "B")])));
   assert.equal(manifestJourneyState(j, { name: "B" }, { name: "C" }).etat, "ajouter");
   assert.equal(manifestJourneyState(j, { name: "A" }, { name: "B" }).etat, "deja");
+});
+
+// ---------- Gel des jambes quand un VOLUME est corrigé ----------
+const CHARGEMENTS = [
+  [{ name: "Copper", units: 59 }, { name: "Aluminum", units: 37 }], // jambe 0 : Megumi -> Rat's Nest
+  [{ name: "Titanium", units: 96 }],                                 // jambe 1 : Rat's Nest -> Checkmate
+];
+// `jambe` est défini plus bas dans le fichier : on ne l'appelle donc pas à l'évaluation du module.
+const jambeDe = (from, to) => ({ from, fromSystem: "S", to, toSystem: "S", commodity: "X", buyPrice: 1, sellPrice: 2, margin: 1 });
+const PARCOURS = [jambeDe("Megumi", "Rat's Nest"), jambeDe("Rat's Nest", "Checkmate")];
+
+test("legsToPin : seule la jambe qui ACHÈTE ce point est figée", () => {
+  // Stock du Copper corrigé à Megumi : la jambe 0 en charge, elle garde ses SCU. La jambe 1 part
+  // d'ailleurs et n'en dépend pas — la figer la marquerait pour rien.
+  assert.deepEqual(legsToPin(PARCOURS, CHARGEMENTS, "Copper", "Megumi", "buy"), [0]);
+  assert.deepEqual(legsToPin(PARCOURS, CHARGEMENTS, "Titanium", "Rat's Nest", "buy"), [1]);
+});
+
+test("legsToPin : une demande corrigée regarde l'ARRIVÉE, pas le départ", () => {
+  assert.deepEqual(legsToPin(PARCOURS, CHARGEMENTS, "Copper", "Rat's Nest", "sell"), [0]);
+  assert.deepEqual(legsToPin(PARCOURS, CHARGEMENTS, "Copper", "Megumi", "sell"), []); // Megumi n'est l'arrivée de personne
+});
+
+test("legsToPin : ni le mauvais terminal ni la mauvaise commodité ne figent quoi que ce soit", () => {
+  assert.deepEqual(legsToPin(PARCOURS, CHARGEMENTS, "Copper", "Checkmate", "buy"), []);  // bon fret, mauvais bout
+  assert.deepEqual(legsToPin(PARCOURS, CHARGEMENTS, "Gold", "Megumi", "buy"), []);        // bon bout, fret absent
+  assert.deepEqual(legsToPin(PARCOURS, [[], []], "Copper", "Megumi", "buy"), []);         // chargements vides
+  assert.deepEqual(legsToPin([], [], "Copper", "Megumi", "buy"), []);                     // aucun voyage
+});
+
+test("legsToPin : un même terminal réutilisé plus loin fige TOUTES les jambes concernées", () => {
+  // Le joueur repasse par Megumi : les deux jambes qui y chargent du Copper sont déjà décidées.
+  const boucle = [jambeDe("Megumi", "Rat's Nest"), jambeDe("Rat's Nest", "Megumi"), jambeDe("Megumi", "Checkmate")];
+  const charges = [[{ name: "Copper", units: 59 }], [{ name: "Titanium", units: 96 }], [{ name: "Copper", units: 12 }]];
+  assert.deepEqual(legsToPin(boucle, charges, "Copper", "Megumi", "buy"), [0, 2]);
 });
 
 test("manifestIntent : ne persiste QUE le nom et les SCU, dans l'ordre", () => {

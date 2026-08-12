@@ -1123,6 +1123,22 @@ export function manifestJourneyState(journey, origin, dest) {
   return { etat: "conflit", fin: fin ? fin.name : null };
 }
 
+// Jambes qu'une correction de VOLUME (stock ou demande) rebattrait, et qu'il faut donc figer avant
+// de l'appliquer. Corriger un stock, c'est dire « j'ai vidé ce terminal » — le plus souvent parce
+// qu'on vient d'y charger. Le trajet, lui, est décidé : ses SCU ne doivent pas rétrécir sous les
+// pieds du joueur. Les jambes SUIVANTES, elles, doivent bien voir ce qu'il reste.
+// Une jambe n'est concernée que si elle touche vraiment ce point : le terminal corrigé est son
+// départ (correction d'un stock d'ACHAT) ou son arrivée (correction d'une demande de VENTE), et
+// son chargement porte cette commodité. Les autres n'en dépendent pas — les figer les marquerait
+// pour rien. Un prix, lui, ne rebat aucune quantité : il ne fige rien.
+// `lignesPar[i]` = chargement effectif de la jambe i (l'appelant le connaît, pas nous).
+export function legsToPin(legs, lignesPar, commodity, terminal, side) {
+  const bouts = legs.map((l) => (side === "buy" ? l.from : l.to));
+  return legs.map((_, i) => i).filter((i) =>
+    bouts[i] === terminal && (lignesPar[i] || []).some((l) => l.name === commodity)
+  );
+}
+
 // INTENTION d'un chargement : la seule forme persistable. Jamais un instantané de marché — prix,
 // stock, demande et dates sont relus au rendu (cf. hydrateManifestLine), sinon un manifeste
 // continuerait d'afficher le prix du jour de l'édition longtemps après qu'UEX l'ait republié.

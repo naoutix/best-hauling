@@ -401,6 +401,58 @@ test("Manifeste -> voyage : un chargement INTACT ne persiste rien (la jambe suit
   expect(Object.keys(JSON.parse(edits || "{}"))).toHaveLength(0);
 });
 
+// Corrige une valeur éditable de la carte Manifeste et rend l'ancienne valeur.
+async function corrige(page, champ, cote, valeur) {
+  const cell = page.locator(`#manifest .editv[data-f='${champ}'][data-s='${cote}']`).first();
+  const avant = await cell.getAttribute("data-v");
+  await cell.click();
+  await page.locator("#manifest .editv-input").first().fill(String(valeur));
+  await page.keyboard.press("Enter");
+  return avant;
+}
+const profitJambe = (page) => page.locator("#journeyCard .jleg-profit").first();
+
+test("Corrections : un PRIX corrigé met à jour les bénéfices du voyage en cours", async ({ page }) => {
+  await manifesteDepuis(page, "Megumi — Pyro");
+  await page.click("#manifestToJourney");
+  await expect(page.locator("#journeyCard .jleg")).toHaveCount(1);
+  const avant = (await profitJambe(page).innerText()).trim();
+  const cargo = (await page.locator("#journeyCard .jleg-cargo").first().innerText()).trim();
+
+  const prix = await corrige(page, "price", "sell", Math.round(Number(await page.locator("#manifest .editv[data-f='price'][data-s='sell']").first().getAttribute("data-v")) * 1.5));
+  expect(Number(prix)).toBeGreaterThan(0);
+  // Avant : la carte Voyage restait hors du cycle de rendu et gardait le profit d'avant.
+  await expect(profitJambe(page)).not.toHaveText(avant);
+  expect((await page.locator("#journeyCard .jleg-cargo").first().innerText()).trim()).toBe(cargo); // un prix ne rebat pas les SCU
+  await expect(page.locator("#journeyCard .jleg-pinned")).toHaveCount(0); // et ne fige rien
+});
+
+test("Corrections : un STOCK corrigé fige la jambe engagée, mais pas les trajets suivants", async ({ page }) => {
+  await manifesteDepuis(page, "Megumi — Pyro");
+  await page.click("#manifestToJourney");
+  await expect(page.locator("#journeyCard .jleg")).toHaveCount(1);
+  const cargo = (await page.locator("#journeyCard .jleg-cargo").first().innerText()).trim();
+  const nom = await page.locator("#manifest .mline-del").first().getAttribute("data-name");
+
+  await corrige(page, "vol", "buy", 3); // « j'ai vidé la station en chargeant »
+  // Le trajet est décidé : ses SCU ne rétrécissent pas sous les pieds du joueur.
+  await expect(page.locator("#journeyCard .jleg-pinned")).toHaveCount(1);
+  expect((await page.locator("#journeyCard .jleg-cargo").first().innerText()).trim()).toBe(cargo);
+  expect(await page.evaluate(() => localStorage.getItem("best-hauling-journey-pins"))).toContain("true");
+
+  // ...mais un chargement calculé APRÈS coup, lui, ne voit plus que ce qui reste.
+  await page.fill("#origin", "Megumi — Pyro");
+  await expect(page.locator("#manifest .mqty-input").first()).toBeVisible();
+  const ligne = page.locator("#manifest .mline", { hasText: nom }).first();
+  if (await ligne.count()) await expect(ligne.locator(".mqty-input")).toHaveValue(/^[0-3]$/);
+
+  // « ↺ optimal » lève le gel : la jambe redevient branchée sur le marché.
+  await page.locator("#journeyCard .jleg-head").first().click();
+  await page.locator("#journeyCard .jman-reset").click();
+  await expect(page.locator("#journeyCard .jleg-pinned")).toHaveCount(0);
+  expect((await page.locator("#journeyCard .jleg-cargo").first().innerText()).trim()).not.toBe(cargo);
+});
+
 test("Compagnon de voyage : retirer l'arrivée d'un parcours à DEUX arrêts garde le départ", async ({ page }) => {
   await page.locator("#rows tr").first().locator(".journey-pick").click();
   await expect(page.locator("#journeyCard .jstep")).toHaveCount(2);

@@ -12,7 +12,7 @@ import {
   manifestTotals, freeAddUnits, manifestLine, freeManifestLine, hydrateManifestLine, stationLabel, parseStationLabel,
   multiTrips, tripMetrics, legFromTrip,
   legFromRoute, legsFromLoop, legsFromChain, legFromManifest, stopSuggestions, bestLegBetween,
-  manifestJourneyState, manifestIntent, sameIntent,
+  manifestJourneyState, manifestIntent, sameIntent, legsToPin,
   startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   removeJourneyStop as removeStopPure,
@@ -1136,6 +1136,7 @@ function clearJourney() {
   // Sans cette purge, les manifestes édités survivaient à l'effacement du voyage et ressortaient
   // sur un parcours ULTÉRIEUR passant par les mêmes terminaux, badge ✎ compris.
   JOURNEY_EDITS = {}; saveJourneyEdits();
+  JOURNEY_PINS = {}; saveJourneyPins();
   journeyExpandedLeg = -1;
   renderJourney();
   saveState();
@@ -1171,6 +1172,16 @@ const legFeeCtx = (leg, f) => feeCtx(f, leg.from, leg.to);
 // Clé versionnée : l'ancien format stockait des lignes complètes sous une clé « from|to » qui
 // confondait deux jambes identiques d'un même parcours. Les anciennes éditions sont abandonnées.
 const JOURNEY_EDITS_KEY = "best-hauling-journey-edits-v2";
+// Jambes dont les quantités ont été FIGÉES par une correction de volume, et non ajustées à la main.
+// Store séparé plutôt qu'un champ dans JOURNEY_EDITS : le format persisté de l'intention reste
+// intact (aucune migration), et les deux notions se lisent indépendamment. La valeur n'existe que
+// si une entrée d'intention existe au même rang — le gel EST une intention, avec un autre motif.
+const JOURNEY_PINS_KEY = "best-hauling-journey-pins";
+let JOURNEY_PINS = {};
+function loadJourneyPins() {
+  try { JOURNEY_PINS = JSON.parse(localStorage.getItem(JOURNEY_PINS_KEY)) || {}; } catch { JOURNEY_PINS = {}; }
+}
+function saveJourneyPins() { try { localStorage.setItem(JOURNEY_PINS_KEY, JSON.stringify(JOURNEY_PINS)); } catch {} }
 let JOURNEY_EDITS = {};
 let journeyExpandedLeg = -1; // index de la jambe dépliée en édition (-1 = aucune)
 function loadJourneyEdits() {
@@ -1210,10 +1221,32 @@ function legEffectiveLines(leg, i, f) {
 }
 
 // Bascule la jambe en mode « édité » la 1re fois : on y copie l'intention issue de l'optimal.
+// Toucher au chargement fait de la jambe une édition PERSONNELLE : si elle n'était que figée par
+// une correction de volume, elle cesse de l'être (🔒 -> ✎). Le geste de l'utilisateur prime sur
+// la raison technique qui avait gelé les quantités.
 function legIntent(leg, i, f) {
   const k = legKey(leg, i);
   if (!JOURNEY_EDITS[k]) JOURNEY_EDITS[k] = manifestIntent(legManifest(leg, f)?.lines || []);
+  if (JOURNEY_PINS[k]) { delete JOURNEY_PINS[k]; saveJourneyPins(); }
   return JOURNEY_EDITS[k];
+}
+
+// Fige les jambes qu'une correction de volume rebattrait, AVANT qu'elle soit appliquée : on capture
+// donc les quantités telles qu'elles sont encore. La sélection est pure (legsToPin) ; ici on ne
+// fournit que ce que logic.mjs ne peut pas connaître — les chargements effectifs du moment.
+function pinLegsForVolume(commodity, terminal, side) {
+  if (!JOURNEY || !JOURNEY.legs.length || !MARKET) return;
+  const f = readFilters();
+  const lignes = JOURNEY.legs.map((leg, i) => legEffectiveLines(leg, i, f));
+  let change = false;
+  for (const i of legsToPin(JOURNEY.legs, lignes, commodity, terminal, side)) {
+    const k = legKey(JOURNEY.legs[i], i);
+    if (JOURNEY_EDITS[k]) continue; // déjà ajustée ou figée : ses quantités ne bougeaient déjà plus
+    JOURNEY_EDITS[k] = manifestIntent(lignes[i]);
+    JOURNEY_PINS[k] = true;
+    change = true;
+  }
+  if (change) { saveJourneyEdits(); saveJourneyPins(); }
 }
 
 // Engage le manifeste d'« En route » comme nouvelle jambe du voyage (bouton de la carte Manifeste).
@@ -1316,7 +1349,12 @@ function delLegLine(i, name) {
   JOURNEY_EDITS[legKey(leg, i)] = legIntent(leg, i, readFilters()).filter((e) => e.name !== name);
   saveJourneyEdits(); renderJourney();
 }
-function resetLeg(i) { delete JOURNEY_EDITS[legKey(JOURNEY.legs[i], i)]; saveJourneyEdits(); renderJourney(); }
+// « ↺ optimal » lève les deux formes d'intention, l'ajustement manuel comme le gel.
+function resetLeg(i) {
+  const k = legKey(JOURNEY.legs[i], i);
+  delete JOURNEY_EDITS[k]; delete JOURNEY_PINS[k];
+  saveJourneyEdits(); saveJourneyPins(); renderJourney();
+}
 // Ajout LIBRE d'une commodité à une jambe (même non vendable à l'arrivée -> ligne « carry-only »).
 // Même règle qu'« En route » : freeManifestLine (logic.mjs) en est la source unique.
 function addLegLine(i, name) {
@@ -1396,17 +1434,23 @@ function beginJourney(label) {
 // jambe, donc retirer un arrêt décalerait sinon l'édition d'une jambe sur sa voisine.
 function reindexLegEdits(removedFrom, removedCount, insertedCount) {
   const decalage = removedCount - insertedCount;
-  const suivant = {};
-  for (const [k, v] of Object.entries(JOURNEY_EDITS)) {
-    const sep = k.indexOf("|");
-    const i = Number(k.slice(0, sep));
-    if (i < removedFrom) suivant[k] = v;                       // avant la coupe : inchangé
-    else if (i < removedFrom + removedCount) continue;         // jambe disparue : son édition part
-    else suivant[`${i - decalage}${k.slice(sep)}`] = v;        // après : recule d'autant
-  }
-  JOURNEY_EDITS = suivant;
+  // Les deux stores sont indexés par le MÊME rang de jambe : les décaler séparément les ferait
+  // diverger, et un 🔒 se retrouverait sur une jambe dont l'intention a disparu.
+  const decale = (store) => {
+    const suivant = {};
+    for (const [k, v] of Object.entries(store)) {
+      const sep = k.indexOf("|");
+      const i = Number(k.slice(0, sep));
+      if (i < removedFrom) suivant[k] = v;                       // avant la coupe : inchangé
+      else if (i < removedFrom + removedCount) continue;         // jambe disparue : son édition part
+      else suivant[`${i - decalage}${k.slice(sep)}`] = v;        // après : recule d'autant
+    }
+    return suivant;
+  };
+  JOURNEY_EDITS = decale(JOURNEY_EDITS);
+  JOURNEY_PINS = decale(JOURNEY_PINS);
   if (journeyExpandedLeg >= removedFrom) journeyExpandedLeg = -1; // le panneau déplié n'existe plus
-  saveJourneyEdits();
+  saveJourneyEdits(); saveJourneyPins();
 }
 
 function removeJourneyStop(stopIndex) {
@@ -1467,6 +1511,7 @@ function renderJourney() {
     const lines = MARKET ? legEffectiveLines(leg, i, f) : null;
     const pair = MARKET ? (legFeeCtx(leg, f) || {}).pair : null;
     const edited = MARKET && !!JOURNEY_EDITS[legKey(leg, i)];
+    const pinned = edited && !!JOURNEY_PINS[legKey(leg, i)]; // figée par une correction, pas par toi
     const expanded = i === journeyExpandedLeg;
     let cargo, total;
     if (!MARKET) { cargo = '<span class="muted">calcul…</span>'; total = "—"; }
@@ -1495,7 +1540,9 @@ function renderJourney() {
       </div>`;
     }
     return `<div class="jleg${i === JOURNEY.current ? " current" : ""}${expanded ? " expanded" : ""}">
-        <div class="jleg-head" data-leg="${i}" role="button" tabindex="0" title="Éditer le manifeste de cette jambe"><span class="jleg-n">${i + 1}</span><span class="jleg-route">${esc(leg.from)} → ${esc(leg.to)}</span>${edited ? '<span class="jleg-edited" title="Manifeste personnalisé">✎</span>' : ""}<span class="jleg-profit profit">+${total}</span><span class="jleg-caret">${expanded ? "▾" : "▸"}</span></div>
+        <div class="jleg-head" data-leg="${i}" role="button" tabindex="0" title="Éditer le manifeste de cette jambe"><span class="jleg-n">${i + 1}</span><span class="jleg-route">${esc(leg.from)} → ${esc(leg.to)}</span>${edited ? (pinned
+          ? '<span class="jleg-pinned" title="Quantités figées : le stock ou la demande de ce chargement a été corrigé depuis. Le trajet reste tel que tu l\'as décidé — les prix, eux, continuent de suivre le marché. « ↺ optimal » recalcule tout.">🔒</span>'
+          : '<span class="jleg-edited" title="Manifeste personnalisé">✎</span>') : ""}<span class="jleg-profit profit">+${total}</span><span class="jleg-caret">${expanded ? "▾" : "▸"}</span></div>
         <div class="jleg-cargo">${cargo}</div>
         ${editor}
       </div>`;
@@ -1563,6 +1610,12 @@ function refresh() {
   else if (view === "corrections") renderCorrections();
   else if (view === "commodities") renderCommodities();
   else render();
+  // La carte Voyage est affichée À CÔTÉ des tableaux, dans toutes les vues : la laisser hors du
+  // cycle de rendu la figeait sur l'état d'avant. Corriger un prix ne mettait donc pas à jour les
+  // bénéfices du voyage — alors qu'une jambe non ajustée est justement, par contrat, branchée sur
+  // le marché et sur les filtres (cf. README). Le coût est celui d'un manifeste par jambe, sur un
+  // parcours qui en compte une poignée ; les champs à saisie libre passent déjà par un debounce.
+  if (JOURNEY) renderJourney();
   saveState();
 }
 const refreshDebounced = debounce(refresh);
@@ -1834,9 +1887,13 @@ function startEdit(span) {
     // Corrections (n) », marqueur « corrigé localement » sur la cellule, et plus tard un toast
     // « correction périmée par une mise à jour UEX » à propos d'une correction fantôme.
     if (save && inp.value !== v) {
+      // Un VOLUME rebat les quantités de tout chargement qui touche ce point : on fige d'abord les
+      // jambes déjà planifiées (avant d'écrire, pour capturer les SCU encore en vigueur). Un PRIX
+      // ne change aucune quantité — il ne fige rien, il met juste les bénéfices à jour.
+      if (field === "vol") pinLegsForVolume(c, t, s);
       setOverride(c, t, s, field, inp.value === "" ? null : inp.value, Number(u));
       updateOvBadge();
-      refresh(); // re-render la vue courante avec la valeur corrigée
+      refresh(); // re-render la vue courante ET le voyage avec la valeur corrigée
       return;
     }
     // Rien n'a changé : on remet l'affichage tel quel. Un refresh() global détruirait le nœud
@@ -2212,7 +2269,16 @@ async function init() {
     const alDel = e.target.closest(".al-del");
     if (alDel) { forgetStationReading(alDel.dataset.key); return; }
     const del = e.target.closest(".corr-del");
-    if (del) { delete OVERRIDES[del.dataset.key]; saveOverrides(); updateOvBadge(); refresh(); return; }
+    if (del) {
+      // Supprimer une correction de volume rend le stock d'UEX : c'est encore un changement de
+      // volume, donc la même règle s'applique — le voyage déjà planifié ne doit pas s'y rebattre.
+      const cle = del.dataset.key;
+      if (OVERRIDES[cle] && OVERRIDES[cle].vol != null) {
+        const [commodity, terminal, side] = cle.split("|");
+        pinLegsForVolume(commodity, terminal, side);
+      }
+      delete OVERRIDES[cle]; saveOverrides(); updateOvBadge(); refresh(); return;
+    }
     if (e.target.closest("#alSave")) { saveStationReading(); return; }
     if (e.target.closest("#resetAllK")) { resetAllReadings(); return; }
     if (e.target.closest("#resetAll")) resetAllOverrides();
@@ -2345,6 +2411,7 @@ async function init() {
   loadOverrides();
   loadAutoloadK();
   loadJourneyEdits();
+  loadJourneyPins();
   updateOvBadge();
   syncToggles();
 
