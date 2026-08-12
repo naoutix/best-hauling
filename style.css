@@ -217,6 +217,14 @@ main { padding: 22px 30px 40px; }
 }
 .field label.toggle { color: var(--acc); text-transform: uppercase; letter-spacing: 1px; font-size: 10px; font-weight: 600; }
 
+/* Une coche et son réglage sur la MÊME ligne : un champ qui apparaît au milieu du panneau
+   repousserait les champs suivants à la ligne. Ici il pousse au plus le bord droit d'une ligne
+   de coches, où il n'y a rien. */
+.check-row { display: flex; align-items: center; gap: 12px; }
+.field.sub-field { flex-direction: row; align-items: center; gap: 7px; }
+.field.sub-field > label { font-size: 10px; letter-spacing: 1px; color: var(--muted); cursor: pointer; }
+.field.sub-field input { min-width: 0; width: 74px; padding: 3px 7px; font-size: 12px; text-align: center; }
+
 input[type="checkbox"] { accent-color: var(--acc); width: 15px; height: 15px; cursor: pointer; }
 input[type="number"], input[type="text"], select {
   background: rgba(8, 11, 20, 0.9); border: 1px solid var(--line2); color: var(--text);
@@ -752,6 +760,9 @@ input.mqty-input.over-stock { color: var(--warn); border-color: var(--warn); box
   .controls { padding: 14px; gap: 12px; }
   .field { flex: 1 1 100%; }
   .field input[type="number"], .field input[type="text"], .field select { width: 100%; min-width: 0; }
+  /* ...sauf le réglage accolé à une coche : pleine largeur, il mangerait la ligne. */
+  .field.sub-field { flex: 0 0 auto; }
+  .field.sub-field input[type="number"] { width: 74px; }
   .rail-nav .vbtn { flex: 1 1 auto; }
   .grid-overlay, .scanbar { display: none; } /* décor coûteux masqué sur petit écran */
 }
