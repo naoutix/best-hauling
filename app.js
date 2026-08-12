@@ -2412,7 +2412,10 @@ function stationTableHTML(S, q) {
     };
     // Une seule ligne par côté RÉEL : plus de « achat — » à afficher sous chaque vente.
     const corps = (b ? cote(b, "buy", "achat", "stock") : "") + (s ? cote(s, "sell", "vente", "dem.") : "");
-    const tuile = `<div class="scomm">
+    // La classe porte le côté : c'est elle qui donne au liseré et à l'étiquette leur couleur.
+    // Nécessaire depuis qu'une tuile n'affiche plus qu'une ligne — l'en-tête de section sort de
+    // l'écran au défilement, et il ne restait alors rien pour dire ce qu'on regarde.
+    const tuile = `<div class="scomm ${b ? "achat" : "vente"}">
         <div class="scomm-name">${commodityIcon(c.kind)}<span>${esc(c.name)}${illegalTag(c.illegal)}</span></div>
         ${corps}
       </div>`;
@@ -2422,14 +2425,14 @@ function stationTableHTML(S, q) {
   const fee = stationFeeHTML(S);
   const total = achats.length + ventes.length;
   if (!total) return `${fee}<p class="empty">Aucune commodité ${q ? "correspondante " : ""}à ${esc(t.name)}.</p>`;
-  const section = (titre, aide, tuiles) => tuiles.length
-    ? `<div class="station-section"><h4 class="station-section-head">◈ ${titre} <span class="station-count">${tuiles.length}</span><span class="station-section-aide">${aide}</span></h4>
+  const section = (cle, titre, aide, tuiles) => tuiles.length
+    ? `<div class="station-section"><h4 class="station-section-head ${cle}">◈ ${titre} <span class="station-count">${tuiles.length}</span><span class="station-section-aide">${aide}</span></h4>
        <div class="station-grid">${tuiles.join("")}</div></div>`
     : "";
   return `<div class="station-title">◈ ${esc(t.name)}${sysBadge(t.system)} — clique un chiffre pour le corriger localement <span class="station-count">${total} commodité${total > 1 ? "s" : ""}${q ? " filtrées" : ""}</span></div>
     ${fee}
-    ${section("On y achète", "ce que la station te vend — prix et stock", achats)}
-    ${section("On y vend", "ce qu'elle te reprend — prix et demande", ventes)}`;
+    ${section("achat", "On y achète", "ce que la station te vend — prix et stock", achats)}
+    ${section("vente", "On y vend", "ce qu'elle te reprend — prix et demande", ventes)}`;
 }
 
 // Liste des relevés d'autoload, à côté des corrections locales et sur le même modèle : ils sont de
