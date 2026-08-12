@@ -11,7 +11,8 @@ import {
   commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
   manifestTotals, freeAddUnits, manifestLine, freeManifestLine, hydrateManifestLine, stationLabel, parseStationLabel,
   multiTrips, tripMetrics, legFromTrip,
-  legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
+  legFromRoute, legsFromLoop, legsFromChain, stopSuggestions, bestLegBetween,
+  startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   removeJourneyStop as removeStopPure,
   encodeJourney, decodeJourney,
@@ -1288,13 +1289,11 @@ function journeyEndIndex() {
   return end && stationMap.size ? stationMap.get(stationLabel(end.name, end.system)) : null;
 }
 // Meilleure jambe (commodité de marge max) entre deux terminaux, ou null si aucun fret rentable.
+// `readFilters()` fait choisir la vente au profit RÉALISABLE et non au prix affiché : sans lui,
+// la jambe proposée peut viser un terminal déjà saturé, qui n'écoulera qu'une poignée de SCU.
 function bestLegTo(fromIdx, toIdx) {
   if (fromIdx == null || toIdx == null) return null;
-  // `readFilters()` fait choisir la vente au profit RÉALISABLE et non au prix affiché : sans lui,
-  // la jambe proposée peut viser un terminal déjà saturé, qui n'écoulera qu'une poignée de SCU.
-  const deals = enRouteDeals(MARKET, fromIdx, "", toIdx, readFilters()); // meilleure vente vers toIdx par commodité
-  if (!deals.length) return null;
-  return legFromRoute(deals.reduce((a, b) => (b.margin > a.margin ? b : a)));
+  return bestLegBetween(MARKET, fromIdx, toIdx, readFilters());
 }
 // Jambe « à vide » (aucune commodité) entre deux terminaux — pour ajouter un arrêt même sans fret rentable.
 function emptyLeg(fromIdx, toIdx) {
@@ -1314,14 +1313,7 @@ function resolveStationLabel(input) {
 // Suggestions d'arrêts : meilleures destinations rentables depuis la fin du parcours (top 4).
 function journeyStopSuggestions() {
   const fromIdx = journeyEndIndex();
-  if (fromIdx == null) return [];
-  const byDest = new Map();
-  enRouteDeals(MARKET, fromIdx, "", null, readFilters()).forEach((d) => {
-    const label = stationLabel(d.sell.terminal, d.sell.system);
-    const cur = byDest.get(label);
-    if (!cur || d.margin > cur.margin) byDest.set(label, { label, terminal: d.sell.terminal, commodity: d.commodity, margin: d.margin });
-  });
-  return [...byDest.values()].sort((a, b) => b.margin - a.margin).slice(0, 4);
+  return fromIdx == null ? [] : stopSuggestions(MARKET, fromIdx, readFilters());
 }
 // Ajoute un arrêt (terminal) : nouvelle jambe optimale depuis la fin du parcours -> étend.
 function addStopByTerminal(label) {
@@ -1380,7 +1372,10 @@ function removeJourneyStop(stopIndex) {
   const r = removeStopPure(JOURNEY, stopIndex, bridge);
   if (!r) { clearJourney(); return; }
   reindexLegEdits(r.removedFrom, r.removedCount, r.insertedCount);
-  JOURNEY = { legs: r.legs, current: r.current };
+  // `start` n'est présent que sur le parcours réduit à un seul arrêt : le reporter tel quel, sinon
+  // la station survivante n'a plus rien pour se décrire (journeyStations la lit là) et le voyage
+  // s'affiche vide alors qu'il reste un point de départ.
+  JOURNEY = r.start ? { legs: [], current: 0, start: r.start } : { legs: r.legs, current: r.current };
   syncViewsToJourney();
   renderJourney();
   refresh();

@@ -998,6 +998,38 @@ export function legFromRoute(r) {
     commodity: r.commodity, buyPrice: r.buy.price, sellPrice: r.sell.price, margin: r.margin,
   };
 }
+// Les filtres de la vue, appliqués à une destination candidate du VOYAGE. `sysFilter` borne le
+// système d'ACHAT : dans un parcours l'origine est imposée par la jambe précédente, pas choisie
+// dans le menu — le neutraliser ici, comme le fait « En route », est la seule différence.
+const legPasses = (r, f) => routePasses(r, { ...f, sysFilter: "" });
+
+// Destinations rentables depuis `origin` (index de terminal), pour proposer un arrêt de voyage :
+// une entrée par terminal d'arrivée, celle de meilleure marge, les `limit` premières.
+// Les filtres de la vue s'appliquent, exactement comme dans « En route ». Sans eux, la boîte
+// proposait des trajets qu'AUCUNE vue n'accepte de montrer — commodité illégale alors que
+// « légales uniquement » est coché, avant-poste exclu, relevé périmé — et la jambe ajoutée
+// s'affichait « aucun fret rentable », son manifeste étant filtré, lui, par pairEligible.
+// Même divergence de règles que celle qui a donné pairEligible : une seule source, partagée.
+export function stopSuggestions(market, origin, f, limit = 4) {
+  const byDest = new Map();
+  for (const d of enRouteDeals(market, origin, "", null, f)) {
+    if (!legPasses(d, f)) continue;
+    const label = stationLabel(d.sell.terminal, d.sell.system);
+    const cur = byDest.get(label);
+    if (!cur || d.margin > cur.margin) {
+      byDest.set(label, { label, terminal: d.sell.terminal, system: d.sell.system, commodity: d.commodity, margin: d.margin });
+    }
+  }
+  return [...byDest.values()].sort((a, b) => b.margin - a.margin).slice(0, limit);
+}
+// Meilleure jambe entre deux terminaux (commodité de marge max), filtres appliqués comme
+// ci-dessus, ou null si aucun fret éligible : l'appelant pose alors une jambe « à vide ».
+export function bestLegBetween(market, fromIdx, toIdx, f) {
+  const deals = enRouteDeals(market, fromIdx, "", toIdx, f).filter((d) => legPasses(d, f));
+  if (!deals.length) return null;
+  return legFromRoute(deals.reduce((a, b) => (b.margin > a.margin ? b : a)));
+}
+
 // Deux jambes depuis une boucle évaluée (aller puis retour).
 // `startAt` = terminal par lequel entrer dans le cycle : une boucle A⇄B se parcourt aussi bien
 // B->A->B que A->B->A. Sans lui, on partirait toujours de `a`, et une boucle raccordée au parcours
@@ -1052,10 +1084,13 @@ export function addToJourney(journey, legs) {
 // Retire un ARRÊT du parcours (stopIndex indexe les STATIONS, pas les jambes).
 // `bridge` = jambe de remplacement pour un arrêt du MILIEU, calculée par l'appelant depuis le
 // marché (elle reconnecte stations[stopIndex-1] à stations[stopIndex+1]) ; ignorée aux extrémités.
-// Renvoie { legs, current, removedFrom, removedCount, insertedCount }, ou null si le parcours
-// devient vide. Les trois derniers champs servent à réindexer les manifestes édités par jambe.
+// Renvoie { legs, current, removedFrom, removedCount, insertedCount }, plus `start` quand il ne
+// reste qu'un arrêt (parcours « départ posé »), ou null quand il ne reste plus rien du tout.
+// Les trois compteurs servent à réindexer les manifestes édités par jambe.
 export function removeJourneyStop(journey, stopIndex, bridge) {
   const legs = journey.legs;
+  // Parcours déjà réduit à son point de départ : retirer ce dernier arrêt efface tout.
+  if (!legs.length) return null;
   let newLegs, removedFrom, removedCount, insertedCount = 0;
   if (stopIndex <= 0) {
     newLegs = legs.slice(1); removedFrom = 0; removedCount = 1;          // 1er arrêt -> 1re jambe
@@ -1066,7 +1101,16 @@ export function removeJourneyStop(journey, stopIndex, bridge) {
     newLegs = [...legs.slice(0, stopIndex - 1), bridge, ...legs.slice(stopIndex + 1)];
     removedFrom = stopIndex - 1; removedCount = 2; insertedCount = 1;
   }
-  if (!newLegs.length) return null;
+  // Une seule jambe, dont on retire une extrémité : l'AUTRE extrémité reste un arrêt légitime.
+  // Le parcours ne disparaît donc pas — il retombe sur sa forme « départ posé » (startJourneyAt),
+  // celle d'un voyage qu'on vient de commencer, prête à recevoir un nouvel arrêt. Renvoyer null
+  // ici faisait s'évanouir les DEUX arrêts d'un coup, alors qu'un seul avait été cliqué.
+  if (!newLegs.length) {
+    const reste = stopIndex <= 0
+      ? { name: legs[0].to, system: legs[0].toSystem }     // on a retiré le départ -> l'arrivée survit
+      : { name: legs[0].from, system: legs[0].fromSystem }; // on a retiré l'arrivée -> le départ survit
+    return { legs: [], current: 0, start: reste, removedFrom, removedCount, insertedCount };
+  }
   // `current` indexe les STATIONS. Retirer l'arrêt `stopIndex` fait reculer d'un cran TOUTES les
   // stations situées à partir de lui : sans ce décalage, le marqueur « je suis ici » sautait à la
   // station suivante, `currentLeg` devenait null (parcours cru terminé) et « En route » se

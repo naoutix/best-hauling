@@ -311,6 +311,38 @@ test("Compagnon de voyage : retirer un arrêt du milieu reconnecte le parcours",
   expect((await page.locator("#journeyCard .jstep").nth(1).innerText()).trim()).toBe(last);
 });
 
+test("Compagnon de voyage : retirer l'arrivée d'un parcours à DEUX arrêts garde le départ", async ({ page }) => {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2);
+  const depart = (await page.locator("#journeyCard .jstep").nth(0).innerText()).trim();
+  await page.locator("#journeyCard .jstep-del").nth(1).click(); // ✕ sur l'arrivée
+  // Avant le correctif : les DEUX arrêts disparaissaient, le voyage revenait à « Nouveau voyage ».
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(1);
+  expect((await page.locator("#journeyCard .jstep").nth(0).innerText()).trim()).toBe(depart);
+  // Le survivant est un vrai point de départ : il propose des arrêts et en accepte un.
+  await expect(page.locator("#journeyCard .jstop-suggest").first()).toBeVisible({ timeout: 8000 });
+  await page.locator("#journeyCard .jstop-suggest").first().click();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2);
+  expect((await page.locator("#journeyCard .jstep").nth(0).innerText()).trim()).toBe(depart);
+});
+
+test("Compagnon de voyage : une suggestion filtrée par la vue n'est jamais proposée", async ({ page }) => {
+  // Bug : « Commodités légales uniquement » coché, la boîte proposait quand même une destination
+  // atteignable seulement via une commodité illégale (Megumi → Devlin Scrap via WiDoW). L'arrêt
+  // s'ajoutait, et sa jambe s'affichait « aucun fret rentable » — une route qui n'existait nulle part.
+  await page.check("#legalOnly");
+  await expect(page.locator("#rows tr").first()).toBeVisible();
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jstop-suggest").first()).toBeVisible({ timeout: 8000 });
+  await page.locator("#journeyCard .jstop-suggest").first().click();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(3);
+  // La jambe ajoutée porte un vrai chargement, et aucune jambe n'est vide.
+  await expect(page.locator("#journeyCard .jleg").last().locator(".jcargo-item").first()).toBeVisible();
+  await expect(page.locator("#journeyCard .jleg-cargo", { hasText: "aucun fret rentable" })).toHaveCount(0);
+  // Et rien d'illégal n'a pu s'inviter dans le voyage.
+  await expect(page.locator("#journeyCard .jcargo-item .illegal")).toHaveCount(0);
+});
+
 test("Compagnon de voyage : éditer le manifeste d'une jambe (SCU) persiste hors lien", async ({ page }) => {
   await page.locator("#rows tr").first().locator(".journey-pick").click();
   await expect(page.locator("#journeyCard .jcargo-item").first()).toBeVisible({ timeout: 8000 });

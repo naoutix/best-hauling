@@ -14,7 +14,8 @@ import {
   pairEligible, suggestionsFrom,
   manifestsFrom, multiTrips, tripMetrics, legFromTrip,
   commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
-  legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
+  legFromRoute, legsFromLoop, legsFromChain, stopSuggestions, bestLegBetween,
+  startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   encodeJourney, decodeJourney, removeJourneyStop, freeManifestLine, hydrateManifestLine,
 } from "./logic.mjs";
@@ -1684,8 +1685,102 @@ test("removeJourneyStop : retirer le DERNIER arrêt ramène la position dans les
   assert.equal(r.legs.length, 1);
 });
 
-test("removeJourneyStop : parcours vidé -> null", () => {
-  assert.equal(removeJourneyStop(parcours(["A", "B"], 0), 0), null);
+test("removeJourneyStop : sur deux arrêts, retirer l'ARRIVÉE garde le départ", () => {
+  // A→B, on clique ✕ sur B. Avant : les DEUX arrêts disparaissaient d'un coup (retour à null).
+  const r = removeJourneyStop(parcours(["A", "B"], 0), 1);
+  assert.deepEqual(r.legs, []);
+  assert.deepEqual(r.start, { name: "A", system: "S" });
+  assert.deepEqual(journeyStations(r), [{ name: "A", system: "S" }]); // le voyage vit encore, à A
+  assert.equal(r.current, 0);
+  assert.deepEqual([r.removedFrom, r.removedCount, r.insertedCount], [0, 1, 0]);
+});
+
+test("removeJourneyStop : sur deux arrêts, retirer le DÉPART garde l'arrivée", () => {
+  const r = removeJourneyStop(parcours(["A", "B"], 0), 0);
+  assert.deepEqual(r.legs, []);
+  assert.deepEqual(r.start, { name: "B", system: "S" });
+  assert.equal(journeyEnd(r).name, "B"); // c'est de là que repartira le prochain arrêt
+});
+
+test("removeJourneyStop : le survivant se raccorde comme un vrai départ", () => {
+  // Le parcours réduit doit se comporter EXACTEMENT comme un startJourneyAt : une jambe qui
+  // part de la station survivante l'ÉTEND, elle ne remplace pas le voyage.
+  const r = removeJourneyStop(parcours(["A", "B"], 0), 1);
+  const suite = addToJourney(r, [jambe("A", "C")]);
+  assert.deepEqual(suite.legs.map((l) => l.from + "→" + l.to), ["A→C"]);
+  assert.equal(decodeJourney(encodeJourney(r)).start.name, "A"); // survit au lien partageable
+});
+
+test("removeJourneyStop : retirer le dernier arrêt restant -> null (voyage effacé)", () => {
+  const seul = removeJourneyStop(parcours(["A", "B"], 0), 1); // il ne reste que A
+  assert.equal(removeJourneyStop(seul, 0), null);
+  assert.equal(removeJourneyStop(startJourneyAt({ name: "A", system: "S" }), 0), null);
+});
+
+// ---------- Suggestions d'arrêts : mêmes filtres que la vue qui les affichera ----------
+const MARCHE_ARRETS = {
+  terminals: [
+    { name: "Dépôt", system: "Stanton", planet: "P", outpost: false },  // 0 : départ du parcours
+    { name: "Poste", system: "Stanton", planet: "P", outpost: true },   // 1 : avant-poste, même système
+    { name: "Relais", system: "Pyro", planet: "Q", outpost: false },    // 2 : autre système
+  ],
+  commodities: [
+    { name: "Poudre", code: "POUD", kind: "vice", illegal: true, buys: [[0, 100, 500, 9e9, 3]], sells: [[1, 400, 500, 9e9, 3]] },
+    { name: "Ferraille", code: "FERR", kind: "metal", illegal: false, buys: [[0, 100, 500, 9e9, 3]], sells: [[2, 200, 500, 9e9, 3]] },
+  ],
+};
+const filtres = (o = {}) => ({
+  cargo: 96, budget: 1e6, useCargo: true, useBudget: true, capStock: false,
+  sameOnly: false, noOutpost: false, legalOnly: false, sysFilter: "", maxAge: 0, q: "", ...o,
+});
+const terminaux = (sugs) => sugs.map((s) => s.terminal);
+
+test("stopSuggestions : sans filtre, une entrée par destination, la meilleure marge d'abord", () => {
+  const s = stopSuggestions(MARCHE_ARRETS, 0, filtres());
+  assert.deepEqual(terminaux(s), ["Poste", "Relais"]); // 300 puis 100
+  assert.equal(s[0].commodity, "Poudre");
+});
+
+test("stopSuggestions : ne propose JAMAIS un trajet que la vue refuse d'afficher", () => {
+  // Le bug : « Frais/légales uniquement » coché, la boîte proposait quand même une commodité
+  // illégale (Megumi → Devlin Scrap via WiDoW). L'arrêt s'ajoutait, puis sa jambe s'affichait
+  // « aucun fret rentable » — bestManifest, lui, applique pairEligible.
+  assert.deepEqual(terminaux(stopSuggestions(MARCHE_ARRETS, 0, filtres({ legalOnly: true }))), ["Relais"]);
+  assert.deepEqual(terminaux(stopSuggestions(MARCHE_ARRETS, 0, filtres({ noOutpost: true }))), ["Relais"]);
+  assert.deepEqual(terminaux(stopSuggestions(MARCHE_ARRETS, 0, filtres({ sameOnly: true }))), ["Poste"]);
+  assert.deepEqual(terminaux(stopSuggestions(MARCHE_ARRETS, 0, filtres({ q: "ferraille" }))), ["Relais"]);
+});
+
+test("stopSuggestions : le menu « système d'achat » ne bride PAS les suggestions", () => {
+  // Seule différence assumée avec routePasses : dans un parcours, l'origine est imposée par la
+  // jambe précédente. La filtrer par le menu viderait la boîte dès qu'on regarde un autre système.
+  assert.equal(stopSuggestions(MARCHE_ARRETS, 0, filtres({ sysFilter: "Pyro" })).length, 2);
+});
+
+test("bestLegBetween : la jambe suit les mêmes filtres, sinon null", () => {
+  const l = bestLegBetween(MARCHE_ARRETS, 0, 1, filtres());
+  assert.equal(l.commodity, "Poudre");
+  assert.deepEqual([l.from, l.to, l.margin], ["Dépôt", "Poste", 300]);
+  // Filtrée : l'appelant pose alors une jambe « à vide », cohérente avec son manifeste vide.
+  assert.equal(bestLegBetween(MARCHE_ARRETS, 0, 1, filtres({ legalOnly: true })), null);
+  assert.equal(bestLegBetween(MARCHE_ARRETS, 0, 2, filtres({ sameOnly: true })), null);
+});
+
+test("stopSuggestions : sur les vraies données, chaque suggestion passe routePasses", () => {
+  const jeux = [filtres(), filtres({ legalOnly: true }), filtres({ noOutpost: true }), filtres({ sameOnly: true })];
+  let vues = 0;
+  for (const f of jeux) {
+    for (let o = 0; o < REAL.terminals.length; o++) {
+      for (const s of stopSuggestions(REAL, o, f)) {
+        vues++;
+        const d = enRouteDeals(REAL, o, "", null, f)
+          .find((x) => x.sell.terminal === s.terminal && x.commodity === s.commodity);
+        assert.ok(d, `suggestion ${s.terminal}/${s.commodity} introuvable dans les deals`);
+        assert.ok(routePasses(d, { ...f, sysFilter: "" }), `suggestion filtrée par la vue : ${s.terminal} via ${s.commodity}`);
+      }
+    }
+  }
+  assert.ok(vues > 100, `instantané trop petit pour être significatif (${vues} suggestions)`);
 });
 
 // ---------- Lignes de manifeste : ajout libre et ré-hydratation ----------
