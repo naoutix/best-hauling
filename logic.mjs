@@ -1347,6 +1347,84 @@ export function sellAllAt(hold, market, terminalIdx, resolve) {
   return { hold: courant, ventes, recette, cout, profit: recette - cout };
 }
 
+// OÙ ÉCOULER ce qui reste à bord. Dual de `manifestsFrom` : celui-ci remplit la soute par marge
+// décroissante, celui-là la VIDE par valeur décroissante, plafonné par la demande.
+//
+// Le fait qui commande tout, et qui n'est PAS la symétrie qu'on attendrait : 494 points d'achat sur
+// 494 publient leur stock (100 %), contre 293 points de vente sur 1 879 (15,6 %) pour la demande.
+// `fillCargo` travaille donc sur une donnée complète ; son dual travaille sur une donnée absente
+// quatre fois sur cinq. Ce n'est pas le même problème retourné.
+// Pour ces 84 %, `demand` vaut null — ni zéro, ni l'infini. On rend donc DEUX chiffres par
+// destination, jamais un seul : `absorbe` (optimiste, l'inconnu prend tout) et `garanti`
+// (pessimiste, l'inconnu ne prend rien). Le classement suit l'optimiste, et `certitude` dit sur
+// quoi il repose — afficher un plafond avec assurance quand la donnée ne le permet pas serait
+// exactement le défaut qui a rendu cette fonction nécessaire.
+//
+// La priorité posée (« la commodité qui rapporte le plus ») joue au CLASSEMENT et non au partage :
+// la demande d'une station est par commodité, les résidus ne se disputent donc rien. À valeur
+// égale, la destination qui solde le résidu le plus cher passe devant.
+export function offloadPlan(market, hold, originIdx, f = {}, resolve = null, autoloadFor = null, limit = 6) {
+  if (!hold || !hold.length) return [];
+  const origine = market.terminals[originIdx];
+  const parNom = holdByCommodity(hold);
+  const plusCher = parNom[0] ? parNom[0].name : null; // holdByCommodity trie par capital engagé
+  const out = [];
+
+  market.terminals.forEach((t, idx) => {
+    if (idx === originIdx) return;                                   // on y est déjà
+    if (f.noOutpost && t.outpost) return;
+    if (f.sameOnly && origine && t.system !== origine.system) return;
+    if (f.sysFilter && t.system !== f.sysFilter) return;
+
+    const lignes = [];
+    let scu = 0, garanti = 0, profit = 0, inconnues = 0;
+    for (const g of parNom) {
+      const c = market.commodities.find((x) => x.name === g.name);
+      if (!c) continue;
+      const s = c.sells.find((x) => x[0] === idx);
+      if (!s) continue;                                              // ce terminal n'en veut pas
+      if (!pairEligible(f, c, t, s[3], s[3])) continue;
+      const e = resolve ? resolve(g.name, t.name, "sell", s[1], s[2], s[3]) : { price: s[1], vol: s[2] };
+      if (!(e.price > 0)) continue;
+      // Statut UEX 7 = « saturé ». Mesuré sur l'instantané : les 12 points de statut 7 ont TOUS une
+      // capacité publiée à 0, et réciproquement — équivalence parfaite dans les deux sens. C'est le
+      // seul zéro fiable de tout le jeu de données. On s'en sert là où la capacité n'est PAS
+      // publiée : sans ça, un comptoir saturé passerait pour « inconnu », donc pour « il prend
+      // tout » — le pire contresens possible ici. Une correction locale, elle, prime toujours :
+      // l'utilisateur a vu le comptoir de ses yeux.
+      if (s[4] === 7 && e.vol == null) continue;
+      const connue = e.vol != null;
+      const prend = connue ? Math.min(g.units, e.vol) : g.units;     // optimiste
+      if (prend <= 0) continue;                                      // capacité connue et nulle : saturé
+      // Le coût vient des LOTS réellement consommés (FIFO), pas d'une moyenne : c'est la seule
+      // façon d'annoncer un profit qui se réalisera tel quel.
+      const sim = sellFromHold(hold, g.name, prend, e.price);
+      const frais = autoloadFor ? lineHaulFee(prend, { acquired: true }, { buy: null, sell: autoloadFor(t) }) : 0;
+      lignes.push({
+        name: g.name, absorbe: prend, garanti: connue ? prend : 0, reste: g.units - prend,
+        price: e.price, demand: e.vol, connue, profit: sim.profit - frais,
+      });
+      scu += prend; garanti += connue ? prend : 0; profit += sim.profit - frais;
+      if (!connue) inconnues++;
+    }
+    if (!lignes.length) return;
+    lignes.sort((a, b) => b.profit - a.profit);
+    out.push({
+      idx, terminal: t.name, system: t.system, planet: t.planet, outpost: t.outpost,
+      cross: !!origine && t.system !== origine.system,
+      lignes, scu, garanti, profit,
+      certitude: inconnues === 0 ? "connue" : inconnues === lignes.length ? "inconnue" : "partielle",
+      // Solde-t-elle le résidu le plus cher ? À valeur proche, c'est ce qui départage.
+      soldeLePlusCher: !!plusCher && lignes.some((l) => l.name === plusCher && l.reste === 0),
+      reste: holdScu(hold) - scu,
+    });
+  });
+
+  return out
+    .sort((a, b) => b.profit - a.profit || (b.soldeLePlusCher - a.soldeLePlusCher) || b.garanti - a.garanti)
+    .slice(0, limit);
+}
+
 // Dépose des SCU à une station : ils quittent la soute SANS être vendus. Troisième sortie du fret,
 // et souvent la bonne quand le seul débouché est saturé — on libère la place sans vendre à perte.
 // Renvoie { hold, entrepots } ; les lots déposés gardent leur prix payé, c'est du capital immobilisé.
@@ -1380,7 +1458,7 @@ const rayonRelatif = (au, auMax) => 0.24 + 0.72 * Math.sqrt(Math.max(au, 0) / (a
 // Projette le parcours. `stations` = journeyStations(journey) ; `infoTerminal(nom)` rend
 // { system, planet } ou null ; `starmap` = data/starmap.json.
 // Renvoie tout ce qu'il faut dessiner, en pixels du viewBox — jamais de HTML.
-export function journeyMap(stations, current, starmap, infoTerminal) {
+export function journeyMap(stations, current, starmap, infoTerminal, enVol = false) {
   if (!stations || !stations.length) return null;
   const { largeur, hauteur, marge } = CARTE;
 
@@ -1468,10 +1546,19 @@ export function journeyMap(stations, current, starmap, infoTerminal) {
   }
 
   // Le vaisseau, sur l'arrêt courant, orienté vers le suivant (ou depuis le précédent au bout).
+  // `enVol` : la jambe courante est CHARGÉE, donc on n'est plus à quai — on est parti. Le vaisseau
+  // se pose alors entre les deux escales. La carte cesse ainsi de montrer un itinéraire prévu pour
+  // montrer où l'on en est réellement (cf. ADR-002).
   const i = Math.max(0, Math.min(current | 0, arrets.length - 1));
   const ici = arrets[i], suiv = arrets[i + 1], prec = arrets[i - 1];
   const vers = suiv || prec || ici;
   const angle = (Math.atan2(vers.y - ici.y, vers.x - ici.x) * 180) / Math.PI + (suiv ? 0 : 180);
+  if (enVol && suiv) {
+    return {
+      largeur, hauteur, systemes, arrets, jambes,
+      vaisseau: { x: (ici.x + suiv.x) / 2, y: (ici.y + suiv.y) / 2, angle, arret: i, enVol: true },
+    };
+  }
   // Un corps qui porte une escale n'a pas besoin de son propre libellé : le nom de l'escale est
   // juste à côté, et les deux se chevauchaient. Le rendu s'en sert pour ne pas l'écrire.
   const occupes = new Set(arrets.filter((a) => a.parent).map((a) => `${a.systeme}|${a.parent}`));
@@ -1479,7 +1566,7 @@ export function journeyMap(stations, current, starmap, infoTerminal) {
 
   return {
     largeur, hauteur, systemes, arrets, jambes,
-    vaisseau: { x: ici.x, y: ici.y, angle: vers === ici ? 0 : angle, arret: i },
+    vaisseau: { x: ici.x, y: ici.y, angle: vers === ici ? 0 : angle, arret: i, enVol: false },
   };
 }
 

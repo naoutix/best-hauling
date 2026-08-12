@@ -18,7 +18,7 @@ import {
   manifestJourneyState, manifestIntent, sameIntent, legsToPin,
   journeyMap, nameAngle, CARTE,
   loadHold, holdScu, freeCargo, holdByCommodity, sellFromHold, storeFromHold,
-  refuseHere, sellableAt, sellAllAt,
+  refuseHere, sellableAt, sellAllAt, offloadPlan,
   startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   encodeJourney, decodeJourney, removeJourneyStop, freeManifestLine, hydrateManifestLine,
@@ -1965,6 +1965,109 @@ test("sellAllAt : un terminal inconnu ou une soute vide ne cassent rien", () => 
   assert.deepEqual(sellAllAt(h, MARCHE_SOUTE, 2, null).hold, h);  // C ne reprend rien
 });
 
+// A vend Gold (capacité 500) et Fer ; B reprend Gold à meilleur prix mais capacité INCONNUE ;
+// C est un avant-poste qui reprend Gold ; D est saturé (capacité 0).
+const MARCHE_ECOULER = {
+  terminals: [
+    { name: "Ici", system: "S" }, { name: "A", system: "S" }, { name: "B", system: "S" },
+    { name: "C", system: "S", outpost: true }, { name: "D", system: "S" }, { name: "Loin", system: "Autre" },
+  ],
+  commodities: [
+    { name: "Gold", kind: "metal", illegal: false, buys: [], sells: [[1, 1500, 500, 9e9, 3], [2, 1800, null, 9e9, 3], [3, 1600, 900, 9e9, 3], [4, 2000, 0, 9e9, 3], [5, 2200, 900, 9e9, 3]] },
+    { name: "Poudre", kind: "vice", illegal: true, buys: [], sells: [[1, 900, 400, 9e9, 3]] },
+  ],
+};
+const fEcouler = (o = {}) => ({ legalOnly: false, noOutpost: false, maxAge: 0, sameOnly: false, sysFilter: "", ...o });
+
+test("offloadPlan : classe par valeur réellement encaissable, saturé exclu", () => {
+  const h = loadHold([], [ligne(300, 1000, 1500)], "X", 1);
+  const p = offloadPlan(MARCHE_ECOULER, h, 0, fEcouler(), null);
+  assert.ok(p.length >= 3);
+  assert.equal(p.every((d) => d.terminal !== "D"), true);   // capacité connue ET nulle : écarté
+  assert.equal(p.every((d) => d.terminal !== "Ici"), true); // on y est déjà
+  assert.equal(p[0].terminal, "Loin");                      // 2 200 : la meilleure valeur
+  assert.equal(p[0].profit, 300 * (2200 - 1000));
+  assert.equal(p[0].cross, true);                           // et ça se voit : autre système
+});
+
+test("offloadPlan : capacité INCONNUE — deux chiffres, jamais un seul", () => {
+  const h = loadHold([], [ligne(2170, 1000, 1500)], "X", 1);
+  const p = offloadPlan(MARCHE_ECOULER, h, 0, fEcouler(), null);
+  const a = p.find((d) => d.terminal === "A"), b = p.find((d) => d.terminal === "B");
+  // A : capacité connue de 500 -> elle est GARANTIE, et le reste demeure à bord.
+  assert.equal(a.certitude, "connue");
+  assert.deepEqual([a.scu, a.garanti, a.reste], [500, 500, 1670]);
+  // B : capacité inconnue -> optimiste sur ce qu'elle absorbe, mais rien n'est garanti.
+  assert.equal(b.certitude, "inconnue");
+  assert.deepEqual([b.scu, b.garanti, b.reste], [2170, 0, 0]);
+});
+
+test("offloadPlan : le profit vient des LOTS consommés, pas d'une moyenne", () => {
+  let h = loadHold([], [ligne(100, 1000, 1500)], "X", 1);
+  h = loadHold(h, [ligne(100, 1400, 1500)], "Y", 2);
+  const a = offloadPlan(MARCHE_ECOULER, h, 0, fEcouler(), null).find((d) => d.terminal === "A");
+  // 200 SCU écoulés à 1 500 : 100 payés 1 000 puis 100 payés 1 400, en FIFO.
+  assert.equal(a.profit, 100 * (1500 - 1000) + 100 * (1500 - 1400));
+});
+
+test("offloadPlan : les filtres de vue s'appliquent, comme partout ailleurs", () => {
+  const h = loadHold([], [ligne(100, 500, 900, { name: "Poudre" })], "X", 1);
+  assert.equal(offloadPlan(MARCHE_ECOULER, h, 0, fEcouler(), null).length, 1);          // A reprend la Poudre
+  assert.equal(offloadPlan(MARCHE_ECOULER, h, 0, fEcouler({ legalOnly: true }), null).length, 0); // illégale
+  const g = loadHold([], [ligne(100, 1000, 1500)], "X", 1);
+  assert.equal(offloadPlan(MARCHE_ECOULER, g, 0, fEcouler({ noOutpost: true }), null).every((d) => d.terminal !== "C"), true);
+  assert.equal(offloadPlan(MARCHE_ECOULER, g, 0, fEcouler({ sameOnly: true }), null).every((d) => !d.cross), true);
+});
+
+test("offloadPlan : à valeur proche, celle qui SOLDE le résidu le plus cher passe devant", () => {
+  const h = loadHold([], [ligne(300, 1000, 1500)], "X", 1);
+  const p = offloadPlan(MARCHE_ECOULER, h, 0, fEcouler(), null);
+  const loin = p.find((d) => d.terminal === "Loin");
+  assert.equal(loin.soldeLePlusCher, true); // 900 de capacité pour 300 SCU : tout part
+  assert.equal(loin.lignes[0].reste, 0);
+});
+
+test("offloadPlan : un comptoir SATURÉ sans capacité publiée n'est pas pris pour « illimité »", () => {
+  // Mesuré : le statut UEX 7 (« saturé ») et la capacité 0 se recouvrent parfaitement — c'est le
+  // seul zéro fiable du jeu de données. Sans lui, un point saturé dont UEX tait la capacité
+  // passerait pour « inconnu », donc pour « il prend tout ».
+  const marche = {
+    terminals: [{ name: "Ici", system: "S" }, { name: "Plein", system: "S" }, { name: "Ouvert", system: "S" }],
+    commodities: [{ name: "Gold", kind: "metal", illegal: false, buys: [],
+      sells: [[1, 9999, null, 9e9, 7], [2, 1500, null, 9e9, 3]] }], // le saturé paie pourtant le mieux
+  };
+  const h = loadHold([], [ligne(100, 1000, 1500)], "X", 1);
+  const p = offloadPlan(marche, h, 0, fEcouler(), null);
+  assert.deepEqual(p.map((d) => d.terminal), ["Ouvert"]); // le saturé est écarté malgré son prix
+  // …mais une correction locale prime : l'utilisateur a vu le comptoir.
+  const corrige = (c, t, side, price, vol) => ({ price, vol: t === "Plein" ? 40 : vol, ovol: true });
+  const q = offloadPlan(marche, h, 0, fEcouler(), corrige);
+  assert.equal(q[0].terminal, "Plein");
+  assert.equal(q[0].lignes[0].absorbe, 40);
+});
+
+test("offloadPlan : soute vide, ou cargaison que personne ne reprend -> aucune destination", () => {
+  assert.deepEqual(offloadPlan(MARCHE_ECOULER, [], 0, fEcouler(), null), []);
+  const h = loadHold([], [ligne(10, 1, 2, { name: "Introuvable" })], "X", 1);
+  assert.deepEqual(offloadPlan(MARCHE_ECOULER, h, 0, fEcouler(), null), []);
+});
+
+test("offloadPlan : sur les VRAIES données, aucune destination absurde", () => {
+  const idx = REAL.terminals.findIndex((t) => t.name === "Megumi");
+  const c = REAL.commodities.find((x) => x.sells.length > 3 && x.buys.length);
+  const h = [{ name: c.name, units: 2170, paid: 1, from: "Megumi", at: 1 }];
+  const p = offloadPlan(REAL, h, idx, fEcouler(), null, null, 6);
+  assert.ok(p.length > 0, `aucun débouché pour ${c.name}`);
+  for (const d of p) {
+    assert.notEqual(d.idx, idx);                                   // jamais là où l'on est
+    assert.ok(d.scu > 0 && d.scu <= 2170);                         // on n'écoule pas plus qu'on a
+    assert.ok(d.garanti <= d.scu);                                 // le garanti ne dépasse pas l'optimiste
+    assert.equal(d.reste, 2170 - d.scu);
+    assert.ok(["connue", "inconnue", "partielle"].includes(d.certitude));
+  }
+  for (let i = 1; i < p.length; i++) assert.ok(p[i - 1].profit >= p[i].profit); // classé
+});
+
 test("storeFromHold : déposer libère la soute SANS vendre, et garde le capital tracé", () => {
   const h = loadHold([], [ligne(2200, 1000, 1400)], "Megumi", 1);
   const r = storeFromHold(h, {}, "Gold", 2170, "Ruin Station — Pyro");
@@ -2049,6 +2152,20 @@ test("journeyMap : le vaisseau se pose sur l'arrêt courant et vise le suivant",
   const b = journeyMap(noms, 1, STARMAP, infoT);
   assert.deepEqual([b.vaisseau.x, b.vaisseau.y], [b.arrets[1].x, b.arrets[1].y]);
   assert.notEqual(a.vaisseau.angle, b.vaisseau.angle); // au bout, il regarde d'où il vient
+});
+
+test("journeyMap : une jambe CHARGÉE met le vaisseau en vol, entre les deux escales", () => {
+  const noms = st("Megumi", "Checkmate");
+  const quai = journeyMap(noms, 0, STARMAP, infoT, false);
+  const vol = journeyMap(noms, 0, STARMAP, infoT, true);
+  assert.equal(quai.vaisseau.enVol, false);
+  assert.deepEqual([quai.vaisseau.x, quai.vaisseau.y], [quai.arrets[0].x, quai.arrets[0].y]);
+  assert.equal(vol.vaisseau.enVol, true);
+  assert.equal(vol.vaisseau.x, (vol.arrets[0].x + vol.arrets[1].x) / 2); // à mi-chemin
+  assert.equal(vol.vaisseau.y, (vol.arrets[0].y + vol.arrets[1].y) / 2);
+  assert.equal(vol.vaisseau.angle, quai.vaisseau.angle);                 // même cap
+  // Au BOUT du parcours il n'y a plus de jambe : chargé ou non, le vaisseau reste à quai.
+  assert.equal(journeyMap(noms, 1, STARMAP, infoT, true).vaisseau.enVol, false);
 });
 
 test("journeyMap : une position hors bornes est ramenée dans le parcours", () => {

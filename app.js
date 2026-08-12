@@ -14,6 +14,7 @@ import {
   legFromRoute, legsFromLoop, legsFromChain, legFromManifest, stopSuggestions, bestLegBetween,
   manifestJourneyState, manifestIntent, sameIntent, legsToPin, journeyMap,
   loadHold, holdScu, freeCargo, holdByCommodity, sellFromHold, refuseHere, sellableAt, sellAllAt,
+  offloadPlan, storeFromHold,
   startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   removeJourneyStop as removeStopPure,
@@ -1219,6 +1220,54 @@ function venteImplicite(depuis) {
 const fmtSigne = (n) => (n >= 0 ? "+" : "") + fmt(Math.round(n));
 let venteEnCours = null; // commodité dont le champ « vendu » est ouvert
 
+// Le fret déposé à une station : ni vendu, ni perdu — du capital immobilisé qu'on peut oublier.
+const DEPOTS_KEY = "best-hauling-depots";
+let DEPOTS = {};
+function loadDepots() {
+  try { DEPOTS = JSON.parse(localStorage.getItem(DEPOTS_KEY)) || {}; } catch { DEPOTS = {}; }
+}
+function saveDepots() { try { localStorage.setItem(DEPOTS_KEY, JSON.stringify(DEPOTS)); } catch {} }
+
+function deposerIci(nom, units) {
+  const idx = stationCourante();
+  if (idx == null || !MARKET) return;
+  const t = MARKET.terminals[idx];
+  const r = storeFromHold(SOUTE, DEPOTS, nom, units, stationLabel(t.name, t.system));
+  if (r.hold === SOUTE) return;
+  SOUTE = r.hold; DEPOTS = r.entrepots;
+  saveSoute(); saveDepots();
+  venteEnCours = null;
+  renderSoute(); refresh();
+  showToast(`⬓ ${fmt(units)} SCU de ${nom} déposés à ${t.name} — ni vendus ni perdus`);
+}
+
+// « Où écouler ce qui reste ? » — le détour manuel par la vue Commodités, en un panneau.
+let ecoulerOuvert = false;
+function ecoulerHTML() {
+  const idx = stationCourante();
+  if (!ecoulerOuvert || idx == null || !MARKET) return "";
+  const f = readFilters();
+  const dest = offloadPlan(MARKET, SOUTE, idx, f, effVals, feeResolver(f), 5);
+  if (!dest.length) {
+    return `<div class="hold-ecouler"><p class="muted">Aucune destination ne reprend ce fret avec ces filtres.
+      Tu peux le <b>déposer</b> à une station : il n'est alors ni vendu ni perdu.</p></div>`;
+  }
+  const lignes = dest.map((d) => {
+    const cert = d.certitude === "connue"
+      ? `<span class="ec-sur" title="Capacité publiée par UEX">${fmt(d.garanti)} SCU garantis</span>`
+      : d.certitude === "inconnue"
+        ? `<span class="ec-flou" title="UEX ne publie pas la capacité de ce point : ni zéro, ni illimitée">capacité inconnue</span>`
+        : `<span class="ec-flou" title="Capacité publiée pour une partie seulement">${fmt(d.garanti)} SCU garantis, reste inconnu</span>`;
+    const detail = d.lignes.map((l) => `${esc(l.name)} ${fmt(l.absorbe)}${l.reste > 0 ? `/${fmt(l.absorbe + l.reste)}` : ""}`).join(" · ");
+    return `<div class="ec-dest">
+        <span class="ec-nom">${esc(d.terminal)}${sysBadge(d.system)}${d.cross ? ' <span class="cross">⚡</span>' : ""}${outpostTag(d.outpost)}</span>
+        <span class="ec-profit profit">+${fmt(Math.round(d.profit))}</span>
+        <span class="ec-detail">${esc(detail)} · ${cert}${d.reste > 0 ? ` · <b>${fmt(d.reste)}</b> SCU resteraient à bord` : " · <b>soute vidée</b>"}</span>
+      </div>`;
+  }).join("");
+  return `<div class="hold-ecouler"><div class="ec-head">Où écouler — classé par ce que tu encaisses vraiment</div>${lignes}</div>`;
+}
+
 function viderSoute() { SOUTE = []; saveSoute(); renderSoute(); refresh(); }
 function retirerLot(i) { SOUTE = SOUTE.filter((_, j) => j !== i); saveSoute(); renderSoute(); refresh(); }
 
@@ -1246,12 +1295,17 @@ function renderSoute() {
       : `<button class="hold-del solo" data-i="${g.lots[0].i}" title="Retirer ce lot" aria-label="Retirer">✕</button>`;
     // Vendre suppose de savoir OÙ l'on est, et que le comptoir reprenne la commodité.
     const pt = ici != null && MARKET ? sellableAt(MARKET, ici, g.name, effVals) : null;
+    // Vendre suppose que le comptoir reprenne la commodité ; DÉPOSER, non — c'est justement la
+    // sortie quand il n'en veut pas. Les deux ouvrent le même champ de quantité.
     const vente = venteEnCours === g.name
-      ? `<span class="hold-sell open"><input class="hold-sell-qty" type="number" min="0" max="${g.units}" value="${g.units}" aria-label="SCU vendus de ${esc(g.name)}" />
-           <button class="hold-sell-ok" data-name="${esc(g.name)}" title="Valider la vente">✓</button>
+      ? `<span class="hold-sell open"><input class="hold-sell-qty" type="number" min="0" max="${g.units}" value="${g.units}" aria-label="SCU de ${esc(g.name)}" />
+           ${pt ? `<button class="hold-sell-ok" data-name="${esc(g.name)}" title="Vendre ici à ${fmt(pt.price)} aUEC/SCU">✓ vendre</button>` : ""}
+           <button class="hold-store" data-name="${esc(g.name)}" title="Déposer à la station : ni vendu, ni perdu">⬓ déposer</button>
            <button class="hold-sell-no" title="Annuler">✕</button></span>`
-      : pt
-        ? `<button class="hold-sell-btn" data-name="${esc(g.name)}" title="Vendre ici, à ${fmt(pt.price)} aUEC/SCU${pt.demand == null ? " · capacité inconnue chez UEX" : ` · capacité annoncée ${fmt(pt.demand)} SCU`}">vendu</button>`
+      : ici != null
+        ? `<button class="hold-sell-btn" data-name="${esc(g.name)}" title="${pt
+            ? `Vendre ou déposer ici — ${fmt(pt.price)} aUEC/SCU${pt.demand == null ? ", capacité inconnue chez UEX" : `, capacité annoncée ${fmt(pt.demand)} SCU`}`
+            : "Ce comptoir ne reprend pas cette commodité — tu peux quand même l'y déposer"}">${pt ? "vendu" : "déposer"}</button>`
         : "";
     return `<div class="hold-line">
         <span class="hold-name">${icone(g.name)}${esc(g.name)}</span>
@@ -1264,7 +1318,9 @@ function renderSoute() {
   box.innerHTML =
     `<div class="hold-head"><span class="hold-title">◈ Soute</span><button id="holdClear" class="journey-clear" title="Vider la soute (le fret est débarqué)" aria-label="Vider la soute">✕</button></div>
      <div class="hold-lines">${lignes}</div>
-     <div class="hold-meta"><b>${fmt(scu)}</b> SCU à bord${libre != null ? ` · <b>${fmt(libre)}</b> libres` : ""} · capital engagé <b>${fmt(invest)}</b> aUEC</div>`;
+     <div class="hold-meta"><b>${fmt(scu)}</b> SCU à bord${libre != null ? ` · <b>${fmt(libre)}</b> libres` : ""} · capital engagé <b>${fmt(invest)}</b> aUEC
+       <button id="holdOffload" class="hold-offload">${ecoulerOuvert ? "▾" : "▸"} où écouler ?</button></div>
+     ${ecoulerHTML()}`;
 }
 
 // ---------- Carte 2D du parcours (ADR-001) ----------
@@ -1324,7 +1380,7 @@ function journeyMapHTML(c) {
   });
 
   const v = c.vaisseau;
-  svg += `<g class="jm-vaisseau" style="transform: translate(${nf(v.x)}px, ${nf(v.y)}px) rotate(${nf(v.angle)}deg)">` +
+  svg += `<g class="jm-vaisseau${v.enVol ? " en-vol" : ""}" style="transform: translate(${nf(v.x)}px, ${nf(v.y)}px) rotate(${nf(v.angle)}deg)">` +
     `<circle r="10" fill="var(--acc)" fill-opacity="0.12"/><path d="M8 0 L-5 5 L-2.5 0 L-5 -5 Z" fill="var(--acc)" stroke="#140c00" stroke-width="0.5"/></g>`;
 
   return `<svg class="jm-svg" viewBox="0 0 ${c.largeur} ${c.hauteur}" role="img" aria-label="Carte du parcours : ${esc(c.arrets.map((a) => a.nom).join(", puis "))}">${svg}</svg>`;
@@ -1340,7 +1396,10 @@ function renderJourneyMap() {
     const i = stationMap.get(stationLabel(nom, (journeyStations(JOURNEY).find((s) => s.name === nom) || {}).system || ""));
     return i == null ? null : MARKET.terminals[i];
   };
-  const c = journeyMap(journeyStations(JOURNEY), JOURNEY.current, STARMAP, info);
+  // Jambe courante chargée = on a payé et on est parti : le vaisseau quitte le quai sur la carte.
+  const legCourante = JOURNEY.legs[JOURNEY.current];
+  const enVol = !!legCourante && jambeChargee(legCourante, JOURNEY.current);
+  const c = journeyMap(journeyStations(JOURNEY), JOURNEY.current, STARMAP, info, enVol);
   if (!c) { box.hidden = true; return; }
   box.hidden = false;
   box.innerHTML = `<span class="jm-label">◈ <b>Carte du parcours</b> <span class="muted">schéma — rayons compressés</span></span>${journeyMapHTML(c)}`;
@@ -2691,6 +2750,9 @@ async function init() {
   // Carte du parcours : cliquer une escale déplace « je suis ici », comme le fil d'étapes.
   $("holdCard").addEventListener("click", (e) => {
     if (e.target.closest("#holdClear")) { viderSoute(); return; }
+    if (e.target.closest("#holdOffload")) { ecoulerOuvert = !ecoulerOuvert; renderSoute(); return; }
+    const deposer = e.target.closest(".hold-store");
+    if (deposer) { deposerIci(deposer.dataset.name, Number(deposer.closest(".hold-sell").querySelector(".hold-sell-qty").value)); return; }
     const ouvrir = e.target.closest(".hold-sell-btn");
     if (ouvrir) { venteEnCours = ouvrir.dataset.name; renderSoute(); $("holdCard").querySelector(".hold-sell-qty")?.select(); return; }
     if (e.target.closest(".hold-sell-no")) { venteEnCours = null; renderSoute(); return; }
@@ -2802,6 +2864,7 @@ async function init() {
   loadJourneyEdits();
   loadJourneyPins();
   loadSoute();
+  loadDepots();
   updateOvBadge();
   syncToggles();
 

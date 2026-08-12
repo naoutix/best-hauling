@@ -458,6 +458,51 @@ test("Soute : vente partielle — le reste est REFUSÉ ici et survit au départ"
   expect(holdScuDe(final)).toBe(holdScuDe(reste));
 });
 
+test("Soute : « où écouler » classe les destinations et affiche la certitude", async ({ page }) => {
+  await jambeChargeable(page);
+  await page.locator("#journeyCard .jleg-load").first().click();
+  await expect(page.locator("#holdCard")).toBeVisible();
+
+  await page.locator("#holdOffload").click();
+  const dest = page.locator("#holdCard .ec-dest");
+  await expect(dest.first()).toBeVisible();
+  expect(await dest.count()).toBeGreaterThan(1);
+
+  // Classé par ce qu'on encaisse vraiment : les profits décroissent.
+  const profits = (await dest.locator(".ec-profit").allTextContents())
+    .map((t) => Number(t.replace(/[^\d]/g, "")));
+  for (let i = 1; i < profits.length; i++) expect(profits[i - 1]).toBeGreaterThanOrEqual(profits[i]);
+
+  // Chaque destination dit sur quoi son chiffre repose — 84 % des capacités ne sont pas publiées.
+  for (const t of await dest.locator(".ec-detail").allTextContents()) {
+    expect(t).toMatch(/garantis|capacité inconnue/);
+  }
+  // Et se referme.
+  await page.locator("#holdOffload").click();
+  await expect(page.locator("#holdCard .ec-dest")).toHaveCount(0);
+});
+
+test("Soute : déposer à la station libère la place sans vendre", async ({ page }) => {
+  await jambeChargeable(page);
+  await page.locator("#journeyCard .jleg-load").first().click();
+  const avant = await lots(page);
+  const nom = avant[0].name;
+
+  // Déposer marche MÊME si le comptoir ne reprend pas la commodité : c'est tout l'intérêt.
+  const ouvrir = page.locator("#holdCard .hold-line", { hasText: nom }).locator(".hold-sell-btn");
+  await expect(ouvrir).toBeVisible();
+  await ouvrir.click();
+  await page.locator("#holdCard .hold-sell-qty").fill("5");
+  await page.locator("#holdCard .hold-store").click();
+
+  expect(holdScuDe(await lots(page))).toBe(holdScuDe(avant) - 5);
+  const depots = JSON.parse(await page.evaluate(() => localStorage.getItem("best-hauling-depots") || "{}"));
+  const tout = Object.values(depots).flat();
+  expect(tout.length).toBe(1);
+  expect(tout[0].units).toBe(5);
+  expect(tout[0].paid).toBeGreaterThan(0); // ni vendu ni perdu : le capital reste tracé
+});
+
 test("Soute : reculer d'une étape ne revend rien", async ({ page }) => {
   // Revenir sur ses pas n'est pas une transaction : seule l'AVANCÉE vaut « j'ai fait mon affaire ».
   await jambeChargeable(page);

@@ -233,6 +233,35 @@ Deux règles à connaître :
   reprendre le jeu une semaine plus tard avec un vaisseau rangé plein, c'est une soute exacte, pas
   une soute périmée. Elle a son propre ✕.
 
+**Vendre, déposer, repartir.** Un bouton par commodité ouvre un champ prérempli au total :
+valider vend tout, réduire vend partiellement. Ce que le comptoir n'a pas pris est marqué
+**refusé ici** — et c'est ce marqueur qui le protège : **avancer d'une étape vaut « j'ai fait mon
+affaire à l'escale que je quitte »** et solde ce qui s'y vendait encore. Sans lui, le résidu
+disparaîtrait au moment exact où il devient le sujet. Un geste explicite, lui, passe outre.
+Reculer ne revend rien.
+
+**⬓ Déposer** est la troisième sortie du fret, et elle marche **même là où le comptoir ne reprend
+rien** — c'est précisément le cas où elle sert. Le fret quitte la soute sans être vendu : ni perdu,
+ni encaissé, du capital immobilisé qui reste tracé.
+
+**Où écouler ?** Le panneau classe les destinations par **ce que tu encaisses vraiment** —
+`min(résidu, capacité) × prix`, net des frais, le coût venant des lots réellement consommés. Deux
+chiffres par destination, jamais un seul, parce qu'UEX ne publie la capacité que de **15,6 %** des
+points de vente : ce qui est **garanti** (capacité publiée) et ce qui est **optimiste** (l'inconnu
+prend tout). La couleur dit sur quoi le chiffre repose.
+
+> Cette asymétrie n'est pas la symétrie qu'on attendrait : **100 %** des points d'achat publient
+> leur stock, contre **15,6 %** des points de vente pour la demande. Remplir une soute et la vider
+> ne sont pas le même problème retourné.
+
+Un cas mérite d'être connu : le statut UEX `7` (« saturé ») et une capacité publiée à zéro se
+recouvrent **parfaitement** sur l'instantané — c'est le seul zéro fiable du jeu de données. Un
+comptoir saturé dont UEX tait la capacité est donc écarté, au lieu de passer pour « illimité ».
+
+**Le manifeste ne remplit que la place restante** quand la soute n'est pas vide, et le dit
+(`47/47 SCU · 49 SCU à bord`). Les autres vues gardent la soute nominale : elles répondent à
+« quelle est la meilleure route », pas à « que puis-je embarquer là, tout de suite ».
+
 ### Ce qu'une correction fait au voyage
 
 Une jambe non ajustée suit le marché : corriger un **prix** mesure donc aussitôt ses effets sur les
