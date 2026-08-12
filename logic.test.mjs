@@ -1701,6 +1701,50 @@ test("manifestJourneyState : une jambe venue d'un permalien reste reconnue", () 
   assert.equal(manifestJourneyState(j, { name: "A" }, { name: "B" }).etat, "deja");
 });
 
+// ---------- Board Commodités : les corrections locales s'y appliquent aussi ----------
+// Corrige le prix d'un point précis, laisse tout le reste intact (même contrat qu'effVals).
+const corrigeur = (corrections) => (commodity, terminal, side, price, vol) => {
+  const c = corrections[`${commodity}|${terminal}|${side}`];
+  return { price: c && c.price != null ? c.price : price, vol: c && c.vol != null ? c.vol : vol, ovol: vol != null };
+};
+
+test("commoditySummaries : sans résolveur, les prix bruts d'UEX (comportement historique)", () => {
+  const [gold] = commoditySummaries(MKT()).filter((c) => c.name === "Gold");
+  assert.deepEqual([gold.bestBuy, gold.bestSell, gold.margin], [100, 300, 200]);
+});
+
+test("commoditySummaries : une correction de prix change la marge, donc le rang et la couleur", () => {
+  // Le bug : on corrigeait le prix de vente dans un tableau, et la tuile de la commodité gardait
+  // la marge d'UEX — board classé et colorié sur un chiffre qu'on venait de démentir.
+  const r = corrigeur({ "Gold|C|sell": { price: 900 } });
+  const [gold] = commoditySummaries(MKT(), {}, r).filter((c) => c.name === "Gold");
+  assert.equal(gold.bestSell, 900);
+  assert.equal(gold.margin, 800); // 900 - 100
+});
+
+test("commoditySummaries : corriger l'achat le moins cher rebat aussi la marge", () => {
+  const r = corrigeur({ "Gold|A|buy": { price: 250 } });
+  const [gold] = commoditySummaries(MKT(), {}, r).filter((c) => c.name === "Gold");
+  assert.equal(gold.bestBuy, 250);
+  assert.equal(gold.margin, 50); // 300 - 250
+});
+
+test("commodityPoints : les points affichent les valeurs corrigées ET se trient dessus", () => {
+  // B paie 150, C paie 300 : « mieux payé d'abord » met C en tête. En corrigeant B à 500,
+  // c'est B qui doit passer devant — sinon la liste s'ordonne sur un prix démenti.
+  const brut = commodityPoints(MKT(), "Gold");
+  assert.deepEqual(brut.sells.map((s) => s.terminal), ["C", "B"]);
+  const p = commodityPoints(MKT(), "Gold", {}, corrigeur({ "Gold|B|sell": { price: 500 } }));
+  assert.deepEqual(p.sells.map((s) => s.terminal), ["B", "C"]);
+  assert.equal(p.sells[0].price, 500);
+});
+
+test("commodityPoints : une correction de volume passe aussi (stock et demande)", () => {
+  const p = commodityPoints(MKT(), "Gold", {}, corrigeur({ "Gold|A|buy": { vol: 7 }, "Gold|B|sell": { vol: 3 } }));
+  assert.equal(p.buys.find((b) => b.terminal === "A").stock, 7);
+  assert.equal(p.sells.find((s) => s.terminal === "B").demand, 3);
+});
+
 // ---------- Gel des jambes quand un VOLUME est corrigé ----------
 const CHARGEMENTS = [
   [{ name: "Copper", units: 59 }, { name: "Aluminum", units: 37 }], // jambe 0 : Megumi -> Rat's Nest

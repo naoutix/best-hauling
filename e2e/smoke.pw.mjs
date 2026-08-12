@@ -412,6 +412,30 @@ async function corrige(page, champ, cote, valeur) {
 }
 const profitJambe = (page) => page.locator("#journeyCard .jleg-profit").first();
 
+test("Corrections : un prix corrigé se retrouve dans le board Commodités", async ({ page }) => {
+  // Le board lisait market.json BRUT, sans résolveur : on corrigeait un prix dans un tableau et la
+  // tuile gardait la marge d'UEX — donc un classement et une heatmap sur un chiffre démenti.
+  const ligne = page.locator("#rows tr").first();
+  const commodite = (await ligne.locator(".cname").innerText()).trim();
+  const cell = ligne.locator(".editv[data-f='price'][data-s='sell']").first();
+  const terminal = await cell.getAttribute("data-t");
+  const avant = Number(await cell.getAttribute("data-v"));
+  await cell.click();
+  await page.locator(".editv-input").first().fill(String(avant * 3));
+  await page.keyboard.press("Enter");
+
+  await page.click("#viewCommodities");
+  await page.fill("#search", commodite);
+  const tuile = page.locator("#commGrid .comm-tile").first();
+  await expect(tuile).toBeVisible({ timeout: 8000 });
+  await tuile.click();
+
+  // La ligne du terminal corrigé porte la nouvelle valeur ET le marqueur ✎.
+  const rang = page.locator("#commDetail .comm-points tbody tr", { hasText: terminal }).first();
+  await expect(rang).toContainText(String(avant * 3).replace(/\B(?=(\d{3})+(?!\d))/g, " "));
+  await expect(rang.locator(".ovmark")).toHaveCount(1);
+});
+
 test("Corrections : un PRIX corrigé met à jour les bénéfices du voyage en cours", async ({ page }) => {
   await manifesteDepuis(page, "Megumi — Pyro");
   await page.click("#manifestToJourney");
