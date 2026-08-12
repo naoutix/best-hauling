@@ -105,8 +105,36 @@ test("le schéma de trajet se déplie puis se replie", async ({ page }) => {
 test("vue Corrections : rechercher une station affiche ses commodités éditables", async ({ page }) => {
   await page.click("#viewCorrections");
   await page.fill("#station", "Levski — Nyx");
-  await expect(page.locator("#correctionsStation .station-table tbody tr").first()).toBeVisible();
+  await expect(page.locator("#correctionsStation .scomm").first()).toBeVisible();
   expect(await page.locator("#correctionsStation .editv").count()).toBeGreaterThan(0);
+});
+
+test("vue Corrections : les commodités d'une station tiennent sur PLUSIEURS colonnes", async ({ page }) => {
+  // En une seule colonne, GrimHEX (92 commodités) faisait 4 546 px : quatre écrans et demi à
+  // parcourir pour corriger un chiffre, pendant que les colonnes du tableau mesuraient 444 px
+  // chacune pour du contenu qui en demande 200.
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.click("#viewCorrections");
+  await page.fill("#station", "GrimHEX — Stanton");
+  await expect(page.locator("#correctionsStation .scomm").first()).toBeVisible();
+  const n = await page.locator("#correctionsStation .scomm").count();
+  expect(n).toBeGreaterThan(50);
+
+  // Plusieurs tuiles partagent la même ligne : c'est la définition d'une grille multi-colonnes.
+  const tops = await page.locator("#correctionsStation .scomm").evaluateAll((els) =>
+    els.map((e) => Math.round(e.getBoundingClientRect().top)));
+  const parLigne = tops.filter((t) => t === tops[0]).length;
+  expect(parLigne).toBeGreaterThanOrEqual(3);
+
+  // Et la hauteur totale reste sous ce qu'une colonne unique aurait donné.
+  const h = await page.locator("#correctionsStation .station-grid").evaluate((e) => e.getBoundingClientRect().height);
+  expect(h).toBeLessThan(2600);
+
+  // Étroit : la grille se resserre au lieu de déborder horizontalement.
+  await page.setViewportSize({ width: 520, height: 1000 });
+  await expect(page.locator("#correctionsStation .scomm").first()).toBeVisible();
+  const debord = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(debord).toBeLessThanOrEqual(1);
 });
 
 test("les filtres s'appliquent aux bonnes vues — légales uniquement (régression câblage)", async ({ page }) => {

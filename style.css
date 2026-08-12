@@ -765,11 +765,21 @@ input.mqty-input.over-stock { color: var(--warn); border-color: var(--warn); box
 /* ---------- Vue Corrections ---------- */
 .corrections-wrap { margin: 20px 0 0; }
 .station-title { padding: 12px 2px; font-family: var(--display); font-weight: 600; color: #fff; }
-.station-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 26px; border: 1px solid var(--line); }
-.station-table th { text-align: left; padding: 10px 14px; font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--acc); background: #0a0e18; border-bottom: 2px solid var(--line2); white-space: nowrap; }
-.station-table td { padding: 9px 14px; border-bottom: 1px solid var(--line); vertical-align: top; font-family: var(--mono); font-size: 13px; }
-.station-table td:first-child { font-family: var(--font); }
-.station-table .muted { color: var(--muted); }
+/* Les commodités d'une station : une GRILLE de tuiles, pas une colonne. GrimHEX en compte 92 —
+   en liste, 4 546 px à parcourir pour corriger un chiffre, pendant que les trois colonnes du
+   tableau faisaient 444 px chacune pour du contenu qui en demande 200. `auto-fill` rend cet espace
+   et divise la hauteur d'autant, sans qu'aucun seuil ne soit codé en dur. */
+.station-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(236px, 1fr));
+  gap: 1px; background: var(--line); border: 1px solid var(--line); margin-bottom: 26px;
+}
+.scomm { display: flex; flex-direction: column; gap: 3px; padding: 7px 11px; background: var(--panel-solid); }
+.scomm:hover { background: #0d1322; }
+.scomm-name { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+.scomm-side { display: flex; align-items: baseline; gap: 7px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+/* L'étiquette porte le sens que l'en-tête de colonne portait : sans elle, deux chiffres nus. */
+.scomm-lbl { flex: 0 0 auto; width: 34px; font-size: 8.5px; letter-spacing: 1px; text-transform: uppercase; color: #5d6678; }
+.station-count { font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-left: 8px; }
 
 .corr-list-head { display: flex; align-items: center; gap: 12px; margin: 8px 0 10px; font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--acc); }
 .corr-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 14px; border: 1px solid var(--line); border-left: 2px solid var(--acc); border-radius: 3px; margin-bottom: 6px; background: rgba(255, 176, 32, 0.03); }
