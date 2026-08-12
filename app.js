@@ -2127,10 +2127,16 @@ function paintCommodityDetail() {
       : '<p class="manifest-hint">Sélectionne une commodité (ligne du tableau ou champ « Commodité ») pour voir tous ses points d\'achat et de vente.</p>';
     return;
   }
-  const p = commodityPoints(MARKET, commSelected, readFilters()); // exclut les avant-postes si le filtre est actif
+  // `effVals` : le détail affiche les valeurs CORRIGÉES, comme les tableaux. Et puisqu'elles le
+  // sont, elles passent par `editv` — le même composant qu'ailleurs : marqueur ✎ sur ce qui est
+  // corrigé, et clic pour corriger sur place. Le board devient ainsi le point d'entrée naturel
+  // pour rectifier un prix « chez toutes les stations qui vendent cette commodité ».
+  const p = commodityPoints(MARKET, commSelected, readFilters(), effVals); // avant-postes exclus si le filtre est actif
   if (!p) { box.innerHTML = ""; return; }
-  const buyRow = (b) => `<tr><td class="loc"><div>${esc(b.terminal)}${sysBadge(b.system)}${outpostTag(b.outpost)}</div><div class="loc-sub">${esc(b.planet)}</div></td><td class="num">${fmt(b.price)}</td><td class="num">${statusDot(b.status, "buy")} ${fmt(b.stock)}</td><td>${freshChip(b.updated)}</td></tr>`;
-  const sellRow = (s) => `<tr><td class="loc"><div>${esc(s.terminal)}${sysBadge(s.system)}${outpostTag(s.outpost)}</div><div class="loc-sub">${esc(s.planet)}</div></td><td class="num">${fmt(s.price)}</td><td class="num">${statusDot(s.status, "sell")} ${fmtVol(s.demand)}</td><td>${freshChip(s.updated)}</td></tr>`;
+  const cell = (terminal, side, field, value, updated) =>
+    editv(p.name, terminal, side, field, value, isOv(p.name, terminal, side, field), updated);
+  const buyRow = (b) => `<tr><td class="loc"><div>${esc(b.terminal)}${sysBadge(b.system)}${outpostTag(b.outpost)}</div><div class="loc-sub">${esc(b.planet)}</div></td><td class="num">${cell(b.terminal, "buy", "price", b.price, b.updated)}</td><td class="num">${statusDot(b.status, "buy")} ${cell(b.terminal, "buy", "vol", b.stock, b.updated)}</td><td>${freshChip(b.updated)}</td></tr>`;
+  const sellRow = (s) => `<tr><td class="loc"><div>${esc(s.terminal)}${sysBadge(s.system)}${outpostTag(s.outpost)}</div><div class="loc-sub">${esc(s.planet)}</div></td><td class="num">${cell(s.terminal, "sell", "price", s.price, s.updated)}</td><td class="num">${statusDot(s.status, "sell")} ${cell(s.terminal, "sell", "vol", s.demand, s.updated)}</td><td>${freshChip(s.updated)}</td></tr>`;
   const table = (rows, head, mapper) => rows.length
     ? `<table class="comm-points"><thead><tr><th>Terminal</th><th class="num">Prix</th><th class="num">${head}</th><th>Relevé</th></tr></thead><tbody>${rows.map(mapper).join("")}</tbody></table>`
     : '<p class="muted">Aucun point.</p>';
@@ -2174,7 +2180,9 @@ function renderCommodities() {
   if (!enrouteReady) setupEnRoute();
   const f = { ...readFilters(), board: commBoard };
   const q = f.q;
-  let rows = commoditySummaries(MARKET, f).filter( // légales + avant-postes + board s'appliquent ici
+  // `effVals` : la marge, la couleur de tuile et le rang suivent les corrections locales. Sans lui,
+  // la tuile continuait d'afficher la marge d'UEX après qu'on ait corrigé le prix dans un tableau.
+  let rows = commoditySummaries(MARKET, f, effVals).filter( // légales + avant-postes + board s'appliquent ici
     (c) => !q || c.name.toLowerCase().includes(q) || (c.code && c.code.toLowerCase().includes(q))
   );
   sortCommodities(rows);

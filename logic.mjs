@@ -880,9 +880,14 @@ export function buildChainAdjacency(market, f, resolve, autoloadFor = null) {
 //   - board = "market" (défaut) -> uniquement les commodités ÉCHANGEABLES (achat ET vente) ;
 //     board = "loot" -> mode Butin : tout ce qui se VEND, y compris ce qu'on ne peut acheter
 //     nulle part (minerais raffinés, salvage, drogues de wreck) — le cas « je l'ai trouvé ».
-export function commoditySummaries(market, f = {}) {
+// `resolve` applique les corrections locales, comme dans toutes les autres vues. Sans lui, le board
+// classait et coloriait sur les prix BRUTS d'UEX : on corrigeait un prix dans un tableau, et la
+// tuile de la commodité — sa marge, sa couleur, son rang — continuait d'afficher l'ancien chiffre.
+// Optionnel pour rester pur par défaut (les tests l'appellent sans).
+export function commoditySummaries(market, f = {}, resolve = null) {
   const loot = f.board === "loot";
   const out = [];
+  const prix = (c, p, side) => (resolve ? resolve(c.name, market.terminals[p[0]].name, side, p[1], p[2], p[3]).price : p[1]);
   for (const c of market.commodities) {
     if (f.legalOnly && c.illegal) continue;
     // « Échangeable » se juge sur les données BRUTES : le juger après `noOutpost` ferait
@@ -893,9 +898,9 @@ export function commoditySummaries(market, f = {}) {
     const sells = f.noOutpost ? c.sells.filter((s) => !market.terminals[s[0]].outpost) : c.sells;
     // Achat le moins cher / vente la plus chère + le statut d'inventaire à ce point.
     let bestBuy = null, buyStatus = 0;
-    for (const b of buys) if (bestBuy == null || b[1] < bestBuy) { bestBuy = b[1]; buyStatus = b[4] || 0; }
+    for (const b of buys) { const v = prix(c, b, "buy"); if (bestBuy == null || v < bestBuy) { bestBuy = v; buyStatus = b[4] || 0; } }
     let bestSell = null, sellStatus = 0;
-    for (const s of sells) if (bestSell == null || s[1] > bestSell) { bestSell = s[1]; sellStatus = s[4] || 0; }
+    for (const s of sells) { const v = prix(c, s, "sell"); if (bestSell == null || v > bestSell) { bestSell = v; sellStatus = s[4] || 0; } }
     // En mode Butin, une commodité sans point de vente restant n'a plus de réponse à offrir.
     if (loot && bestSell == null) continue;
     const margin = bestBuy != null && bestSell != null ? bestSell - bestBuy : null;
@@ -910,17 +915,24 @@ export function commoditySummaries(market, f = {}) {
 
 // Tous les points d'ACHAT (les moins chers d'abord) et de VENTE (les plus chers d'abord)
 // d'une commodité, avec la localisation du terminal. Null si commodité inconnue.
-export function commodityPoints(market, name, f = {}) {
+// `resolve` : mêmes corrections locales que partout ailleurs (cf. commoditySummaries). Le tri
+// « moins cher d'abord » / « mieux payé d'abord » porte donc sur les valeurs CORRIGÉES — sinon la
+// liste se serait ordonnée sur des prix que l'utilisateur venait justement de démentir.
+export function commodityPoints(market, name, f = {}, resolve = null) {
   const c = market.commodities.find((x) => x.name === name);
   if (!c) return null;
   const T = (i) => market.terminals[i];
   const keep = (p) => !(f.noOutpost && T(p[0]).outpost); // exclut les avant-postes si demandé
-  const point = (p, volKey) => ({
-    terminal: T(p[0]).name, system: T(p[0]).system, planet: T(p[0]).planet, outpost: T(p[0]).outpost,
-    price: p[1], [volKey]: p[2], updated: p[3], status: p[4],
-  });
-  const buys = c.buys.filter(keep).map((b) => point(b, "stock")).sort((a, b) => a.price - b.price);
-  const sells = c.sells.filter(keep).map((s) => point(s, "demand")).sort((a, b) => b.price - a.price);
+  const point = (p, volKey, side) => {
+    const t = T(p[0]);
+    const e = resolve ? resolve(c.name, t.name, side, p[1], p[2], p[3]) : null;
+    return {
+      terminal: t.name, system: t.system, planet: t.planet, outpost: t.outpost,
+      price: e ? e.price : p[1], [volKey]: e ? e.vol : p[2], updated: p[3], status: p[4],
+    };
+  };
+  const buys = c.buys.filter(keep).map((b) => point(b, "stock", "buy")).sort((a, b) => a.price - b.price);
+  const sells = c.sells.filter(keep).map((s) => point(s, "demand", "sell")).sort((a, b) => b.price - a.price);
   return { name: c.name, code: c.code || "", kind: c.kind, illegal: c.illegal, buys, sells };
 }
 
