@@ -60,7 +60,7 @@ jobs:
         id: build
         env:
           # meta.json du site déjà en ligne (URL Pages de ce dépôt) — sert de signature précédente.
-          DEPLOYED_META_URL: https://naoutix.github.io/best-hauling/data/meta.json
+          DEPLOYED_META_URL: https://naoutix.github.io/trade-route-optimizer/data/meta.json
           FORCE: ${{ github.event_name != 'schedule' && '1' || '' }}
         run: node scripts/build-data.mjs
 
