@@ -233,6 +233,13 @@ Deux règles à connaître :
   reprendre le jeu une semaine plus tard avec un vaisseau rangé plein, c'est une soute exacte, pas
   une soute périmée. Elle a son propre ✕.
 
+**Charger vide le rayon.** `✓ chargé` retire de la station ce que tu viens d'y prendre — c'est une
+**correction locale** comme une autre, ancrée à la date UEX du point, donc périmée dès qu'UEX
+republie. Sans elle, la station continuait d'annoncer un stock déjà emporté et le manifeste suivant
+le reproposait. Si tu as pris **plus** que le stock publié, le rayon tombe à **0** et jamais en
+négatif : le relevé était faux, c'est tout ce qu'on en sait. Annuler le chargement rend exactement
+ce qui avait été retiré — le lot porte la valeur d'avant.
+
 **Vendre, déposer, repartir.** Un bouton par commodité ouvre un champ prérempli au total :
 valider vend tout, réduire vend partiellement. Ce que le comptoir n'a pas pris est marqué
 **refusé ici** — et c'est ce marqueur qui le protège : **avancer d'une étape vaut « j'ai fait mon

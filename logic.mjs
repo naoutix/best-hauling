@@ -1304,6 +1304,20 @@ export function sellFromHold(hold, name, units, price, at = null) {
   return { hold: suivant, vendu, recette, cout, profit: recette - cout, lots: consommes };
 }
 
+// Ce qu'il reste en rayon après avoir chargé `units`. Charger, c'est vider d'autant : sans ça, la
+// station continue d'annoncer un stock qu'on vient d'emporter, et le manifeste suivant le reproposte.
+//
+// JAMAIS NÉGATIF. Avoir pris plus que le stock publié ne signifie pas que la station nous en doit :
+// ça signifie que le relevé était faux — d'un achat par un autre joueur, ou d'un export UEX en
+// retard. Le seul fait dont on soit sûr est qu'il n'en reste plus, donc zéro.
+// `null` en entrée (capacité inconnue) ressort `null` : on ne déduit pas d'un chiffre qu'on n'a pas.
+// En pratique les 494 points d'achat de l'instantané publient tous leur stock, mais la vente, elle,
+// ne le fait que dans 15,6 % des cas — la fonction sert aussi là.
+export function stockApres(stock, units) {
+  if (stock == null) return null;
+  return Math.max(0, stock - Math.max(0, Math.floor(units || 0)));
+}
+
 // Marque le reste d'une commodité comme REFUSÉ à cette station : le comptoir n'en a pas voulu.
 // Sans ce marqueur, avancer d'une étape — qui vaut « j'ai tout vendu ici » — effacerait le résidu
 // au moment exact où il devient le sujet.
