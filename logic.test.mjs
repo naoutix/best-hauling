@@ -2019,12 +2019,56 @@ test("offloadPlan : les filtres de vue s'appliquent, comme partout ailleurs", ()
   assert.equal(offloadPlan(MARCHE_ECOULER, g, 0, fEcouler({ sameOnly: true }), null).every((d) => !d.cross), true);
 });
 
-test("offloadPlan : à valeur proche, celle qui SOLDE le résidu le plus cher passe devant", () => {
-  const h = loadHold([], [ligne(300, 1000, 1500)], "X", 1);
-  const p = offloadPlan(MARCHE_ECOULER, h, 0, fEcouler(), null);
-  const loin = p.find((d) => d.terminal === "Loin");
-  assert.equal(loin.soldeLePlusCher, true); // 900 de capacité pour 300 SCU : tout part
-  assert.equal(loin.lignes[0].reste, 0);
+test("offloadPlan : le classement suit l'ENCAISSEMENT, pas le profit — le coût est coulé", () => {
+  // Le piège, mesuré sur les vraies données (Gold payé 28 928) : trier au profit retranche
+  // paid × units, donc pénalise la destination qui écoule le PLUS. Ici « Petit » paie très cher
+  // mais ne prend que 50 SCU ; « Grand » prend tout à un prix à peine au-dessus du coût.
+  const marche = {
+    terminals: [{ name: "Ici", system: "S" }, { name: "Petit", system: "S" }, { name: "Grand", system: "S" }],
+    commodities: [{ name: "Gold", kind: "metal", illegal: false, buys: [],
+      // « Petit » paie 40 000 mais ne prend que 50 SCU : 553 600 de profit.
+      // « Grand » paie 29 000 — à peine au-dessus du coût — mais prend les 2 170 : 156 240 de profit,
+      // pour 62,9 M encaissés contre 2 M. C'est la forme exacte du cas Gold relevé sur l'instantané.
+      sells: [[1, 40000, 50, 9e9, 3], [2, 29000, 3000, 9e9, 3]] }],
+  };
+  const h = loadHold([], [ligne(2170, 28928, 29000)], "X", 1);
+  const p = offloadPlan(marche, h, 0, fEcouler(), null);
+  assert.equal(p[0].terminal, "Grand");          // celle qui VIDE la soute
+  assert.equal(p[0].reste, 0);
+  assert.ok(p[0].encaisse > p[1].encaisse);
+  // …alors qu'au profit, « Petit » l'emporterait largement.
+  const parProfit = [...p].sort((a, b) => b.profit - a.profit);
+  assert.equal(parProfit[0].terminal, "Petit");
+  assert.ok(parProfit[0].reste > 2000, "le tri au profit laisserait le gros du résidu à bord");
+});
+
+test("offloadPlan : la REINE est celle qui rapporte le plus, pas celle qui a coûté le plus", () => {
+  // holdByCommodity trie par capital engagé : 100 SCU payés 5 000 « pèsent » plus que 400 payés 900.
+  // Mais c'est la seconde qui rapporte le plus, et c'est elle qui doit primer.
+  const marche = {
+    terminals: [{ name: "Ici", system: "S" }, { name: "A", system: "S" }],
+    commodities: [
+      { name: "Chere", kind: "metal", illegal: false, buys: [], sells: [[1, 5200, 900, 9e9, 3]] },
+      { name: "Volumineuse", kind: "metal", illegal: false, buys: [], sells: [[1, 4000, 900, 9e9, 3]] },
+    ],
+  };
+  let h = loadHold([], [ligne(100, 5000, 5200, { name: "Chere" })], "X", 1);
+  h = loadHold(h, [ligne(400, 900, 4000, { name: "Volumineuse" })], "X", 2);
+  const d = offloadPlan(marche, h, 0, fEcouler(), null)[0];
+  assert.equal(d.reine, "Volumineuse");     // 400 × 4 000 = 1 600 000 contre 100 × 5 200 = 520 000
+  assert.equal(d.scuReine, 400);
+});
+
+test("offloadPlan : vendre sous le prix payé est signalé, jamais masqué", () => {
+  const marche = {
+    terminals: [{ name: "Ici", system: "S" }, { name: "Perte", system: "S" }],
+    commodities: [{ name: "Gold", kind: "metal", illegal: false, buys: [], sells: [[1, 400, 900, 9e9, 3]] }],
+  };
+  const h = loadHold([], [ligne(100, 1000, 400)], "X", 1);
+  const d = offloadPlan(marche, h, 0, fEcouler(), null)[0];
+  assert.equal(d.aPerte, true);
+  assert.equal(d.lignes[0].sousLePrixPaye, true);
+  assert.ok(d.profit < 0 && d.encaisse > 0); // on encaisse, mais moins qu'on n'a payé
 });
 
 test("offloadPlan : un comptoir SATURÉ sans capacité publiée n'est pas pris pour « illimité »", () => {

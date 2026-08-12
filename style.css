@@ -409,6 +409,7 @@ input.jman-qty { width: 56px; min-width: 0; padding: 3px 5px; text-align: right;
 /* La certitude se lit à la couleur : vert = capacité publiée, ambre = UEX ne dit rien. */
 .ec-sur { color: var(--good); }
 .ec-flou { color: var(--warn); cursor: help; }
+.ec-perte { color: var(--bad); cursor: help; }
 .hold-store {
   font-family: var(--mono); font-size: 10px; color: var(--acc-2);
   background: none; border: 1px solid rgba(169, 112, 255, 0.4); border-radius: 2px;

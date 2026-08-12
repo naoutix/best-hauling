@@ -1360,14 +1360,39 @@ export function sellAllAt(hold, market, terminalIdx, resolve) {
 // quoi il repose — afficher un plafond avec assurance quand la donnée ne le permet pas serait
 // exactement le défaut qui a rendu cette fonction nécessaire.
 //
+// LE CLASSEMENT PORTE SUR L'ENCAISSEMENT, PAS SUR LE PROFIT. Sur un résidu, le prix d'achat est un
+// coût COULÉ : il est déjà payé et ne dépend d'aucune décision restante. Trier au profit retranche
+// `paid × units`, donc pénalise proportionnellement la destination qui écoule le PLUS — exactement
+// celle qu'on cherche. Mesuré sur l'instantané : le défaut ne touche que 2 commodités sur 71, mais
+// il est brutal là où il frappe. Gold payé 28 928 : la destination qui vide les 2 170 SCU tombe au
+// rang 10 par profit, pendant que la tête n'en reprend que 671 et en laisse 1 499 à bord — soit le
+// second refus que toute cette fonctionnalité existe pour éviter.
+// Le profit reste CALCULÉ et affiché (on veut savoir si l'on vend à perte), simplement il ne classe
+// plus rien.
+//
 // La priorité posée (« la commodité qui rapporte le plus ») joue au CLASSEMENT et non au partage :
-// la demande d'une station est par commodité, les résidus ne se disputent donc rien. À valeur
-// égale, la destination qui solde le résidu le plus cher passe devant.
+// la demande d'une station est par commodité, les résidus ne se disputent donc rien. La « reine »
+// est celle qui RAPPORTE le plus — units × meilleur prix atteignable — et non celle qui a coûté le
+// plus cher : `holdByCommodity` trie par capital engagé, ce qui est un autre critère.
 export function offloadPlan(market, hold, originIdx, f = {}, resolve = null, autoloadFor = null, limit = 6) {
   if (!hold || !hold.length) return [];
   const origine = market.terminals[originIdx];
   const parNom = holdByCommodity(hold);
-  const plusCher = parNom[0] ? parNom[0].name : null; // holdByCommodity trie par capital engagé
+  // La reine : celle qui rapporte le plus, au meilleur prix qu'on puisse en tirer quelque part.
+  let reine = null, reineValeur = -1;
+  for (const g of parNom) {
+    const c = market.commodities.find((x) => x.name === g.name);
+    if (!c) continue;
+    let meilleur = 0;
+    for (const sv of c.sells) {
+      const t = market.terminals[sv[0]];
+      if (!t || sv[0] === originIdx) continue;
+      const e = resolve ? resolve(g.name, t.name, "sell", sv[1], sv[2], sv[3]) : { price: sv[1] };
+      if (e.price > meilleur) meilleur = e.price;
+    }
+    const v = g.units * meilleur;
+    if (v > reineValeur) { reineValeur = v; reine = g.name; }
+  }
   const out = [];
 
   market.terminals.forEach((t, idx) => {
@@ -1377,7 +1402,7 @@ export function offloadPlan(market, hold, originIdx, f = {}, resolve = null, aut
     if (f.sysFilter && t.system !== f.sysFilter) return;
 
     const lignes = [];
-    let scu = 0, garanti = 0, profit = 0, inconnues = 0;
+    let scu = 0, garanti = 0, profit = 0, encaisse = 0, scuReine = 0, inconnues = 0, aPerte = false;
     for (const g of parNom) {
       const c = market.commodities.find((x) => x.name === g.name);
       if (!c) continue;
@@ -1400,11 +1425,17 @@ export function offloadPlan(market, hold, originIdx, f = {}, resolve = null, aut
       // façon d'annoncer un profit qui se réalisera tel quel.
       const sim = sellFromHold(hold, g.name, prend, e.price);
       const frais = autoloadFor ? lineHaulFee(prend, { acquired: true }, { buy: null, sell: autoloadFor(t) }) : 0;
+      const recette = prend * e.price - frais;
       lignes.push({
         name: g.name, absorbe: prend, garanti: connue ? prend : 0, reste: g.units - prend,
-        price: e.price, demand: e.vol, connue, profit: sim.profit - frais,
+        price: e.price, demand: e.vol, connue, profit: sim.profit - frais, encaisse: recette,
+        // Vendre sous le prix payé reste parfois le bon choix (libérer la soute), mais ça ne doit
+        // jamais passer inaperçu : le classement, lui, ignore le coût coulé.
+        sousLePrixPaye: prend > 0 && sim.cout > prend * e.price,
       });
-      scu += prend; garanti += connue ? prend : 0; profit += sim.profit - frais;
+      scu += prend; garanti += connue ? prend : 0; profit += sim.profit - frais; encaisse += recette;
+      if (g.name === reine) scuReine += prend;
+      if (sim.cout > prend * e.price) aPerte = true;
       if (!connue) inconnues++;
     }
     if (!lignes.length) return;
@@ -1412,16 +1443,16 @@ export function offloadPlan(market, hold, originIdx, f = {}, resolve = null, aut
     out.push({
       idx, terminal: t.name, system: t.system, planet: t.planet, outpost: t.outpost,
       cross: !!origine && t.system !== origine.system,
-      lignes, scu, garanti, profit,
+      lignes, scu, garanti, profit, encaisse, scuReine, reine, aPerte,
       certitude: inconnues === 0 ? "connue" : inconnues === lignes.length ? "inconnue" : "partielle",
-      // Solde-t-elle le résidu le plus cher ? À valeur proche, c'est ce qui départage.
-      soldeLePlusCher: !!plusCher && lignes.some((l) => l.name === plusCher && l.reste === 0),
       reste: holdScu(hold) - scu,
     });
   });
 
+  // Encaissement d'abord ; à égalité, celle qui écoule le plus de la reine — un booléen « solde-t-elle
+  // la reine ? » abandonnerait la priorité dans tous les cas où AUCUNE destination ne la solde.
   return out
-    .sort((a, b) => b.profit - a.profit || (b.soldeLePlusCher - a.soldeLePlusCher) || b.garanti - a.garanti)
+    .sort((a, b) => b.encaisse - a.encaisse || b.scuReine - a.scuReine || b.garanti - a.garanti)
     .slice(0, limit);
 }
 
