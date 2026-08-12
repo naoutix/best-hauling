@@ -190,6 +190,25 @@ Un manifeste que tu ajustes avant de l'engager part **tel quel** : la jambe port
 `✎` et cesse de suivre les prix UEX et les filtres, jusqu'à `↺ optimal`. Un manifeste que tu
 n'as pas touché n'est **pas** persisté — la jambe reste branchée sur le marché.
 
+### La carte du parcours
+
+Sous le compagnon, un bandeau pose les arrêts **dans l'espace** : un disque par système traversé,
+le vaisseau sur l'escale courante, et un corridor violet `⚡` quand le parcours change de système.
+**Cliquer une escale déplace « je suis ici »**, exactement comme le fil d'étapes textuel — la carte
+n'ajoute pas de commande, elle en offre une seconde entrée.
+
+C'est un **schéma**, et il faut le lire comme tel. La géométrie est réelle — distances et longitudes
+publiées par la [starmap de RSI](https://robertsspaceindustries.com), relevées une fois par
+`scripts/fetch-starmap.mjs` et figées dans `data/starmap.json` — mais **les rayons sont compressés** :
+à l'échelle, microTech (2,9 UA) et Hurston (0,86 UA) laisseraient un cadre vide avec deux points
+aux extrémités. Deux conséquences visibles : les corps de Pyro sont groupés dans un même secteur
+(leurs longitudes vont de 42° à 152°, c'est la vraie donnée), et les orbites sont resserrées.
+
+Aucune image n'est embarquée : tout est dessiné en SVG par le code, dans la palette du site. Le
+script de collecte se lance **à la main** et jamais depuis la CI — l'endpoint de la starmap est
+interne et non documenté, le site ne doit pas en dépendre. On ne dessine que ce qui porte un
+terminal chez UEX, ce qui tient les systèmes du lore (Castra, Terra…) hors de la carte.
+
 ### Ce qu'une correction fait au voyage
 
 Une jambe non ajustée suit le marché : corriger un **prix** mesure donc aussitôt ses effets sur les

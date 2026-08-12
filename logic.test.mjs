@@ -16,6 +16,7 @@ import {
   commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
   legFromRoute, legsFromLoop, legsFromChain, legFromManifest, stopSuggestions, bestLegBetween,
   manifestJourneyState, manifestIntent, sameIntent, legsToPin,
+  journeyMap, nameAngle, CARTE,
   startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   encodeJourney, decodeJourney, removeJourneyStop, freeManifestLine, hydrateManifestLine,
@@ -1699,6 +1700,156 @@ test("manifestJourneyState : une jambe venue d'un permalien reste reconnue", () 
   const j = decodeJourney(encodeJourney(startJourney([jambe("A", "B")])));
   assert.equal(manifestJourneyState(j, { name: "B" }, { name: "C" }).etat, "ajouter");
   assert.equal(manifestJourneyState(j, { name: "A" }, { name: "B" }).etat, "deja");
+});
+
+// ---------- Carte 2D du parcours (ADR-001) ----------
+const STARMAP = {
+  Pyro: { ancres: {
+    "Pyro I": { au: 0.553, lon: 53 }, Monox: { au: 0.71, lon: 80 }, Terminus: { au: 4.57, lon: 152 },
+    "Stanton Gateway (Pyro)": { au: 9, lon: -5 },
+  } },
+  Stanton: { ancres: {
+    Hurston: { au: 0.859, lon: -30 }, MicroTech: { au: 2.904, lon: -90 },
+    "Pyro Gateway (Stanton)": { au: 1.8, lon: 130 },
+  } },
+};
+const TERMS = {
+  Megumi: { system: "Pyro", planet: "Terminus" },
+  Checkmate: { system: "Pyro", planet: "Monox" },
+  "Stanton Gateway (Pyro)": { system: "Pyro", planet: "" },
+  "Pyro Gateway (Stanton)": { system: "Stanton", planet: "" },
+  "New Babbage": { system: "Stanton", planet: "MicroTech" },
+  Levski: { system: "Nyx", planet: "" }, // UEX ne le rattache à aucun corps
+};
+const infoT = (n) => TERMS[n] || null;
+const st = (...noms) => noms.map((n) => ({ name: n, system: TERMS[n].system }));
+const dansLeCadre = (p, c) => p.x >= 0 && p.x <= c.largeur && p.y >= 0 && p.y <= c.hauteur;
+
+test("journeyMap : un parcours intra-système tient dans un seul disque", () => {
+  const c = journeyMap(st("Megumi", "Checkmate"), 0, STARMAP, infoT);
+  assert.equal(c.systemes.length, 1);
+  assert.equal(c.systemes[0].nom, "Pyro");
+  assert.equal(c.arrets.length, 2);
+  assert.equal(c.jambes.length, 1);
+  assert.equal(c.jambes[0].saut, false);
+  for (const a of c.arrets) assert.ok(dansLeCadre(a, c), `${a.nom} hors cadre`);
+});
+
+test("journeyMap : l'ORDRE des orbites est celui de la starmap, pas celui de la table", () => {
+  // Terminus (4,57 UA) doit être plus loin de l'étoile que Monox (0,71) : c'est tout l'intérêt
+  // d'être allé chercher la vraie géométrie plutôt que d'inventer des anneaux.
+  const c = journeyMap(st("Megumi", "Checkmate"), 0, STARMAP, infoT);
+  const sys = c.systemes[0];
+  const orbite = (n) => sys.corps.find((b) => b.nom === n).orbite;
+  assert.ok(orbite("Pyro I") < orbite("Monox"));
+  assert.ok(orbite("Monox") < orbite("Terminus"));
+  assert.ok(orbite("Terminus") < orbite("Stanton Gateway (Pyro)")); // la passerelle est au-delà
+});
+
+test("journeyMap : un saut inter-système fait DEUX disques et une jambe marquée", () => {
+  const c = journeyMap(st("Megumi", "Stanton Gateway (Pyro)", "Pyro Gateway (Stanton)", "New Babbage"), 1, STARMAP, infoT);
+  assert.deepEqual(c.systemes.map((s) => s.nom), ["Pyro", "Stanton"]);
+  assert.deepEqual(c.jambes.map((j) => j.saut), [false, true, false]);
+  assert.ok(c.systemes[0].cx < c.systemes[1].cx); // Pyro à gauche, Stanton à droite
+  for (const a of c.arrets) assert.ok(dansLeCadre(a, c), `${a.nom} hors cadre`);
+});
+
+test("journeyMap : une passerelle se place sur SA propre ancre, pas sur une planète", () => {
+  const c = journeyMap(st("Megumi", "Stanton Gateway (Pyro)"), 0, STARMAP, infoT);
+  const g = c.arrets[1];
+  assert.equal(g.parent, "Stanton Gateway (Pyro)");
+  assert.equal(g.orphelin, false);
+});
+
+test("journeyMap : un terminal sans corps parent tombe sur l'anneau externe, sans casser", () => {
+  // Levski (Nyx) : UEX ne le rattache à rien, et Nyx n'a aucune ancre de planète. Cas NOMINAL.
+  const c = journeyMap(st("Levski"), 0, STARMAP, infoT);
+  assert.equal(c.arrets[0].orphelin, true);
+  assert.ok(Number.isFinite(c.arrets[0].x) && Number.isFinite(c.arrets[0].y));
+  assert.equal(c.jambes.length, 0); // un seul arrêt : aucune jambe
+});
+
+test("journeyMap : le vaisseau se pose sur l'arrêt courant et vise le suivant", () => {
+  const noms = st("Megumi", "Checkmate");
+  const a = journeyMap(noms, 0, STARMAP, infoT);
+  assert.deepEqual([a.vaisseau.x, a.vaisseau.y], [a.arrets[0].x, a.arrets[0].y]);
+  const b = journeyMap(noms, 1, STARMAP, infoT);
+  assert.deepEqual([b.vaisseau.x, b.vaisseau.y], [b.arrets[1].x, b.arrets[1].y]);
+  assert.notEqual(a.vaisseau.angle, b.vaisseau.angle); // au bout, il regarde d'où il vient
+});
+
+test("journeyMap : une position hors bornes est ramenée dans le parcours", () => {
+  const noms = st("Megumi", "Checkmate");
+  assert.equal(journeyMap(noms, 99, STARMAP, infoT).vaisseau.arret, 1);
+  assert.equal(journeyMap(noms, -5, STARMAP, infoT).vaisseau.arret, 0);
+});
+
+test("journeyMap : les jambes déjà parcourues sont marquées", () => {
+  const c = journeyMap(st("Megumi", "Checkmate", "Stanton Gateway (Pyro)"), 1, STARMAP, infoT);
+  assert.deepEqual(c.jambes.map((j) => j.faite), [true, false]);
+});
+
+test("journeyMap : sans arrêt, ou sur un système inconnu de la table, rien ne casse", () => {
+  assert.equal(journeyMap([], 0, STARMAP, infoT), null);
+  assert.equal(journeyMap(null, 0, STARMAP, infoT), null);
+  const c = journeyMap([{ name: "Ailleurs", system: "Odin" }], 0, {}, () => null); // table vide
+  assert.equal(c.systemes.length, 1);
+  assert.equal(c.systemes[0].corps.length, 0);
+  assert.ok(Number.isFinite(c.arrets[0].x));
+});
+
+test("journeyMap : deux escales d'une MÊME planète ne se superposent jamais", () => {
+  // Rod's Fuel et Rat's Nest sont tous deux sur Pyro V : sans répartition, ils tombaient à 6 px
+  // l'un de l'autre et la seconde escale devenait inatteignable au clic.
+  const terms = { ...TERMS, A1: { system: "Pyro", planet: "Monox" }, A2: { system: "Pyro", planet: "Monox" }, A3: { system: "Pyro", planet: "Monox" } };
+  const stations = ["A1", "A2", "A3"].map((n) => ({ name: n, system: "Pyro" }));
+  const c = journeyMap(stations, 0, STARMAP, (n) => terms[n]);
+  for (let i = 0; i < c.arrets.length; i++) {
+    for (let j = i + 1; j < c.arrets.length; j++) {
+      const d = Math.hypot(c.arrets[i].x - c.arrets[j].x, c.arrets[i].y - c.arrets[j].y);
+      assert.ok(d >= 22, `escales ${i} et ${j} distantes de ${d.toFixed(1)} px — les cibles (r=11) se recouvrent`);
+    }
+  }
+});
+
+test("journeyMap : sur les vraies données, aucune paire d'escales ne se recouvre", () => {
+  const starmap = JSON.parse(readFileSync(new URL("./data/starmap.json", import.meta.url), "utf8"));
+  const info = new Map(REAL.terminals.map((t) => [t.name, t]));
+  // Le pire cas réel : tous les terminaux d'une même planète, d'un coup.
+  for (const planete of ["Pyro V", "Hurston", "MicroTech"]) {
+    const noms = REAL.terminals.filter((t) => t.planet === planete).slice(0, 8);
+    if (noms.length < 2) continue;
+    const c = journeyMap(noms.map((t) => ({ name: t.name, system: t.system })), 0, starmap, (n) => info.get(n));
+    for (let i = 0; i < c.arrets.length; i++) {
+      for (let j = i + 1; j < c.arrets.length; j++) {
+        const d = Math.hypot(c.arrets[i].x - c.arrets[j].x, c.arrets[i].y - c.arrets[j].y);
+        assert.ok(d >= 20, `${planete} : ${c.arrets[i].nom} et ${c.arrets[j].nom} à ${d.toFixed(1)} px`);
+      }
+    }
+  }
+});
+
+test("nameAngle : déterministe, borné, et distinct pour deux noms proches", () => {
+  assert.equal(nameAngle("Megumi"), nameAngle("Megumi")); // aucun hasard : la carte ne scintille pas
+  assert.ok(nameAngle("Megumi") >= 0 && nameAngle("Megumi") < 360);
+  assert.notEqual(nameAngle("Ruin Station"), nameAngle("Ruin Statiom"));
+});
+
+test("carte : sur les VRAIES données, tout arrêt reste dans le cadre", () => {
+  const starmap = JSON.parse(readFileSync(new URL("./data/starmap.json", import.meta.url), "utf8"));
+  const info = new Map(REAL.terminals.map((t) => [t.name, t]));
+  const noms = REAL.terminals.map((t) => t.name);
+  let vus = 0;
+  for (let i = 0; i + 1 < noms.length; i += 7) { // un échantillon de paires, tous systèmes confondus
+    const paire = [noms[i], noms[i + 1]].map((n) => ({ name: n, system: info.get(n).system }));
+    const c = journeyMap(paire, 0, starmap, (n) => info.get(n));
+    vus++;
+    for (const a of c.arrets) {
+      assert.ok(Number.isFinite(a.x) && Number.isFinite(a.y), `${a.nom} : coordonnée non finie`);
+      assert.ok(dansLeCadre(a, c), `${a.nom} hors cadre (${a.x}, ${a.y})`);
+    }
+  }
+  assert.ok(vus > 10, `échantillon trop petit (${vus})`);
 });
 
 // ---------- Board Commodités : les corrections locales s'y appliquent aussi ----------

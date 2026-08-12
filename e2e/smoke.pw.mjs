@@ -326,6 +326,51 @@ test("Multi commodité : « avec les simples » remet les trajets à une commodi
   await expect(page.locator("#multiModeField")).toBeVisible();
 });
 
+// ---------- Carte 2D du parcours (ADR-001) ----------
+test("Carte : absente sans voyage, dessinée dès qu'il y en a un", async ({ page }) => {
+  await expect(page.locator("#journeyMap")).toBeHidden();
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyMap")).toBeVisible({ timeout: 8000 });
+  await expect(page.locator("#journeyMap .jm-arret")).toHaveCount(2); // un arrêt par étape
+  await expect(page.locator("#journeyMap .jm-vaisseau")).toBeVisible();
+  // Purement décoratif : effacer le voyage retire le panneau.
+  await page.locator("#journeyClear").click();
+  await expect(page.locator("#journeyMap")).toBeHidden();
+});
+
+test("Carte : cliquer une escale déplace « je suis ici », comme le fil d'étapes", async ({ page }) => {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyMap .jm-arret")).toHaveCount(2);
+  const depart = (await page.locator("#journeyCard .jstep").nth(0).innerText()).trim();
+  await expect(page.locator("#journeyCard .jstep.here")).toHaveText(memeStation(depart)); // on part du 1er arrêt
+
+  const avant = await page.locator("#journeyMap .jm-vaisseau").getAttribute("style");
+  await page.locator("#journeyMap .jm-arret").nth(1).locator(".jm-cible").click();
+
+  // Les DEUX chemins mènent à la même commande : le vaisseau bouge et le fil d'étapes suit.
+  await expect(page.locator("#journeyMap .jm-vaisseau")).not.toHaveAttribute("style", avant);
+  const arrivee = (await page.locator("#journeyCard .jstep").nth(1).innerText()).trim();
+  await expect(page.locator("#journeyCard .jstep.here")).toHaveText(memeStation(arrivee));
+});
+
+test("Carte : un saut inter-système dessine deux disques et un corridor", async ({ page }) => {
+  await manifesteDepuis(page, "Megumi — Pyro");
+  await page.click("#manifestToJourney");
+  await expect(page.locator("#journeyMap")).toBeVisible({ timeout: 8000 });
+  await expect(page.locator("#journeyMap .jm-saut")).toHaveCount(0); // intra-système : aucun saut
+
+  await page.fill("#journeyAddStop", "Stanton Gateway (Pyro) — Pyro");
+  await page.click("#journeyAddBtn");
+  await page.fill("#journeyAddStop", "Pyro Gateway (Stanton) — Stanton");
+  await page.click("#journeyAddBtn");
+
+  await expect(page.locator("#journeyMap .jm-saut")).toHaveCount(1);
+  await expect(page.locator("#journeyMap .jm-sys")).toHaveCount(2); // Pyro et Stanton côte à côte
+  // `allInnerTexts` rend `undefined` sur du <text> SVG : ces nœuds n'ont pas d'innerText.
+  const noms = await page.locator("#journeyMap .jm-sysnom").allTextContents();
+  expect(noms).toEqual(["PYRO", "STANTON"]); // dans l'ordre du parcours
+});
+
 // ---------- Carte Manifeste (« En route ») -> jambe de voyage ----------
 // Ouvre « En route » sur un terminal de départ donné et attend que la carte Manifeste soit peinte.
 async function manifesteDepuis(page, label) {
