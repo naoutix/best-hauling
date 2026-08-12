@@ -27,6 +27,14 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Sans ce plafond, le défaut GitHub est de 6 h : une API UEX qui accepte le TCP sans répondre
+    # bloquait le groupe de concurrence `pages` (donc tout rafraîchissement de données) pendant des
+    # heures. 30 min et non 15 : une reconstruction complète nominale tient en ~2 min (runs mesurés
+    # sur push), mais le pire cas encore LÉGITIME — chaque requête de distance qui va au bout de son
+    # budget de 15 s, soit ~335 appels réseau à concurrence 5 — atteint ~17 min, auxquels s'ajoutent
+    # les 4 appels en masse (3 × 15 s chacun). Couper à 15 min transformerait ce build dégradé mais
+    # aboutissant en échec, donc en fausse alerte du job `notify`.
+    timeout-minutes: 30
     permissions:
       contents: read      # lire le dépôt, rien d'autre : ce job ne publie ni n'écrit nulle part
     # Exposé au job deploy : "true" seulement si les données UEX ont changé (ou build forcé).

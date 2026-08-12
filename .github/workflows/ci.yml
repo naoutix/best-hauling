@@ -47,3 +47,16 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Tests E2E de fumée
         run: npx playwright test
+
+      # `test-results/` (trace du retry, snapshot ARIA) et `playwright-report/` sont gitignorés et
+      # meurent avec le runner : sans téléversement, un échec CI ne laisse que la sortie texte du
+      # reporter `list`. On ne téléverse que sur échec — un job vert n'a rien à archiver.
+      - name: Traces Playwright (en cas d'échec)
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: playwright-traces
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 7
