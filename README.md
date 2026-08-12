@@ -233,7 +233,7 @@ jamais partagé ni mis dans l'URL) et **intelligent** :
 
 - Une correction est **ancrée** à la date UEX du point au moment où tu la fais.
 - Elle est **périmée automatiquement** dès qu'UEX republie ce point avec un relevé plus récent (retour à la valeur UEX, petit flash de notification).
-- Sémantique respectée : un **stock d'achat à 0 = terminal vide** (plafonne à 0) ; une **demande brute à 0 = quantité inconnue** (ignorée) ; mais une **demande que _tu_ corriges à 0 = « pas de demande »** (plafonne à 0).
+- Sémantique respectée : un **stock d'achat à 0 = terminal vide** (plafonne à 0), et une **demande que _tu_ corriges fait autorité** — y compris un 0, qui vaut « pas de demande » et plafonne à 0 même là où UEX ne renseignait rien. Les valeurs UEX brutes, elles, gardent leur sémantique propre (`null` = capacité inconnue, `0` = terminal saturé) : [voir le piège des volumes UEX](#sémantique-des-volumes-uex-piège).
 
 ## Frais d'autoload
 
