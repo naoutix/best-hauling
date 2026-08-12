@@ -18,6 +18,7 @@ import {
   manifestJourneyState, manifestIntent, sameIntent, legsToPin,
   journeyMap, nameAngle, CARTE,
   loadHold, holdScu, freeCargo, holdByCommodity, sellFromHold, storeFromHold,
+  refuseHere, sellableAt, sellAllAt,
   startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   encodeJourney, decodeJourney, removeJourneyStop, freeManifestLine, hydrateManifestLine,
@@ -1904,6 +1905,64 @@ test("freeCargo : la place libre tient compte de ce qui est à bord", () => {
   assert.equal(freeCargo(h, 2200), 30);   // les 30 SCU que le scénario veut recharger
   assert.equal(freeCargo(h, 100), 0);     // jamais négatif
   assert.equal(freeCargo([], 96), 96);
+});
+
+// Un marché minimal : A vend Gold et Fer, B ne reprend que Gold, C ne reprend rien.
+const MARCHE_SOUTE = {
+  terminals: [{ name: "A", system: "S" }, { name: "B", system: "S" }, { name: "C", system: "S" }],
+  commodities: [
+    { name: "Gold", kind: "metal", illegal: false, buys: [], sells: [[0, 1500, 500, 1, 3], [1, 1800, null, 1, 3]] },
+    { name: "Fer", kind: "metal", illegal: false, buys: [], sells: [[0, 400, 50, 1, 3]] },
+  ],
+};
+
+test("sellableAt : rend prix et capacité, et distingue « inconnue » de « absente »", () => {
+  assert.deepEqual(sellableAt(MARCHE_SOUTE, 0, "Gold"), { price: 1500, demand: 500, terminal: "A" });
+  assert.equal(sellableAt(MARCHE_SOUTE, 1, "Gold").demand, null); // inconnue : ni 0 ni l'infini
+  assert.equal(sellableAt(MARCHE_SOUTE, 2, "Gold"), null);        // ce terminal ne la reprend pas
+  assert.equal(sellableAt(MARCHE_SOUTE, 0, "Inconnue"), null);
+});
+
+test("sellAllAt : quitter une escale vend tout ce qu'elle reprend, et laisse le reste", () => {
+  let h = loadHold([], [ligne(100, 1000, 1500), ligne(40, 300, 400, { name: "Fer" })], "X", 1);
+  const r = sellAllAt(h, MARCHE_SOUTE, 0, null); // A reprend Gold ET Fer
+  assert.equal(r.ventes.length, 2);
+  assert.equal(r.profit, 100 * (1500 - 1000) + 40 * (400 - 300));
+  assert.deepEqual(r.hold, []);
+  // B ne reprend que Gold : le Fer reste à bord.
+  const b = sellAllAt(h, MARCHE_SOUTE, 1, null);
+  assert.deepEqual(b.hold.map((l) => l.name), ["Fer"]);
+  assert.equal(b.ventes[0].price, 1800);
+});
+
+test("refuseHere + sellAllAt : le résidu refusé TRAVERSE l'étape intact", () => {
+  // LE cas d'ADR-002 : la station n'a repris que 30 SCU sur 2 200. Avancer d'une étape vaut
+  // « j'ai tout vendu ici » — mais ça ne doit surtout pas effacer les 2 170 qu'elle a refusés.
+  let h = loadHold([], [ligne(2200, 1000, 1500)], "X", 1);
+  const partiel = sellFromHold(h, "Gold", 30, 1500);
+  assert.equal(partiel.vendu, 30);
+  h = refuseHere(partiel.hold, "Gold", "A");
+  assert.equal(holdScu(h), 2170);
+
+  const implicite = sellAllAt(h, MARCHE_SOUTE, 0, null); // on quitte A
+  assert.equal(implicite.ventes.length, 0);
+  assert.equal(holdScu(implicite.hold), 2170); // intact : le comptoir l'avait refusé
+  // …mais une autre station, elle, le reprend.
+  assert.equal(holdScu(sellAllAt(h, MARCHE_SOUTE, 1, null).hold), 0);
+});
+
+test("refuseHere : un geste EXPLICITE passe outre le marqueur", () => {
+  // Le marqueur ne garde que la vente implicite. Si l'utilisateur clique « vendu », il vend.
+  const h = refuseHere(loadHold([], [ligne(100, 1000, 1500)], "X", 1), "Gold", "A");
+  assert.equal(sellFromHold(h, "Gold", 100, 1500, "A").vendu, 0);   // implicite ICI : protégé
+  assert.equal(sellFromHold(h, "Gold", 100, 1500).vendu, 100);      // explicite : vendu
+});
+
+test("sellAllAt : un terminal inconnu ou une soute vide ne cassent rien", () => {
+  assert.deepEqual(sellAllAt([], MARCHE_SOUTE, 0, null).ventes, []);
+  const h = loadHold([], [ligne(10, 1000, 1500)], "X", 1);
+  assert.deepEqual(sellAllAt(h, MARCHE_SOUTE, 99, null).hold, h); // terminal hors bornes
+  assert.deepEqual(sellAllAt(h, MARCHE_SOUTE, 2, null).hold, h);  // C ne reprend rien
 });
 
 test("storeFromHold : déposer libère la soute SANS vendre, et garde le capital tracé", () => {

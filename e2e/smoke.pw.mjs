@@ -342,6 +342,10 @@ test("Multi commodité : « avec les simples » remet les trajets à une commodi
 });
 
 // ---------- La soute (ADR-002) ----------
+// Les lots de la soute, tels que persistés — la source de vérité, plus lisible qu'un texte de panneau.
+const lots = (page) => page.evaluate(() => JSON.parse(localStorage.getItem("best-hauling-hold") || "[]"));
+const holdScuDe = (ls) => ls.reduce((s, l) => s + l.units, 0);
+
 async function jambeChargeable(page) {
   await manifesteDepuis(page, "Megumi — Pyro");
   await page.click("#manifestToJourney");
@@ -415,6 +419,55 @@ test("Soute : recharger la même commodité crée un SECOND lot, sans fondre les
   await expect(page.locator("#holdCard .hold-lot").first()).toBeVisible();
   const total = avant.reduce((s, l) => s + l.units, 0) * 2;
   await expect(page.locator("#holdCard .hold-meta")).toContainText(String(total));
+});
+
+test("Soute : vente partielle — le reste est REFUSÉ ici et survit au départ", async ({ page }) => {
+  // Le scénario d'ADR-002, de bout en bout : le comptoir ne prend qu'une partie, on repart avec
+  // le reste, et quitter l'escale — qui vaut « j'ai tout vendu ici » — ne doit PAS l'effacer.
+  await jambeChargeable(page);
+  await page.locator("#journeyCard .jstop-suggest").first().click(); // un 3e arrêt, pour pouvoir repartir
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(3);
+  await page.locator("#journeyCard .jleg-load").first().click();
+  await expect(page.locator("#holdCard")).toBeVisible();
+  const totalDepart = holdScuDe(await lots(page));
+
+  // On arrive à l'escale : quitter le DÉPART n'a rien vendu (il ne rachète pas ce qu'on y a pris).
+  await page.locator("#journeyCard .jstep").nth(1).click();
+  expect(holdScuDe(await lots(page))).toBe(totalDepart);
+
+  // Vente partielle de 10 SCU sur la 1re commodité que l'escale reprend.
+  const vendre = page.locator("#holdCard .hold-sell-btn").first();
+  test.skip(!(await vendre.count()), "cette escale ne reprend rien de la cargaison du jour");
+  const nom = await vendre.getAttribute("data-name");
+  await vendre.click();
+  await page.locator("#holdCard .hold-sell-qty").fill("10");
+  await page.locator("#holdCard .hold-sell-ok").click();
+
+  const apresVente = await lots(page);
+  expect(holdScuDe(apresVente)).toBe(totalDepart - 10);
+  // Le reliquat de CETTE commodité porte le marqueur de refus ; les autres non.
+  const reste = apresVente.filter((l) => l.name === nom);
+  expect(reste.length).toBeGreaterThan(0);
+  for (const l of reste) expect(l.refuse).toBeTruthy();
+  for (const l of apresVente.filter((l) => l.name !== nom)) expect(l.refuse).toBeFalsy();
+
+  // On quitte l'escale : ce qu'elle reprenait part, le refusé reste.
+  await page.locator("#journeyCard .jstep").nth(2).click();
+  const final = await lots(page);
+  expect(final.every((l) => l.name === nom)).toBe(true);          // seul le refusé a survécu
+  expect(holdScuDe(final)).toBe(holdScuDe(reste));
+});
+
+test("Soute : reculer d'une étape ne revend rien", async ({ page }) => {
+  // Revenir sur ses pas n'est pas une transaction : seule l'AVANCÉE vaut « j'ai fait mon affaire ».
+  await jambeChargeable(page);
+  await page.locator("#journeyCard .jstop-suggest").first().click();
+  await page.locator("#journeyCard .jleg-load").first().click();
+  await expect(page.locator("#holdCard")).toBeVisible();
+  await page.locator("#journeyCard .jstep").nth(2).click(); // on avance jusqu'au bout
+  const apres = holdScuDe(await lots(page));
+  await page.locator("#journeyCard .jstep").nth(0).click();  // puis on recule
+  expect(holdScuDe(await lots(page))).toBe(apres);           // inchangé
 });
 
 // ---------- Carte 2D du parcours (ADR-001) ----------

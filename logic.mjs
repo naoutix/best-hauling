@@ -1284,12 +1284,16 @@ export function holdByCommodity(hold) {
 // affiché sans rien changer à la réalité, et choisir à chaque vente coûterait une décision pour
 // un gain nul. Le rendu affiche quel lot part, donc rien ne se décide en silence.
 // Renvoie { hold, vendu, recette, cout, profit, lots } — `lots` détaille ce qui a été consommé.
-export function sellFromHold(hold, name, units, price) {
+// `at` (nom de station, optionnel) : les lots qu'une vente partielle a laissés à bord ICI portent
+// `refuse: <station>` et sont alors SAUTÉS. C'est ce qui protège le résidu de la vente implicite
+// déclenchée en avançant d'une étape. Un geste EXPLICITE, lui, ne passe pas `at` et vend quand
+// même : l'intention de l'utilisateur prime toujours sur un marqueur posé plus tôt.
+export function sellFromHold(hold, name, units, price, at = null) {
   let reste = Math.max(0, Math.floor(units || 0));
   const suivant = [], consommes = [];
   let vendu = 0, cout = 0;
   for (const l of hold) {
-    if (l.name !== name || reste <= 0) { suivant.push(l); continue; }
+    if (l.name !== name || reste <= 0 || (at && l.refuse === at)) { suivant.push(l); continue; }
     const pris = Math.min(l.units || 0, reste);
     if (pris <= 0) { suivant.push(l); continue; }
     reste -= pris; vendu += pris; cout += pris * (l.paid || 0);
@@ -1298,6 +1302,49 @@ export function sellFromHold(hold, name, units, price) {
   }
   const recette = vendu * (price || 0);
   return { hold: suivant, vendu, recette, cout, profit: recette - cout, lots: consommes };
+}
+
+// Marque le reste d'une commodité comme REFUSÉ à cette station : le comptoir n'en a pas voulu.
+// Sans ce marqueur, avancer d'une étape — qui vaut « j'ai tout vendu ici » — effacerait le résidu
+// au moment exact où il devient le sujet.
+export function refuseHere(hold, name, station) {
+  return hold.map((l) => (l.name === name ? { ...l, refuse: station } : l));
+}
+
+// Prix et capacité d'une commodité à un terminal donné, corrections appliquées. null si ce
+// terminal ne la reprend pas. `demand` peut valoir null : capacité INCONNUE, ce qui n'est ni zéro
+// ni l'infini — 84 % des points de vente sont dans ce cas.
+export function sellableAt(market, terminalIdx, name, resolve) {
+  const c = market.commodities.find((x) => x.name === name);
+  if (!c) return null;
+  const s = c.sells.find((x) => x[0] === terminalIdx);
+  if (!s) return null;
+  const t = market.terminals[terminalIdx];
+  const e = resolve ? resolve(name, t.name, "sell", s[1], s[2], s[3]) : { price: s[1], vol: s[2] };
+  return { price: e.price, demand: e.vol, terminal: t.name };
+}
+
+// Vend à ce terminal TOUT ce que la soute peut y écouler — c'est la vente implicite : quitter une
+// escale sous-entend qu'on y a fait son affaire. Ce qu'une vente partielle y a explicitement laissé
+// (`refuse`) traverse l'étape intact. Renvoie { hold, ventes, recette, cout, profit }.
+export function sellAllAt(hold, market, terminalIdx, resolve) {
+  const t = market.terminals[terminalIdx];
+  if (!t) return { hold, ventes: [], recette: 0, cout: 0, profit: 0 };
+  let courant = hold;
+  const ventes = [];
+  let recette = 0, cout = 0;
+  for (const nom of [...new Set(hold.map((l) => l.name))]) {
+    const pt = sellableAt(market, terminalIdx, nom, resolve);
+    if (!pt) continue; // ce terminal ne reprend pas cette commodité : elle reste à bord
+    const dispo = courant.reduce((s, l) => s + (l.name === nom && l.refuse !== t.name ? l.units || 0 : 0), 0);
+    if (dispo <= 0) continue;
+    const r = sellFromHold(courant, nom, dispo, pt.price, t.name);
+    if (!r.vendu) continue;
+    courant = r.hold;
+    recette += r.recette; cout += r.cout;
+    ventes.push({ name: nom, units: r.vendu, price: pt.price, recette: r.recette, cout: r.cout, profit: r.profit, lots: r.lots });
+  }
+  return { hold: courant, ventes, recette, cout, profit: recette - cout };
 }
 
 // Dépose des SCU à une station : ils quittent la soute SANS être vendus. Troisième sortie du fret,
