@@ -194,6 +194,10 @@ n'as pas touché n'est **pas** persisté — la jambe reste branchée sur le mar
 
 Sous le compagnon, un bandeau pose les arrêts **dans l'espace** : un disque par système traversé,
 le vaisseau sur l'escale courante, et un corridor violet `⚡` quand le parcours change de système.
+Un saut est **routé par les deux passerelles** — on ne change pas de système n'importe où : le
+trajet part de l'escale, rejoint la passerelle d'ici, traverse, puis repart de celle de là-bas.
+Chaque jambe est un **arc orienté** : le chevron dit le sens, et la courbure suit le trajet, si
+bien qu'un aller-retour bombe des deux côtés au lieu de se superposer.
 **Cliquer une escale déplace « je suis ici »**, exactement comme le fil d'étapes textuel — la carte
 n'ajoute pas de commande, elle en offre une seconde entrée.
 

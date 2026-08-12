@@ -1499,6 +1499,17 @@ export function nameAngle(nom) {
 // C'est le seul endroit où la carte s'écarte du réel, et c'est assumé (cf. ADR « schéma »).
 const rayonRelatif = (au, auMax) => 0.24 + 0.72 * Math.sqrt(Math.max(au, 0) / (auMax || 1));
 
+// Position d'une ancre (corps ou passerelle) dans le disque de son système.
+function posAncre(sys, ancre) {
+  const rr = rayonRelatif(ancre.au, sys.auMax);
+  const rad = (ancre.lon * Math.PI) / 180;
+  return { x: sys.cx + Math.cos(rad) * rr * sys.r, y: sys.cy + Math.sin(rad) * rr * sys.r };
+}
+
+// Nom de la passerelle qui, DEPUIS `de`, mène vers `vers`. UEX les nomme « <destination> Gateway
+// (<système courant>) » — le nom porte donc le lien, sans donnée supplémentaire.
+export const nomPasserelle = (de, vers) => `${vers} Gateway (${de})`;
+
 // Projette le parcours. `stations` = journeyStations(journey) ; `infoTerminal(nom)` rend
 // { system, planet } ou null ; `starmap` = data/starmap.json.
 // Renvoie tout ce qu'il faut dessiner, en pixels du viewBox — jamais de HTML.
@@ -1567,10 +1578,7 @@ export function journeyMap(stations, current, starmap, infoTerminal, enVol = fal
       const ang = ((n > 1 ? (360 / n) * rang : base) * Math.PI) / 180;
       return { nom: a.nom, systeme: a.systeme, orphelin: true, x: borne(sys.cx + Math.cos(ang) * sys.r * 1.06, largeur), y: borne(sys.cy + Math.sin(ang) * sys.r * 1.06, hauteur) };
     }
-    const ancre = starmap[a.systeme].ancres[a.parent];
-    const rr = rayonRelatif(ancre.au, sys.auMax);
-    const rad = (ancre.lon * Math.PI) / 180;
-    const bx = sys.cx + Math.cos(rad) * rr * sys.r, by = sys.cy + Math.sin(rad) * rr * sys.r;
+    const { x: bx, y: by } = posAncre(sys, starmap[a.systeme].ancres[a.parent]);
     // Couronne autour du corps : rayon suffisant pour que les cibles de clic (r = 11) ne se
     // touchent pas, angle de départ vers l'extérieur du système pour ne pas rentrer dans l'étoile.
     const couronne = n > 1 ? Math.max(13, 4 + 3.4 * n) : 7;
@@ -1582,11 +1590,48 @@ export function journeyMap(stations, current, starmap, infoTerminal, enVol = fal
     };
   });
 
-  // Les jambes. Un SAUT relie deux systèmes : il ne se dessine pas comme un vol intra-système.
+  // Les jambes. Un SAUT ne se dessine pas comme un vol intra-système — et surtout il ne se dessine
+  // pas en ligne droite : on ne passe pas d'un système à l'autre n'importe où. Le trajet réel
+  // emprunte les DEUX passerelles, et la carte le montre en trois segments : départ -> passerelle
+  // d'ici, corridor ⚡ entre les deux passerelles, passerelle de là-bas -> arrivée.
+  const passerelles = (a, b) => {
+    if (a.systeme === b.systeme) return [];
+    const nomA = nomPasserelle(a.systeme, b.systeme), nomB = nomPasserelle(b.systeme, a.systeme);
+    // Un parcours qui inclut DÉJÀ les passerelles comme escales ne doit pas être routé deux fois.
+    if (a.nom === nomA || b.nom === nomB) return [];
+    const sysA = parSysteme.get(a.systeme), sysB = parSysteme.get(b.systeme);
+    const ancreA = (starmap[a.systeme] || {}).ancres || {}, ancreB = (starmap[b.systeme] || {}).ancres || {};
+    if (!sysA || !sysB || !ancreA[nomA] || !ancreB[nomB]) return []; // géométrie absente : ligne droite
+    return [
+      { ...posAncre(sysA, ancreA[nomA]), nom: nomA, systeme: a.systeme, passerelle: true },
+      { ...posAncre(sysB, ancreB[nomB]), nom: nomB, systeme: b.systeme, passerelle: true },
+    ];
+  };
+
+  // Chaque segment est un ARC, et sa courbure suit le SENS du trajet : l'aller et le retour d'un
+  // même couple bombent de part et d'autre au lieu de se superposer. C'est ce qui règle les
+  // croisements d'un parcours qui revient sur ses pas, sans placement à la main.
+  const segment = (p, q, saut, faite) => {
+    const dx = q.x - p.x, dy = q.y - p.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const k = Math.min(0.09 * d, 26);                       // flèche de l'arc, bornée
+    const cx = (p.x + q.x) / 2 - (dy / d) * k, cy = (p.y + q.y) / 2 + (dx / d) * k;
+    return {
+      x1: p.x, y1: p.y, x2: q.x, y2: q.y, cx, cy, saut, faite,
+      // Sur une quadratique, la tangente au milieu est parallèle à la corde : le chevron du sens
+      // se pose donc au point milieu de la courbe, orienté par (q - p).
+      fleche: { x: (p.x + 2 * cx + q.x) / 4, y: (p.y + 2 * cy + q.y) / 4, angle: (Math.atan2(dy, dx) * 180) / Math.PI },
+    };
+  };
+
   const jambes = [];
   for (let i = 1; i < arrets.length; i++) {
     const a = arrets[i - 1], b = arrets[i];
-    jambes.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, saut: a.systeme !== b.systeme, faite: i <= current });
+    const points = [a, ...passerelles(a, b), b];
+    for (let j = 1; j < points.length; j++) {
+      const p = points[j - 1], q = points[j];
+      jambes.push(segment(p, q, p.systeme !== q.systeme, i <= current));
+    }
   }
 
   // Le vaisseau, sur l'arrêt courant, orienté vers le suivant (ou depuis le précédent au bout).
