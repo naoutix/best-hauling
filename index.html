@@ -28,18 +28,29 @@
         </div>
       </div>
 
-      <button class="rail-toggle" id="railToggle" title="Rétracter / déplier le menu" aria-label="Rétracter le menu">«</button>
+      <button class="rail-toggle" id="railToggle" title="Rétracter / déplier le menu" aria-label="Rétracter le menu" aria-expanded="true">«</button>
 
       <div class="rail-nav">
-        <button id="viewRoutes" class="vbtn active" data-view="routes" title="Trajets simples (raccourci : 1)"><span class="rn">01</span><span class="rl">Trajets</span></button>
-        <button id="viewLoops" class="vbtn" data-view="loops" title="Boucles aller-retour (raccourci : 2)"><span class="rn">02</span><span class="rl">Boucles</span></button>
-        <button id="viewEnroute" class="vbtn" data-view="enroute" title="En route (raccourci : 3)"><span class="rn">03</span><span class="rl">En&nbsp;route</span></button>
-        <button id="viewChain" class="vbtn" data-view="chain" title="Chaîne multi-sauts (raccourci : 4)"><span class="rn">04</span><span class="rl">Chaîne</span></button>
+        <!-- aria-label explicite sur chaque bouton : rail rétracté, le libellé .rl passe en display:none
+             et le nom accessible tomberait sinon au simple numéro (« 01 »…). Chaque libellé visible y
+             est REPRIS mot pour mot (SC 2.5.3 « Label in Name » : le pilotage vocal vise le texte lu
+             à l'écran). #viewCorrections fait exception et n'en porte PAS : updateOvBadge() réécrit
+             son textContent, compteur compris (« ✎ Corrections (3) »), et un aria-label figerait le
+             nom accessible en masquant ce compteur. Son texte n'a alors plus de .rl : il survit au
+             repli, c'est justement pourquoi il se passe d'aria-label. -->
+        <button id="viewRoutes" class="vbtn active" data-view="routes" aria-label="Trajets simples" title="Trajets simples (raccourci : 1)"><span class="rn">01</span><span class="rl">Trajets</span></button>
+        <button id="viewLoops" class="vbtn" data-view="loops" aria-label="Boucles aller-retour" title="Boucles aller-retour (raccourci : 2)"><span class="rn">02</span><span class="rl">Boucles</span></button>
+        <button id="viewEnroute" class="vbtn" data-view="enroute" aria-label="En route" title="En route (raccourci : 3)"><span class="rn">03</span><span class="rl">En&nbsp;route</span></button>
+        <button id="viewChain" class="vbtn" data-view="chain" aria-label="Chaîne multi-sauts" title="Chaîne multi-sauts (raccourci : 4)"><span class="rn">04</span><span class="rl">Chaîne</span></button>
         <button id="viewCorrections" class="vbtn" data-view="corrections" title="Corrections locales (raccourci : 5)"><span class="rn">05</span><span class="rl">Corrections</span></button>
-        <button id="viewCommodities" class="vbtn" data-view="commodities" title="Commodités : tous les points d'achat/vente (raccourci : 6)"><span class="rn">06</span><span class="rl">Commodités</span></button>
+        <button id="viewCommodities" class="vbtn" data-view="commodities" aria-label="Commodités : tous les points d'achat/vente" title="Commodités : tous les points d'achat/vente (raccourci : 6)"><span class="rn">06</span><span class="rl">Commodités</span></button>
       </div>
 
-      <button id="share" class="share-btn" title="Copier un lien vers cette vue filtrée">⟐ <span class="rl">Partager</span></button>
+      <!-- Le libellé visible « Partager » OUVRE l'aria-label : sinon le nom accessible ne le
+           contenait plus et « clic Partager » au pilotage vocal ne trouvait plus le bouton (SC 2.5.3).
+           copyShareLink() met ce même attribut à jour, faute de quoi « ✓ Lien copié » n'existerait
+           que pour les voyants. -->
+      <button id="share" class="share-btn" aria-label="Partager — copier un lien vers cette vue filtrée" title="Copier un lien vers cette vue filtrée">⟐ <span class="rl">Partager</span></button>
 
       <div class="rail-status">
         <div class="rail-status-head"><span class="live-dot"></span><span class="rl">Flux UEX</span></div>
@@ -66,12 +77,12 @@
             <ul id="shipList" class="autocomplete" role="listbox" hidden></ul>
           </div>
           <div class="field">
-            <label class="toggle"><input id="useCargo" type="checkbox" checked /> Soute (SCU)</label>
-            <input id="cargo" type="number" min="1" step="1" value="96" />
+            <label class="toggle" for="useCargo"><input id="useCargo" type="checkbox" checked /> Soute (SCU)</label>
+            <input id="cargo" type="number" min="1" step="1" value="96" aria-label="Capacité de soute en SCU" />
           </div>
           <div class="field">
-            <label class="toggle"><input id="useBudget" type="checkbox" checked /> Budget (aUEC)</label>
-            <input id="budget" type="number" min="0" step="1000" value="1000000" />
+            <label class="toggle" for="useBudget"><input id="useBudget" type="checkbox" checked /> Budget (aUEC)</label>
+            <input id="budget" type="number" min="0" step="1000" value="1000000" aria-label="Budget en aUEC" />
           </div>
           <div class="field">
             <label for="search">Commodité</label>
@@ -225,16 +236,16 @@
             <table id="routes">
               <thead>
                 <tr>
-                  <th data-sort="commodity">Commodité</th>
-                  <th data-sort="buyPrice">Acheter</th>
-                  <th data-sort="sellPrice">Vendre</th>
-                  <th data-sort="score" class="sorted-desc" title="Score de fiabilité : rentabilité × fraîcheur × disponibilité. 100 = meilleur de la liste.">Score</th>
-                  <th data-sort="margin" class="num">Marge/SCU</th>
-                  <th data-sort="roi" class="num">ROI</th>
-                  <th data-sort="units" class="num">Unités à acheter</th>
-                  <th data-sort="investment" class="num">Coût total</th>
-                  <th data-sort="profit" class="num">Profit/voyage</th>
-                  <th data-sort="profitHour" class="num">Profit/heure</th>
+                  <th data-sort="commodity" tabindex="0" aria-sort="none">Commodité</th>
+                  <th data-sort="buyPrice" tabindex="0" aria-sort="none">Acheter</th>
+                  <th data-sort="sellPrice" tabindex="0" aria-sort="none">Vendre</th>
+                  <th data-sort="score" class="sorted-desc" tabindex="0" aria-sort="descending" title="Score de fiabilité : rentabilité × fraîcheur × disponibilité. 100 = meilleur de la liste.">Score</th>
+                  <th data-sort="margin" class="num" tabindex="0" aria-sort="none">Marge/SCU</th>
+                  <th data-sort="roi" class="num" tabindex="0" aria-sort="none">ROI</th>
+                  <th data-sort="units" class="num" tabindex="0" aria-sort="none">Unités à acheter</th>
+                  <th data-sort="investment" class="num" tabindex="0" aria-sort="none">Coût total</th>
+                  <th data-sort="profit" class="num" tabindex="0" aria-sort="none">Profit/voyage</th>
+                  <th data-sort="profitHour" class="num" tabindex="0" aria-sort="none">Profit/heure</th>
                 </tr>
               </thead>
               <tbody id="rows"></tbody>
@@ -246,11 +257,11 @@
                   <th>Boucle&nbsp;⇄</th>
                   <th>Aller</th>
                   <th>Retour</th>
-                  <th data-sort-loop="score" class="sorted-desc" title="Score de fiabilité : rentabilité × fraîcheur × disponibilité. 100 = meilleure de la liste.">Score</th>
-                  <th data-sort-loop="loopMargin" class="num">Marge boucle/SCU</th>
-                  <th data-sort-loop="units" class="num">Unités (A+R)</th>
-                  <th data-sort-loop="profit" class="num">Profit boucle</th>
-                  <th data-sort-loop="profitHour" class="num">Profit/heure</th>
+                  <th data-sort-loop="score" class="sorted-desc" tabindex="0" aria-sort="descending" title="Score de fiabilité : rentabilité × fraîcheur × disponibilité. 100 = meilleure de la liste.">Score</th>
+                  <th data-sort-loop="loopMargin" class="num" tabindex="0" aria-sort="none">Marge boucle/SCU</th>
+                  <th data-sort-loop="units" class="num" tabindex="0" aria-sort="none">Unités (A+R)</th>
+                  <th data-sort-loop="profit" class="num" tabindex="0" aria-sort="none">Profit boucle</th>
+                  <th data-sort-loop="profitHour" class="num" tabindex="0" aria-sort="none">Profit/heure</th>
                 </tr>
               </thead>
               <tbody id="loopRows"></tbody>
@@ -300,6 +311,9 @@
       var sync = function () {
         var c = app.classList.contains("rail-collapsed");
         btn.textContent = c ? "»" : "«";
+        // Le caractère seul ne dit rien à un lecteur d'écran : on tient l'état et le nom à jour.
+        btn.setAttribute("aria-expanded", c ? "false" : "true");
+        btn.setAttribute("aria-label", c ? "Déplier le menu" : "Rétracter le menu");
       };
       sync();
       btn.addEventListener("click", function () {

@@ -428,10 +428,16 @@ function readFilters() {
 // Mode « Multi commodité » actif (uniquement pertinent dans la vue Trajets).
 const isMultiRoutes = () => view === "routes" && $("multiCommodity").checked;
 
+// Message de #empty tel qu'il est écrit dans index.html. Le <p> est PARTAGÉ par les vues Trajets /
+// Boucles / En route, et « En route » comme le mode multi-commodité réécrivent son texte : sans
+// remise à zéro en tête de rendu, un état vide légitime affichait le message d'une AUTRE vue.
+const EMPTY_DEFAULT = "Aucune route ne correspond aux filtres.";
+
 function render() {
   const f = readFilters();
+  $("empty").textContent = EMPTY_DEFAULT;
   if (f.multi) return renderMulti(f);
-  ensureFeeMarket(f, render);
+  ensureFeeMarket(f, refresh); // re-rend la vue RÉELLEMENT active à l'arrivée du marché, pas celle d'alors
 
   let rows = ROUTES.filter((r) => routePasses(r, f)).map((r) => evaluate(r, f));
 
@@ -457,7 +463,7 @@ function renderMulti(f) {
     empty.textContent = "Active la soute (SCU) pour calculer des trajets multi-commodité.";
     return;
   }
-  if (!MARKET) { withMarket(render); return; } // graphe requis
+  if (!MARKET) { withMarket(refresh); return; } // graphe requis
   // Le contexte de frais descend DANS multiTrips (et non après coup) : c'est lui qui trie puis
   // TRONQUE à 300 trajets, un trajet meilleur en net serait donc coupé avant d'atteindre le tableau.
   const trips = multiTrips(MARKET, f, effVals, 300, f.multiAll ? 1 : 2, feeResolver(f))
@@ -607,7 +613,8 @@ function evaluateLoop(l, f) {
 
 function renderLoops() {
   const f = readFilters();
-  ensureFeeMarket(f, renderLoops);
+  $("empty").textContent = EMPTY_DEFAULT;
+  ensureFeeMarket(f, refresh); // idem render() : la vue peut avoir changé pendant le fetch
 
   let rows = LOOPS.filter((l) => loopPasses(l, f)).map((l) => evaluateLoop(l, f));
 
@@ -709,6 +716,12 @@ const marketUnavailable = () => showToast("⚠ Marché indisponible — vérifie
 // Exécute `then` une fois le marché chargé et les datalists peuplées. Point de passage unique de
 // toutes les vues qui ont besoin du graphe : c'est lui qui garantit que `setupEnRoute()` ne tourne
 // jamais sur un marché vide (il pose `enrouteReady`, qui figerait les datalists une fois pour toutes).
+// RÈGLE : une VUE ne se repasse jamais elle-même ici, elle passe `refresh` — le fetch dure, et
+// l'utilisateur peut avoir changé de vue entre-temps. Rappeler son propre rendu repeignait alors
+// #empty et #manifest (partagés par Trajets / Boucles / En route) par-dessus la vue quittée :
+// message « choisis un terminal de départ » sous un tableau de trajets plein, ou inversement
+// « aucune route ne correspond » masqué au-dessus d'un tableau vide. `renderJourney`, lui, n'est
+// lié à AUCUNE vue (la carte Voyage est toujours à l'écran) et se repasse donc bien lui-même.
 function withMarket(then) {
   loadMarket().then(() => { setupEnRoute(); then(); }).catch(marketUnavailable);
 }
@@ -1012,7 +1025,7 @@ function renderManifest(origin, destSystem, f, destTerminal) {
 }
 
 function renderEnRoute() {
-  if (!MARKET) { withMarket(renderEnRoute); return; }
+  if (!MARKET) { withMarket(refresh); return; }
   if (!enrouteReady) setupEnRoute();
   resolveOrigin(); // re-résout depuis le champ (peut avoir été posé par le parcours, sans événement input)
   resolveDest();
@@ -1093,7 +1106,7 @@ function chainCardHTML(chain, f) {
 }
 
 function renderChain() {
-  if (!MARKET) { withMarket(renderChain); return; }
+  if (!MARKET) { withMarket(refresh); return; }
   if (!enrouteReady) setupEnRoute();
   resolveChainOrigin();
   const box = $("chainOut");
@@ -1748,17 +1761,29 @@ function switchView(v) {
   refresh();
 }
 
+// Trier est une action à part entière : une souris ne doit pas être la seule façon de la déclencher.
+// Même patron clavier que les valeurs corrigeables (`.editv`) : le clic et Entrée/Espace passent par
+// le MÊME corps, et `tabindex` est posé ici si index.html ne l'a pas fait. Pas de `role="button"`
+// ici, contrairement à `.editv` : il écraserait le rôle `columnheader` du <th>, seul rôle sur lequel
+// `aria-sort` veut dire quelque chose — on perdrait l'annonce de la colonne triée en la corrigeant.
+function sortableHeader(th, apply) {
+  if (!th.hasAttribute("tabindex")) th.tabIndex = 0;
+  th.addEventListener("click", apply);
+  th.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); apply(); } // Espace ne doit pas défiler la page
+  });
+}
+
 function setupSort() {
   document.querySelectorAll("th[data-sort]").forEach((th) => {
-    th.addEventListener("click", () => {
+    sortableHeader(th, () => {
       const key = th.dataset.sort;
       if (sortKey === key) sortDir *= -1;
       else {
         sortKey = key;
         sortDir = key === "commodity" ? 1 : -1;
       }
-      document.querySelectorAll("#routes th").forEach((h) => h.classList.remove("sorted-asc", "sorted-desc"));
-      th.classList.add(sortDir === -1 ? "sorted-desc" : "sorted-asc");
+      applySortIndicators(); // classes ET aria-sort, pour les deux tables
       render();
       saveState();
     });
@@ -1767,12 +1792,11 @@ function setupSort() {
 
 function setupLoopSort() {
   document.querySelectorAll("th[data-sort-loop]").forEach((th) => {
-    th.addEventListener("click", () => {
+    sortableHeader(th, () => {
       const key = th.dataset.sortLoop;
       if (loopSortKey === key) loopSortDir *= -1;
       else { loopSortKey = key; loopSortDir = -1; }
-      document.querySelectorAll("#loops th").forEach((h) => h.classList.remove("sorted-asc", "sorted-desc"));
-      th.classList.add(loopSortDir === -1 ? "sorted-desc" : "sorted-asc");
+      applySortIndicators();
       renderLoops();
       saveState();
     });
@@ -1903,6 +1927,11 @@ async function loadShips() {
 // STATION, eux, restent locaux — c'est la même frontière que pour les corrections de prix.
 const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem", "destTerminal", "chainOrigin", "hops", "station", "alk", "multiMode"];
 const STATE_CHECKS = ["useCargo", "useBudget", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiCommodity", "autoload"];
+// Champs qui gardent leur défaut HTML quand la clé est absente de l'état. #system, #freshness et
+// #destSystem ont chacun une option VIDE (« Tous », « Toutes », « N'importe où ») : leur poser ""
+// resélectionne bien ce défaut. #hops, lui, n'en a pas (2 / 3 / 4) — lui poser "" laisserait le menu
+// visuellement VIDE alors que le calcul retomberait silencieusement sur 3 sauts.
+const STATE_FIELDS_KEEP_DEFAULT = ["hops"];
 // safeKey / encodeState / decodeState viennent de logic.mjs.
 
 let restoring = false; // évite de resauver pendant qu'on applique un état
@@ -1916,11 +1945,47 @@ function collectState() {
   return s;
 }
 
-function saveState() {
-  if (restoring) return;
+// Écrit l'état dans localStorage et renvoie sa forme encodée (null pendant une restauration : rien
+// à resauver). TOUJOURS synchrone, y compris depuis la variante différée ci-dessous : une session ne
+// doit pas se perdre parce que l'onglet a été rechargé ou fermé dans la demi-seconde qui suit.
+function persistState() {
+  if (restoring) return null;
   const str = encodeState(collectState());
   try { localStorage.setItem(STATE_KEY, str); } catch {}
-  history.replaceState(null, "", str ? "#" + str : location.pathname + location.search);
+  return str;
+}
+
+// Recopie l'état dans le hash de l'URL. WebKit plafonne replaceState à 100 appels / 10 s et lève
+// SecurityError au-delà. L'URL n'est pas critique (localStorage porte déjà l'état, et l'écriture
+// suivante réécrit TOUT, elle n'est pas incrémentale) — mais l'exception remontait jusqu'à
+// copyShareLink, qui appelle saveState en PREMIÈRE instruction : le bouton « Partager » ne copiait
+// alors plus rien, sans le moindre retour visuel.
+function writeHash(str) {
+  try {
+    history.replaceState(null, "", str ? "#" + str : location.pathname + location.search);
+  } catch {}
+}
+
+// URL à partager, reconstruite depuis l'état ENCODÉ — jamais relue dans `location.href`. Une
+// écriture de hash plafonnée est perdue pour de bon : la barre d'adresse reste alors figée au
+// milieu de la rafale, et copier `location.href` partagerait des filtres périmés tout en
+// annonçant « ✓ Lien copié », donc sans que rien ne le signale.
+function shareURL(str) {
+  const rel = str ? location.pathname + location.search + "#" + str : location.pathname + location.search;
+  return new URL(rel, location.href).href;
+}
+
+// Sauvegarde complète ; renvoie l'état encodé (null pendant une restauration). Le hash est écrit
+// IMMÉDIATEMENT, jamais différé : `loadState()` le fait PRIMER sur localStorage, donc un hash en
+// retard — fût-ce de quelques centaines de ms — ressusciterait au rechargement l'état d'AVANT la
+// dernière action (vue, filtres, station…). Le plafond WebKit se traite EN AMONT, à la source :
+// tous les champs à saisie libre sont débouncés (cf. init), une rafale de frappe ne vaut donc plus
+// qu'un seul appel. Le `try/catch` de writeHash n'est que le filet de sécurité.
+function saveState() {
+  const str = persistState();
+  if (str == null) return null;
+  writeHash(str);
+  return str;
 }
 
 function loadState() {
@@ -1930,22 +1995,45 @@ function loadState() {
 }
 
 // Positionne l'indicateur ▾/▴ sur la bonne colonne des deux tables.
+// La flèche est un `::after` CSS accroché aux classes : elle n'existe pas pour un lecteur d'écran.
+// `aria-sort` DOUBLE donc les classes (il ne les remplace pas, le CSS s'en sert) sur les seules
+// colonnes triables — le poser sur un <th> décoratif annoncerait une colonne triable qui ne l'est pas.
 function applySortIndicators() {
-  document.querySelectorAll("#routes th, #loops th").forEach((h) => h.classList.remove("sorted-asc", "sorted-desc"));
+  document.querySelectorAll("#routes th, #loops th").forEach((h) => {
+    h.classList.remove("sorted-asc", "sorted-desc");
+    if (h.dataset.sort || h.dataset.sortLoop) h.setAttribute("aria-sort", "none");
+  });
   if (safeKey(sortKey)) {
     const th = document.querySelector(`#routes th[data-sort="${sortKey}"]`);
-    if (th) th.classList.add(sortDir === -1 ? "sorted-desc" : "sorted-asc");
+    if (th) {
+      th.classList.add(sortDir === -1 ? "sorted-desc" : "sorted-asc");
+      th.setAttribute("aria-sort", sortDir === -1 ? "descending" : "ascending");
+    }
   }
   if (safeKey(loopSortKey)) {
     const th = document.querySelector(`#loops th[data-sort-loop="${loopSortKey}"]`);
-    if (th) th.classList.add(loopSortDir === -1 ? "sorted-desc" : "sorted-asc");
+    if (th) {
+      th.classList.add(loopSortDir === -1 ? "sorted-desc" : "sorted-asc");
+      th.setAttribute("aria-sort", loopSortDir === -1 ? "descending" : "ascending");
+    }
   }
 }
 
 function applyState(s) {
   if (!s) return;
   restoring = true;
-  STATE_FIELDS.forEach((id) => { if (s[id] != null) $(id).value = s[id]; });
+  // Lecture SYMÉTRIQUE de l'écriture : encodeState omet les valeurs vides (URL courte), donc dans un
+  // état venant de l'app une clé absente veut dire « champ vidé », pas « champ jamais renseigné ».
+  // Sans ça, un budget effacé à la main revenait à 1 000 000 au rechargement — et le destinataire du
+  // lien voyait un autre classement que son émetteur.
+  // Encore faut-il que l'état VIENNE de l'app : n'importe quelle ancre (#top) se décode elle aussi en
+  // objet, et vider tous les champs sur cette foi accueillerait l'arrivant sans soute ni budget.
+  // `v` (la vue) est écrite à chaque sauvegarde par collectState et n'est jamais vide : elle signe l'état.
+  const mine = s.v != null;
+  STATE_FIELDS.forEach((id) => {
+    if (s[id] != null) $(id).value = s[id];
+    else if (mine && !STATE_FIELDS_KEEP_DEFAULT.includes(id)) $(id).value = "";
+  });
   STATE_CHECKS.forEach((id) => { if (s[id] != null) $(id).checked = s[id] === "1"; });
   if (safeKey(s.sk)) { sortKey = s.sk; sortDir = Number(s.sd) === 1 ? 1 : -1; }
   if (safeKey(s.lk)) { loopSortKey = s.lk; loopSortDir = Number(s.ld) === 1 ? 1 : -1; }
@@ -1959,14 +2047,22 @@ function applyState(s) {
 }
 
 async function copyShareLink() {
-  saveState();
+  const str = saveState();
   const btn = $("share");
   try {
-    await navigator.clipboard.writeText(location.href);
+    await navigator.clipboard.writeText(shareURL(str));
     const prev = btn.textContent;
+    const prevLabel = btn.getAttribute("aria-label");
     btn.textContent = "✓ Lien copié";
+    // L'aria-label PRIME sur le contenu : sans ce miroir, le retour de copie n'existerait que pour
+    // les voyants, le nom accessible restant figé sur « Partager — … ».
+    btn.setAttribute("aria-label", "✓ Lien copié");
     btn.classList.add("copied");
-    setTimeout(() => { btn.textContent = prev; btn.classList.remove("copied"); }, 1500);
+    setTimeout(() => {
+      btn.textContent = prev;
+      btn.setAttribute("aria-label", prevLabel);
+      btn.classList.remove("copied");
+    }, 1500);
   } catch {
     // Presse-papiers indisponible (contexte non sécurisé) : on laisse l'URL dans la barre.
   }
@@ -2139,7 +2235,7 @@ function correctionsListHTML() {
 }
 
 function renderCorrections() {
-  if (!MARKET) { withMarket(renderCorrections); return; }
+  if (!MARKET) { withMarket(refresh); return; }
   if (!enrouteReady) setupEnRoute();
   resolveStation();
   const q = $("search").value.trim().toLowerCase();
@@ -2281,19 +2377,24 @@ function setCommBoard(board) {
 }
 
 function renderCommodities() {
-  if (!MARKET) { withMarket(renderCommodities); return; }
+  if (!MARKET) { withMarket(refresh); return; }
   if (!enrouteReady) setupEnRoute();
   const f = { ...readFilters(), board: commBoard };
   const q = f.q;
-  // `effVals` : la marge, la couleur de tuile et le rang suivent les corrections locales. Sans lui,
-  // la tuile continuait d'afficher la marge d'UEX après qu'on ait corrigé le prix dans un tableau.
-  let rows = commoditySummaries(MARKET, f, effVals).filter( // légales + avant-postes + board s'appliquent ici
+  // `effVals` : marge, couleur de tuile et rang suivent les corrections locales. Sans lui, la tuile
+  // continuait d'afficher la marge d'UEX après qu'on ait corrigé le prix dans un tableau.
+  const all = commoditySummaries(MARKET, f, effVals); // légales + avant-postes + board s'appliquent ici
+  // Les DEUX heatmaps se calculent sur TOUT le board, jamais sur le sous-ensemble visible : la
+  // couleur d'une tuile prétend situer la commodité dans l'ensemble du marché. Calculée après le
+  // filtre de recherche, taper « iron » suffisait à repeindre Iron (3 900 aUEC/SCU, le bas du
+  // classement) en `t-hot`, le palier réservé aux 15 % les mieux payés — rang 0 sur 1 ligne restante.
+  commMaxMargin = all.reduce((mx, c) => Math.max(mx, c.margin || 0), 0); // heatmap relative (Marché)
+  commTiers = commBoard === "loot" ? valueTiers(all) : new Map();        // heatmap par rang (Butin)
+  const rows = all.filter(
     (c) => !q || c.name.toLowerCase().includes(q) || (c.code && c.code.toLowerCase().includes(q))
   );
   sortCommodities(rows);
   shownCommodities = rows;
-  commMaxMargin = rows.reduce((mx, c) => Math.max(mx, c.margin || 0), 0); // heatmap relative (Marché)
-  commTiers = commBoard === "loot" ? valueTiers(rows) : new Map();        // heatmap par rang (Butin)
   commDupCodes = ambiguousCodes(rows);                                    // codes UEX non discriminants
   commCarried = journeyCarriedCommodities(); // commodités du voyage à surligner
   // Sélection : garde la commodité choisie si toujours visible, sinon prend la 1re.
@@ -2328,6 +2429,7 @@ function syncToggles() {
 async function init() {
   setupSort();
   setupLoopSort();
+  applySortIndicators(); // aria-sort/classes du tri par défaut, sans dépendre des attributs du HTML
   // Les champs à SAISIE LIBRE sont débouncés : sans ça, chaque caractère relançait un cycle
   // complet calcul + réécriture de #rows par innerHTML. Mesuré à ~142 ms par frappe sur un CPU
   // throttlé ×4 (le coût dominant est le relayout de la table, pas le calcul : ~2 ms), soit plus
@@ -2367,15 +2469,20 @@ async function init() {
     paintCommodityDetail();
     saveState();
   });
-  // Contrôles « En route ».
-  $("origin").addEventListener("input", () => { resolveOrigin(); refresh(); });
-  $("destSystem").addEventListener("input", refresh);
-  $("destTerminal").addEventListener("input", refresh); // terminal d'arrivée forcé
+  // Contrôles « En route ». Ces champs de terminal sont eux aussi à SAISIE LIBRE (datalist, mais
+  // rien n'oblige à choisir dans la liste) : même debounce que ci-dessus. Sans lui, chaque frappe
+  // re-rendait la vue ET réécrivait le hash — or WebKit plafonne history.replaceState à 100 appels
+  // par 10 s : taper deux noms de terminal suffisait à le franchir. Les résolveurs restent DANS le
+  // rappel, donc dans le même ordre qu'avant ; renderEnRoute / renderChain / renderCorrections les
+  // rejouent de toute façon avant de peindre.
+  $("origin").addEventListener("input", debounce(() => { resolveOrigin(); refresh(); }));
+  $("destSystem").addEventListener("input", refresh); // <select> : un seul événement, immédiat
+  $("destTerminal").addEventListener("input", refreshDebounced); // terminal d'arrivée forcé
   // Contrôles « Chaîne ».
-  $("chainOrigin").addEventListener("input", () => { resolveChainOrigin(); refresh(); });
+  $("chainOrigin").addEventListener("input", debounce(() => { resolveChainOrigin(); refresh(); }));
   $("hops").addEventListener("input", refresh);
   // Contrôles « Corrections » : recherche de station + suppression / reset (délégué).
-  $("station").addEventListener("input", () => { resolveStation(); refresh(); });
+  $("station").addEventListener("input", debounce(() => { resolveStation(); refresh(); }));
   $("corrections").addEventListener("click", (e) => {
     // Les relevés d'autoload se testent AVANT les corrections : leur ✕ porte aussi `.corr-del`
     // (même bouton à l'écran) et tomberait sinon dans la branche qui écrit dans OVERRIDES.
