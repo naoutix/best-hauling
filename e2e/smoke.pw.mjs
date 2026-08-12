@@ -677,6 +677,30 @@ test("Carte : un saut inter-système dessine deux disques et un corridor", async
   expect(noms).toEqual(["PYRO", "STANTON"]); // dans l'ordre du parcours
 });
 
+test("Carte : un saut est routé par les passerelles, et chaque jambe porte son sens", async ({ page }) => {
+  // On ne change pas de système n'importe où : le trajet emprunte la passerelle d'ici puis celle
+  // de là-bas. Ici le parcours ne les mentionne PAS — c'est la carte qui les intercale.
+  await manifesteDepuis(page, "Megumi — Pyro");
+  await page.click("#manifestToJourney");
+  await expect(page.locator("#journeyMap")).toBeVisible({ timeout: 8000 });
+  await page.fill("#journeyAddStop", "TDD Area 18 — Stanton");
+  await page.click("#journeyAddBtn");
+  await expect(page.locator("#journeyMap .jm-saut")).toHaveCount(1);
+
+  // 3 étapes -> 2 jambes, dont une inter-système routée en 3 segments : 4 au total.
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(3);
+  expect(await page.locator("#journeyMap .jm-jambe, #journeyMap .jm-saut").count()).toBe(4);
+
+  // Chaque segment intra-système porte un chevron de sens ; le corridor a son nœud ⚡.
+  await expect(page.locator("#journeyMap .jm-sens")).toHaveCount(3);
+  await expect(page.locator("#journeyMap .jm-saut-glyphe")).toHaveCount(1);
+
+  // Les tracés sont des ARCS (quadratiques) et non des segments droits : c'est ce qui sépare
+  // l'aller du retour quand un parcours revient sur ses pas.
+  const d = await page.locator("#journeyMap .jm-jambe").first().getAttribute("d");
+  expect(d).toContain("Q");
+});
+
 // ---------- Carte Manifeste (« En route ») -> jambe de voyage ----------
 // Ouvre « En route » sur un terminal de départ donné et attend que la carte Manifeste soit peinte.
 async function manifesteDepuis(page, label) {

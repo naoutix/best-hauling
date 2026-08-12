@@ -1401,11 +1401,15 @@ function journeyMapHTML(c) {
   }
 
   for (const j of c.jambes) {
+    // Arc plutôt que segment : la courbure suit le sens du trajet, donc l'aller et le retour d'un
+    // même couple ne se superposent plus. Le chevron dit dans quel sens on va.
+    const d = `M${nf(j.x1)} ${nf(j.y1)} Q${nf(j.cx)} ${nf(j.cy)} ${nf(j.x2)} ${nf(j.y2)}`;
     svg += j.saut
-      ? `<path class="jm-saut" d="M${nf(j.x1)} ${nf(j.y1)} L${nf(j.x2)} ${nf(j.y2)}"/>` +
-        `<circle class="jm-saut-noeud" cx="${nf((j.x1 + j.x2) / 2)}" cy="${nf((j.y1 + j.y2) / 2)}" r="7"/>` +
-        `<text class="jm-saut-glyphe" x="${nf((j.x1 + j.x2) / 2)}" y="${nf((j.y1 + j.y2) / 2 + 3)}">⚡</text>`
-      : `<path class="jm-jambe${j.faite ? " faite" : ""}" d="M${nf(j.x1)} ${nf(j.y1)} L${nf(j.x2)} ${nf(j.y2)}"/>`;
+      ? `<path class="jm-saut" d="${d}"/>` +
+        `<circle class="jm-saut-noeud" cx="${nf(j.fleche.x)}" cy="${nf(j.fleche.y)}" r="7"/>` +
+        `<text class="jm-saut-glyphe" x="${nf(j.fleche.x)}" y="${nf(j.fleche.y + 3)}">⚡</text>`
+      : `<path class="jm-jambe${j.faite ? " faite" : ""}" d="${d}"/>` +
+        `<path class="jm-sens${j.faite ? " faite" : ""}" d="M-3 -2.6 L2.6 0 L-3 2.6" style="transform: translate(${nf(j.fleche.x)}px, ${nf(j.fleche.y)}px) rotate(${nf(j.fleche.angle)}deg)"/>`;
   }
 
   // Les arrêts sont des boutons : cliquer une escale déplace « je suis ici », comme le fil

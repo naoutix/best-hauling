@@ -16,7 +16,7 @@ import {
   commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
   legFromRoute, legsFromLoop, legsFromChain, legFromManifest, stopSuggestions, bestLegBetween,
   manifestJourneyState, manifestIntent, sameIntent, legsToPin,
-  journeyMap, nameAngle, CARTE,
+  journeyMap, nameAngle, CARTE, nomPasserelle,
   loadHold, holdScu, freeCargo, holdByCommodity, sellFromHold, storeFromHold,
   refuseHere, sellableAt, sellAllAt, offloadPlan, stockApres,
   startJourney, startJourneyAt, journeyStations, journeyEnd,
@@ -2203,6 +2203,61 @@ test("journeyMap : un saut inter-système fait DEUX disques et une jambe marqué
   assert.deepEqual(c.jambes.map((j) => j.saut), [false, true, false]);
   assert.ok(c.systemes[0].cx < c.systemes[1].cx); // Pyro à gauche, Stanton à droite
   for (const a of c.arrets) assert.ok(dansLeCadre(a, c), `${a.nom} hors cadre`);
+});
+
+test("journeyMap : un saut est ROUTÉ par les deux passerelles, pas tiré en ligne droite", () => {
+  // On ne passe pas d'un système à l'autre n'importe où : le trajet réel emprunte la passerelle
+  // d'ici puis celle de là-bas. Trois segments, dont un seul est le corridor.
+  const c = journeyMap(st("Megumi", "New Babbage"), 0, STARMAP, infoT);
+  assert.equal(c.jambes.length, 3);
+  assert.deepEqual(c.jambes.map((j) => j.saut), [false, true, false]);
+  // Le corridor relie les deux passerelles, à leur position réelle et non au milieu du vide.
+  const sautier = c.jambes[1];
+  const pyro = c.systemes.find((s) => s.nom === "Pyro"), stanton = c.systemes.find((s) => s.nom === "Stanton");
+  assert.ok(sautier.x1 > pyro.cx - pyro.r * 1.1 && sautier.x1 < pyro.cx + pyro.r * 1.1);
+  assert.ok(sautier.x2 > stanton.cx - stanton.r * 1.1 && sautier.x2 < stanton.cx + stanton.r * 1.1);
+  // Le premier segment part bien de l'escale, le dernier arrive bien à l'autre.
+  assert.deepEqual([c.jambes[0].x1, c.jambes[0].y1], [c.arrets[0].x, c.arrets[0].y]);
+  assert.deepEqual([c.jambes[2].x2, c.jambes[2].y2], [c.arrets[1].x, c.arrets[1].y]);
+});
+
+test("journeyMap : un parcours qui inclut DÉJÀ les passerelles n'est pas routé deux fois", () => {
+  const c = journeyMap(st("Megumi", "Stanton Gateway (Pyro)", "Pyro Gateway (Stanton)", "New Babbage"), 0, STARMAP, infoT);
+  assert.equal(c.jambes.length, 3); // une par jambe, aucune insertion
+  assert.deepEqual(c.jambes.map((j) => j.saut), [false, true, false]);
+});
+
+test("journeyMap : sans géométrie de passerelle, le saut retombe sur une ligne directe", () => {
+  const sansPasserelle = { Pyro: { ancres: { Terminus: STARMAP.Pyro.ancres.Terminus } }, Stanton: STARMAP.Stanton };
+  const c = journeyMap(st("Megumi", "New Babbage"), 0, sansPasserelle, infoT);
+  assert.equal(c.jambes.length, 1);
+  assert.equal(c.jambes[0].saut, true);
+});
+
+test("journeyMap : l'arc suit le SENS — aller et retour ne se superposent pas", () => {
+  // C'est ce qui règle les croisements d'un parcours qui revient sur ses pas, sans placement manuel.
+  const aller = journeyMap(st("Megumi", "Checkmate"), 0, STARMAP, infoT).jambes[0];
+  const retour = journeyMap(st("Checkmate", "Megumi"), 0, STARMAP, infoT).jambes[0];
+  // Même corde, donc même milieu : c'est l'écart du point de contrôle qui doit s'inverser.
+  // (Le côté RELATIF au sens, lui, est invariant par construction — le mesurer ne prouverait rien.)
+  const ecart = (j) => [j.cx - (j.x1 + j.x2) / 2, j.cy - (j.y1 + j.y2) / 2];
+  const [ax, ay] = ecart(aller), [rx, ry] = ecart(retour);
+  assert.ok(Math.hypot(ax, ay) > 1, "l'arc doit être visible");
+  assert.ok(Math.abs(ax + rx) < 1e-9 && Math.abs(ay + ry) < 1e-9, "aller et retour bombent en sens opposés");
+});
+
+test("journeyMap : le chevron de sens pointe du départ vers l'arrivée", () => {
+  const j = journeyMap(st("Megumi", "Checkmate"), 0, STARMAP, infoT).jambes[0];
+  const attendu = (Math.atan2(j.y2 - j.y1, j.x2 - j.x1) * 180) / Math.PI;
+  assert.ok(Math.abs(j.fleche.angle - attendu) < 1e-9);
+  // Il se pose SUR la courbe (milieu d'une quadratique), pas sur la corde.
+  assert.equal(j.fleche.x, (j.x1 + 2 * j.cx + j.x2) / 4);
+  assert.equal(j.fleche.y, (j.y1 + 2 * j.cy + j.y2) / 4);
+});
+
+test("nomPasserelle : le nom porte le lien, dans les deux sens", () => {
+  assert.equal(nomPasserelle("Pyro", "Stanton"), "Stanton Gateway (Pyro)");
+  assert.equal(nomPasserelle("Stanton", "Pyro"), "Pyro Gateway (Stanton)");
 });
 
 test("journeyMap : une passerelle se place sur SA propre ancre, pas sur une planète", () => {
