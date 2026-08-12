@@ -217,6 +217,15 @@ main { padding: 22px 30px 40px; }
 }
 .field label.toggle { color: var(--acc); text-transform: uppercase; letter-spacing: 1px; font-size: 10px; font-weight: 600; }
 
+/* Une coche et son réglage sur la MÊME ligne : un champ qui apparaît au milieu du panneau
+   repousserait les champs suivants à la ligne. Ici il pousse au plus le bord droit d'une ligne
+   de coches, où il n'y a rien. */
+.check-row { display: flex; align-items: center; gap: 12px; }
+.field.sub-field { flex-direction: row; align-items: center; gap: 7px; }
+.field.sub-field > label { font-size: 10px; letter-spacing: 1px; color: var(--muted); cursor: pointer; }
+.field.sub-field input { min-width: 0; width: 74px; padding: 3px 7px; font-size: 12px; text-align: center; }
+.field.sub-field select { min-width: 0; padding: 2px 6px; font-size: 12px; }
+
 input[type="checkbox"] { accent-color: var(--acc); width: 15px; height: 15px; cursor: pointer; }
 input[type="number"], input[type="text"], select {
   background: rgba(8, 11, 20, 0.9); border: 1px solid var(--line2); color: var(--text);
@@ -334,6 +343,8 @@ input::placeholder { color: var(--muted); }
 .jleg-head { cursor: pointer; }
 .jleg-caret { color: var(--acc-2); font-size: 9px; margin-left: 4px; }
 .jleg-edited { color: var(--acc); font-size: 10px; margin-left: 4px; }
+/* Gel par correction de volume : même place que ✎, mais l'emoji porte sa propre couleur. */
+.jleg-pinned { font-size: 10px; margin-left: 4px; cursor: help; }
 .jleg.expanded { border-left-color: var(--acc-2); }
 .jman { margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 8px; display: flex; flex-direction: column; gap: 5px; }
 .jman-line { display: grid; grid-template-columns: auto auto 1fr auto auto; align-items: center; gap: 6px 10px; font-size: 11px; }
@@ -352,8 +363,64 @@ input.jman-qty { width: 56px; min-width: 0; padding: 3px 5px; text-align: right;
 /* Boucles pertinentes pour le parcours (partent de l'arrivée courante) : remontées + surlignées. */
 #loops tr.from-here td { background: rgba(169, 112, 255, 0.07); }
 #loops tr.from-here td.loop-cell { box-shadow: inset 2px 0 0 var(--acc-2); }
-.chain-pick { font-family: var(--font); font-size: 11px; font-weight: 700; white-space: nowrap; color: var(--acc-2); background: rgba(169, 112, 255, 0.1); border: 1px solid rgba(169, 112, 255, 0.4); border-radius: 3px; padding: 5px 11px; cursor: pointer; }
+/* `align-self` parce que ce bouton vit dans deux en-têtes flex (.chain-head, .manifest-head) dont
+   aucune ne pose align-items : sans lui il s'étire sur toute la hauteur de la ligne. Règle commune
+   aux deux, volontairement : le bouton du manifeste est le MÊME que celui de la chaîne. */
+.chain-pick { align-self: center; font-family: var(--font); font-size: 11px; font-weight: 700; white-space: nowrap; color: var(--acc-2); background: rgba(169, 112, 255, 0.1); border: 1px solid rgba(169, 112, 255, 0.4); border-radius: 3px; padding: 5px 11px; cursor: pointer; }
 .chain-pick:hover { color: #fff; background: rgba(169, 112, 255, 0.25); }
+
+/* ---------- Carte 2D du parcours (ADR-001) ---------- */
+/* Bandeau pleine largeur sous le compagnon. Tout est dessiné par app.js : aucun asset, aucune
+   image. Les couleurs viennent des mêmes variables que le reste — la carte suit donc le thème. */
+.journey-map {
+  position: relative; display: block; margin: 18px 0 0; padding: 14px 16px 10px;
+  background: var(--panel); border: 1px solid var(--line); border-left: 2px solid var(--acc-2);
+}
+.jm-label {
+  display: block; margin-bottom: 8px;
+  font-family: var(--mono); font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted);
+}
+.jm-label b { color: var(--acc-2); font-weight: 500; }
+/* Le panneau prend toute la largeur, le DESSIN reste à taille lisible et centré : un disque
+   étiré sur 1 500 px ne gagne rien, et le viewBox letterboxait le bandeau de part et d'autre. */
+.jm-svg { display: block; width: 100%; max-width: 760px; height: auto; margin: 0 auto; }
+
+.jm-corps { fill: #6f788c; font-size: 6.5px; font-family: var(--mono); letter-spacing: 0.3px; }
+.jm-sysnom { font-size: 9.5px; font-family: var(--display); font-weight: 600; letter-spacing: 3px; text-anchor: middle; }
+.jm-jambe { fill: none; stroke: var(--acc); stroke-opacity: 0.45; stroke-width: 1.2; stroke-dasharray: 4 3; }
+.jm-jambe.faite { stroke-opacity: 0.2; }
+/* Un SAUT ne se dessine pas comme un vol intra-système : c'est le moment que le texte rend le
+   plus mal (« ⚡ inter-système » dans une cellule) et que la carte rend le mieux. */
+.jm-saut { fill: none; stroke: var(--acc-2); stroke-opacity: 0.9; stroke-width: 1.6; stroke-dasharray: 1 4; stroke-linecap: round; }
+.jm-saut-noeud { fill: #080b14; stroke: var(--acc-2); stroke-opacity: 0.5; }
+.jm-saut-glyphe { font-size: 8px; text-anchor: middle; fill: var(--acc-2); }
+
+/* Tout le décor est inerte au pointeur : sans ça, l'étiquette d'une planète posée sur une escale
+   avalait le clic destiné à celle-ci — un texte SVG capte les événements comme n'importe quoi
+   d'autre. Seules les escales (et leur libellé) restent cliquables. */
+.jm-svg, .jm-svg * { pointer-events: none; }
+.jm-arret, .jm-arret > * { pointer-events: auto; }
+.jm-arret { cursor: pointer; }
+.jm-cible { fill: transparent; }            /* cible de clic confortable, invisible */
+.jm-point { fill: #080b14; stroke: var(--acc); stroke-width: 1.4; }
+/* Liseré sombre sous le texte : les corps d'un même secteur se serrent (à Pyro, six longitudes
+   entre 42° et 152°), et un nom d'escale devait rester lisible par-dessus leurs libellés. Le
+   décor passe donc dessous, ce qui est le bon ordre de priorité. */
+.jm-nom {
+  fill: var(--text); font-size: 8.5px; font-family: var(--font); font-weight: 600;
+  paint-order: stroke; stroke: #080b14; stroke-width: 2.6px; stroke-linejoin: round;
+}
+.jm-arret.fait .jm-point { stroke-opacity: 0.4; }
+.jm-arret.fait .jm-nom { fill: var(--muted); }
+.jm-arret.ici .jm-point { fill: var(--acc); }
+.jm-arret:hover .jm-point { stroke: #fff; }
+.jm-arret:hover .jm-nom { fill: #fff; }
+.jm-arret:focus-visible { outline: none; }
+.jm-arret:focus-visible .jm-cible { stroke: var(--acc-2); stroke-width: 1.5; }
+
+/* Le vaisseau glisse d'une escale à l'autre : c'est tout le geste du panneau. */
+.jm-vaisseau { transition: transform 700ms cubic-bezier(0.4, 0.05, 0.2, 1); }
+@media (prefers-reduced-motion: reduce) { .jm-vaisseau { transition: none; } }
 
 /* ---------- Contrôles En route / Chaîne / Corrections ---------- */
 .enroute-controls {
@@ -543,6 +610,10 @@ input.editv-input { width: 80px; min-width: 0; padding: 2px 5px; font-size: 12px
 .manifest-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px 18px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
 .manifest-title { font-family: var(--display); font-weight: 600; font-size: 15px; letter-spacing: 0.5px; color: #fff; }
 .manifest-tot { font-family: var(--mono); font-size: 12px; color: var(--muted); align-self: center; }
+/* Refus d'engager le chargement : la phrase remplace le bouton, à sa place et sur sa ligne.
+   La marge haute de .journey-hint est faite pour un paragraphe de la carte Voyage, pas pour un
+   élément flex d'en-tête. */
+.manifest-head .journey-hint { margin: 0; align-self: center; max-width: 52ch; }
 .manifest-tot b { color: var(--text); }
 .manifest-tot b.profit { color: var(--good); }
 .copy-btn {
@@ -757,6 +828,10 @@ input.mqty-input.over-stock { color: var(--warn); border-color: var(--warn); box
   .controls { padding: 14px; gap: 12px; }
   .field { flex: 1 1 100%; }
   .field input[type="number"], .field input[type="text"], .field select { width: 100%; min-width: 0; }
+  /* ...sauf le réglage accolé à une coche : pleine largeur, il mangerait la ligne. */
+  .field.sub-field { flex: 0 0 auto; }
+  .field.sub-field input[type="number"] { width: 74px; }
+  .field.sub-field select { width: auto; }
   .rail-nav .vbtn { flex: 1 1 auto; }
   .grid-overlay, .scanbar { display: none; } /* décor coûteux masqué sur petit écran */
 }

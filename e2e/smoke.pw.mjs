@@ -326,6 +326,249 @@ test("Compagnon de voyage : retirer un arrêt du milieu reconnecte le parcours",
   expect((await page.locator("#journeyCard .jstep").nth(1).innerText()).trim()).toBe(last);
 });
 
+test("Multi commodité : « avec les simples » remet les trajets à une commodité dans le classement", async ({ page }) => {
+  const simples = page.locator("#rows tr .cname").filter({ hasText: /^1 commodité$/ });
+  await expect(page.locator("#multiModeField")).toBeHidden(); // réglage de la coche : caché sans elle
+  await page.check("#multiCommodity");
+  await expect(page.locator("#multiModeField")).toBeVisible();
+  await expect(page.locator("#rows tr").first()).toBeVisible();
+  await expect(simples).toHaveCount(0); // par défaut : chargements combinés seulement
+  await page.selectOption("#multiMode", "all");
+  await expect(simples.first()).toBeVisible(); // les deux sortes, dans le MÊME classement
+  expect(page.url()).toContain("multiMode=all");
+  await page.reload();
+  await expect(page.locator("#multiMode")).toHaveValue("all"); // le mode survit au rechargement
+  await expect(page.locator("#multiModeField")).toBeVisible();
+});
+
+// ---------- Carte 2D du parcours (ADR-001) ----------
+test("Carte : absente sans voyage, dessinée dès qu'il y en a un", async ({ page }) => {
+  await expect(page.locator("#journeyMap")).toBeHidden();
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyMap")).toBeVisible({ timeout: 8000 });
+  await expect(page.locator("#journeyMap .jm-arret")).toHaveCount(2); // un arrêt par étape
+  await expect(page.locator("#journeyMap .jm-vaisseau")).toBeVisible();
+  // Purement décoratif : effacer le voyage retire le panneau.
+  await page.locator("#journeyClear").click();
+  await expect(page.locator("#journeyMap")).toBeHidden();
+});
+
+test("Carte : cliquer une escale déplace « je suis ici », comme le fil d'étapes", async ({ page }) => {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyMap .jm-arret")).toHaveCount(2);
+  const depart = (await page.locator("#journeyCard .jstep").nth(0).innerText()).trim();
+  await expect(page.locator("#journeyCard .jstep.here")).toHaveText(memeStation(depart)); // on part du 1er arrêt
+
+  const avant = await page.locator("#journeyMap .jm-vaisseau").getAttribute("style");
+  await page.locator("#journeyMap .jm-arret").nth(1).locator(".jm-cible").click();
+
+  // Les DEUX chemins mènent à la même commande : le vaisseau bouge et le fil d'étapes suit.
+  await expect(page.locator("#journeyMap .jm-vaisseau")).not.toHaveAttribute("style", avant);
+  const arrivee = (await page.locator("#journeyCard .jstep").nth(1).innerText()).trim();
+  await expect(page.locator("#journeyCard .jstep.here")).toHaveText(memeStation(arrivee));
+});
+
+test("Carte : un saut inter-système dessine deux disques et un corridor", async ({ page }) => {
+  await manifesteDepuis(page, "Megumi — Pyro");
+  await page.click("#manifestToJourney");
+  await expect(page.locator("#journeyMap")).toBeVisible({ timeout: 8000 });
+  await expect(page.locator("#journeyMap .jm-saut")).toHaveCount(0); // intra-système : aucun saut
+
+  await page.fill("#journeyAddStop", "Stanton Gateway (Pyro) — Pyro");
+  await page.click("#journeyAddBtn");
+  await page.fill("#journeyAddStop", "Pyro Gateway (Stanton) — Stanton");
+  await page.click("#journeyAddBtn");
+
+  await expect(page.locator("#journeyMap .jm-saut")).toHaveCount(1);
+  await expect(page.locator("#journeyMap .jm-sys")).toHaveCount(2); // Pyro et Stanton côte à côte
+  // `allInnerTexts` rend `undefined` sur du <text> SVG : ces nœuds n'ont pas d'innerText.
+  const noms = await page.locator("#journeyMap .jm-sysnom").allTextContents();
+  expect(noms).toEqual(["PYRO", "STANTON"]); // dans l'ordre du parcours
+});
+
+// ---------- Carte Manifeste (« En route ») -> jambe de voyage ----------
+// Ouvre « En route » sur un terminal de départ donné et attend que la carte Manifeste soit peinte.
+async function manifesteDepuis(page, label) {
+  await page.click("#viewEnroute");
+  await page.fill("#origin", label);
+  await expect(page.locator("#manifest .manifest-head")).toBeVisible({ timeout: 8000 });
+  await expect(page.locator("#manifest .mqty-input").first()).toBeVisible();
+}
+// Les noms d'étape sont mis en capitales par le CSS : on compare donc sans tenir compte de la casse.
+const memeStation = (nom) => new RegExp(nom.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+// Parcours encodé dans le lien partageable (paramètre `j` du hash), ou null.
+const lienVoyage = (page) => page.evaluate(() => new URLSearchParams(location.hash.slice(1)).get("j"));
+
+test("Manifeste -> voyage : sans voyage, le bouton en démarre un", async ({ page }) => {
+  await manifesteDepuis(page, "Megumi — Pyro");
+  await expect(page.locator("#manifestToJourney")).toHaveText(/Démarrer un voyage/);
+  await page.click("#manifestToJourney");
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2);
+  await expect(page.locator("#journeyCard .jleg")).toHaveCount(1);
+  await expect(page.locator("#journeyCard .jstep").nth(0)).toHaveText(memeStation("Megumi"));
+  // La carte confirme sur place : le bouton cède la place à la phrase, à l'endroit du clic.
+  await expect(page.locator("#manifest .journey-hint")).toHaveText(/déjà la jambe 1/);
+  await expect(page.locator("#manifestToJourney")).toHaveCount(0);
+});
+
+test("Manifeste -> voyage : la jambe COURANTE n'offre pas de bouton (non-destruction)", async ({ page }) => {
+  // LE test qui compte : après un ▶, En route est pré-rempli avec la jambe courante. Sans garde,
+  // un clic passait par la branche REMPLACER d'addToJourney et réduisait le voyage à cette jambe.
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2);
+  await page.click("#viewEnroute");
+  await expect(page.locator("#manifest")).toBeVisible({ timeout: 8000 });
+  await expect(page.locator("#manifestToJourney")).toHaveCount(0);
+  await expect(page.locator("#manifest .journey-hint")).toHaveText(/déjà la jambe 1/);
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2); // le voyage n'a pas bougé
+});
+
+test("Manifeste -> voyage : un départ étranger au parcours nomme les deux bouts, sans agir", async ({ page }) => {
+  await manifesteDepuis(page, "Megumi — Pyro");
+  await page.click("#manifestToJourney");
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2);
+  const fin = (await page.locator("#journeyCard .jstep").nth(1).innerText()).trim();
+  await page.fill("#origin", "Rod's Fuel — Pyro"); // ne part ni de la fin, ni d'une jambe planifiée
+  await expect(page.locator("#manifest .journey-hint")).toContainText("Rod's Fuel");
+  await expect(page.locator("#manifest .journey-hint")).toContainText(memeStation(fin));
+  await expect(page.locator("#manifestToJourney")).toHaveCount(0);
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2); // aucune modification du voyage
+});
+
+test("Manifeste -> voyage : un chargement AJUSTÉ part tel quel (et hors du lien)", async ({ page }) => {
+  await manifesteDepuis(page, "Megumi — Pyro");
+  const qty = page.locator("#manifest .mqty-input").first();
+  const nom = await page.locator("#manifest .mline-del").first().getAttribute("data-name");
+  await qty.fill("13");
+  await qty.blur();
+  await page.click("#manifestToJourney");
+  await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(1); // ✎ = manifeste personnalisé
+  await expect(page.locator("#journeyCard .jleg-cargo").first()).toContainText(`${nom} 13 SCU`);
+  const edits = JSON.parse(await page.evaluate(() => localStorage.getItem("best-hauling-journey-edits-v2")));
+  expect(edits[Object.keys(edits)[0]]).toContainEqual({ name: nom, units: 13 });
+  // Le lien ne transporte que le PARCOURS : la jambe y tient en 8 champs, sans aucun SCU.
+  const legs = JSON.parse(await lienVoyage(page)).l;
+  expect(legs[0]).toHaveLength(8);
+  expect(legs.flat()).not.toContain(13);
+});
+
+test("Manifeste -> voyage : un chargement INTACT ne persiste rien (la jambe suit le marché)", async ({ page }) => {
+  await manifesteDepuis(page, "Megumi — Pyro");
+  await page.click("#manifestToJourney");
+  await expect(page.locator("#journeyCard .jleg")).toHaveCount(1);
+  await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(0); // pas de ✎ à tort
+  const edits = await page.evaluate(() => localStorage.getItem("best-hauling-journey-edits-v2"));
+  expect(Object.keys(JSON.parse(edits || "{}"))).toHaveLength(0);
+});
+
+// Corrige une valeur éditable de la carte Manifeste et rend l'ancienne valeur.
+async function corrige(page, champ, cote, valeur) {
+  const cell = page.locator(`#manifest .editv[data-f='${champ}'][data-s='${cote}']`).first();
+  const avant = await cell.getAttribute("data-v");
+  await cell.click();
+  await page.locator("#manifest .editv-input").first().fill(String(valeur));
+  await page.keyboard.press("Enter");
+  return avant;
+}
+const profitJambe = (page) => page.locator("#journeyCard .jleg-profit").first();
+
+test("Corrections : un prix corrigé se retrouve dans le board Commodités", async ({ page }) => {
+  // Le board lisait market.json BRUT, sans résolveur : on corrigeait un prix dans un tableau et la
+  // tuile gardait la marge d'UEX — donc un classement et une heatmap sur un chiffre démenti.
+  const ligne = page.locator("#rows tr").first();
+  const commodite = (await ligne.locator(".cname").innerText()).trim();
+  const cell = ligne.locator(".editv[data-f='price'][data-s='sell']").first();
+  const terminal = await cell.getAttribute("data-t");
+  const avant = Number(await cell.getAttribute("data-v"));
+  await cell.click();
+  await page.locator(".editv-input").first().fill(String(avant * 3));
+  await page.keyboard.press("Enter");
+
+  await page.click("#viewCommodities");
+  await page.fill("#search", commodite);
+  const tuile = page.locator("#commGrid .comm-tile").first();
+  await expect(tuile).toBeVisible({ timeout: 8000 });
+  await tuile.click();
+
+  // La ligne du terminal corrigé porte la nouvelle valeur ET le marqueur ✎.
+  const rang = page.locator("#commDetail .comm-points tbody tr", { hasText: terminal }).first();
+  await expect(rang).toContainText(String(avant * 3).replace(/\B(?=(\d{3})+(?!\d))/g, " "));
+  await expect(rang.locator(".ovmark")).toHaveCount(1);
+});
+
+test("Corrections : un PRIX corrigé met à jour les bénéfices du voyage en cours", async ({ page }) => {
+  await manifesteDepuis(page, "Megumi — Pyro");
+  await page.click("#manifestToJourney");
+  await expect(page.locator("#journeyCard .jleg")).toHaveCount(1);
+  const avant = (await profitJambe(page).innerText()).trim();
+  const cargo = (await page.locator("#journeyCard .jleg-cargo").first().innerText()).trim();
+
+  const prix = await corrige(page, "price", "sell", Math.round(Number(await page.locator("#manifest .editv[data-f='price'][data-s='sell']").first().getAttribute("data-v")) * 1.5));
+  expect(Number(prix)).toBeGreaterThan(0);
+  // Avant : la carte Voyage restait hors du cycle de rendu et gardait le profit d'avant.
+  await expect(profitJambe(page)).not.toHaveText(avant);
+  expect((await page.locator("#journeyCard .jleg-cargo").first().innerText()).trim()).toBe(cargo); // un prix ne rebat pas les SCU
+  await expect(page.locator("#journeyCard .jleg-pinned")).toHaveCount(0); // et ne fige rien
+});
+
+test("Corrections : un STOCK corrigé fige la jambe engagée, mais pas les trajets suivants", async ({ page }) => {
+  await manifesteDepuis(page, "Megumi — Pyro");
+  await page.click("#manifestToJourney");
+  await expect(page.locator("#journeyCard .jleg")).toHaveCount(1);
+  const cargo = (await page.locator("#journeyCard .jleg-cargo").first().innerText()).trim();
+  const nom = await page.locator("#manifest .mline-del").first().getAttribute("data-name");
+
+  await corrige(page, "vol", "buy", 3); // « j'ai vidé la station en chargeant »
+  // Le trajet est décidé : ses SCU ne rétrécissent pas sous les pieds du joueur.
+  await expect(page.locator("#journeyCard .jleg-pinned")).toHaveCount(1);
+  expect((await page.locator("#journeyCard .jleg-cargo").first().innerText()).trim()).toBe(cargo);
+  expect(await page.evaluate(() => localStorage.getItem("best-hauling-journey-pins"))).toContain("true");
+
+  // ...mais un chargement calculé APRÈS coup, lui, ne voit plus que ce qui reste.
+  await page.fill("#origin", "Megumi — Pyro");
+  await expect(page.locator("#manifest .mqty-input").first()).toBeVisible();
+  const ligne = page.locator("#manifest .mline", { hasText: nom }).first();
+  if (await ligne.count()) await expect(ligne.locator(".mqty-input")).toHaveValue(/^[0-3]$/);
+
+  // « ↺ optimal » lève le gel : la jambe redevient branchée sur le marché.
+  await page.locator("#journeyCard .jleg-head").first().click();
+  await page.locator("#journeyCard .jman-reset").click();
+  await expect(page.locator("#journeyCard .jleg-pinned")).toHaveCount(0);
+  expect((await page.locator("#journeyCard .jleg-cargo").first().innerText()).trim()).not.toBe(cargo);
+});
+
+test("Compagnon de voyage : retirer l'arrivée d'un parcours à DEUX arrêts garde le départ", async ({ page }) => {
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2);
+  const depart = (await page.locator("#journeyCard .jstep").nth(0).innerText()).trim();
+  await page.locator("#journeyCard .jstep-del").nth(1).click(); // ✕ sur l'arrivée
+  // Avant le correctif : les DEUX arrêts disparaissaient, le voyage revenait à « Nouveau voyage ».
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(1);
+  expect((await page.locator("#journeyCard .jstep").nth(0).innerText()).trim()).toBe(depart);
+  // Le survivant est un vrai point de départ : il propose des arrêts et en accepte un.
+  await expect(page.locator("#journeyCard .jstop-suggest").first()).toBeVisible({ timeout: 8000 });
+  await page.locator("#journeyCard .jstop-suggest").first().click();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2);
+  expect((await page.locator("#journeyCard .jstep").nth(0).innerText()).trim()).toBe(depart);
+});
+
+test("Compagnon de voyage : une suggestion filtrée par la vue n'est jamais proposée", async ({ page }) => {
+  // Bug : « Commodités légales uniquement » coché, la boîte proposait quand même une destination
+  // atteignable seulement via une commodité illégale (Megumi → Devlin Scrap via WiDoW). L'arrêt
+  // s'ajoutait, et sa jambe s'affichait « aucun fret rentable » — une route qui n'existait nulle part.
+  await page.check("#legalOnly");
+  await expect(page.locator("#rows tr").first()).toBeVisible();
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jstop-suggest").first()).toBeVisible({ timeout: 8000 });
+  await page.locator("#journeyCard .jstop-suggest").first().click();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(3);
+  // La jambe ajoutée porte un vrai chargement, et aucune jambe n'est vide.
+  await expect(page.locator("#journeyCard .jleg").last().locator(".jcargo-item").first()).toBeVisible();
+  await expect(page.locator("#journeyCard .jleg-cargo", { hasText: "aucun fret rentable" })).toHaveCount(0);
+  // Et rien d'illégal n'a pu s'inviter dans le voyage.
+  await expect(page.locator("#journeyCard .jcargo-item .illegal")).toHaveCount(0);
+});
+
 test("Compagnon de voyage : éditer le manifeste d'une jambe (SCU) persiste hors lien", async ({ page }) => {
   await page.locator("#rows tr").first().locator(".journey-pick").click();
   await expect(page.locator("#journeyCard .jcargo-item").first()).toBeVisible({ timeout: 8000 });

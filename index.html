@@ -84,12 +84,6 @@
             <label class="toggle" for="useBudget"><input id="useBudget" type="checkbox" checked /> Budget (aUEC)</label>
             <input id="budget" type="number" min="0" step="1000" value="1000000" aria-label="Budget en aUEC" />
           </div>
-          <!-- Coefficient d'autoload : ne sert que si l'interrupteur est actif, donc masqué sinon
-               (cf. syncToggles). Id volontairement court : la clé d'état EST l'id, il finit dans l'URL. -->
-          <div class="field" id="alkField" hidden>
-            <label for="alk">Coefficient autoload (k)</label>
-            <input id="alk" type="number" min="0" step="0.05" value="1.2" title="Tarif d'une station rapporté à Endgame (k = 1). Défaut 1,2 : milieu des deux seules stations mesurées (1,0 et 1,4). S'applique à toute station dont tu n'as pas relevé le tarif." />
-          </div>
           <div class="field">
             <label for="search">Commodité</label>
             <input id="search" type="text" placeholder="ex : Laranite" title="Filtrer par commodité (raccourci : /)" />
@@ -112,8 +106,29 @@
             <label><input id="noOutpost" type="checkbox" /> Exclure les avant-postes</label>
             <label><input id="legalOnly" type="checkbox" /> Commodités légales uniquement</label>
             <label><input id="capStock" type="checkbox" /> Limiter au stock &amp; à la demande (UEX)</label>
-            <label id="multiCommodityLabel" title="Vue « Trajets » : remplit la soute avec PLUSIEURS commodités d'un même point A vers un même point B (nécessite la soute)."><input id="multiCommodity" type="checkbox" /> Multi commodité <span class="hint-tag">Trajets</span></label>
-            <label id="autoloadLabel" title="Retranche les frais de chargement/déchargement automatique aux terminaux : les colonnes profit passent en NET et le classement suit ce net. C'est une estimation (±3 %), signalée par « ≈ »."><input id="autoload" type="checkbox" /> Frais d'autoload <span class="hint-tag">Net</span></label>
+            <!-- Le choix « combinés seuls / avec les simples » est un réglage DE cette coche : il vit
+                 sur sa ligne, et n'apparaît que quand elle est active (cf. syncToggles). -->
+            <div class="check-row">
+              <label id="multiCommodityLabel" title="Vue « Trajets » : remplit la soute avec PLUSIEURS commodités d'un même point A vers un même point B (nécessite la soute)."><input id="multiCommodity" type="checkbox" /> Multi commodité <span class="hint-tag">Trajets</span></label>
+              <span class="field sub-field" id="multiModeField" hidden>
+                <label for="multiMode">liste</label>
+                <select id="multiMode" title="« Combinés seuls » ne montre que les chargements à au moins 2 commodités : un trajet qui tient en une seule est déjà dans la liste normale. « Avec les simples » remet tout dans le même classement, pour comparer les deux d'un coup d'œil.">
+                  <option value="">combinés seuls</option>
+                  <option value="all">avec les simples</option>
+                </select>
+              </span>
+            </div>
+            <!-- Le coefficient est un réglage DE cette coche : il vit sur sa ligne plutôt qu'en
+                 champ autonome, sinon son apparition réorganisait tout le panneau (les champs
+                 suivants passaient à la ligne). Masqué quand l'interrupteur est inactif (cf.
+                 syncToggles). Id volontairement court : la clé d'état EST l'id, il finit dans l'URL. -->
+            <div class="check-row">
+              <label id="autoloadLabel" title="Retranche les frais de chargement/déchargement automatique aux terminaux : les colonnes profit passent en NET et le classement suit ce net. C'est une estimation (±3 %), signalée par « ≈ »."><input id="autoload" type="checkbox" /> Frais d'autoload <span class="hint-tag">Net</span></label>
+              <span class="field sub-field" id="alkField" hidden>
+                <label for="alk">coef. k</label>
+                <input id="alk" type="number" min="0" step="0.05" value="1.2" title="Tarif d'une station rapporté à Endgame (k = 1). Défaut 1,2 : milieu des deux seules stations mesurées (1,0 et 1,4). S'applique à toute station dont tu n'as pas relevé le tarif." />
+              </span>
+            </div>
           </div>
         </section>
 
@@ -135,6 +150,11 @@
 
           <aside id="journeyCard" class="journey-card" hidden></aside>
         </div>
+
+        <!-- Carte 2D du parcours : bandeau pleine largeur sous le compagnon (ADR-001). Purement
+             décorative — absente tant qu'il n'y a pas de voyage, et son échec de chargement ne
+             doit rien casser d'autre. La géométrie vient de data/starmap.json. -->
+        <aside id="journeyMap" class="journey-map" hidden></aside>
 
         <section id="enrouteControls" class="enroute-controls" hidden>
           <div class="field">

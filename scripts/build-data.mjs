@@ -20,6 +20,20 @@ const MAX_LOOPS = 160;
 const TOP_SELLS = 4;
 // Concurrence des requêtes de distance (orbite→orbite) vers l'API UEX.
 const FETCH_CONCURRENCY = 5;
+// Budget de temps d'UNE requête UEX (en-têtes + corps). Sans borne, undici ne coupe qu'à 300 s, et
+// ce plafond vaut PAR requête : une API qui accepte le TCP sans jamais répondre ferait durer la
+// boucle de distances (des centaines d'appels à concurrence 5) plusieurs heures.
+const FETCH_TIMEOUT_MS = 15_000;
+// La lecture du meta.json déjà déployé n'est qu'une optimisation (rebuild conditionnel) et son échec
+// est déjà toléré (repli sur « reconstruire ») : on la borne donc bien plus court.
+const META_TIMEOUT_MS = 5_000;
+// Plancher de volumétrie. UEX renvoie `status: "ok"` même sur une liste tronquée : sans ce garde-fou,
+// une réponse amont dégradée produit des JSON vides, sort en code 0 et écrase le site en ligne sans
+// qu'aucune issue ne s'ouvre (`notify` ne réagit qu'à un échec). Nominal actuel : ~115 terminaux et
+// ~316 routes, donc ces seuils ne peuvent se déclencher que sur une dégradation franche.
+// Exportés pour rester testables.
+export const MIN_TERMINALS = 20;
+export const MIN_ROUTES = 20;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -31,6 +45,12 @@ async function getJSON(path, { retries = 2 } = {}) {
     try {
       const res = await fetch(`${API}/${path}`, {
         headers: { "User-Agent": "best-hauling/1.0 (github pages trade tool)" },
+        // Signal recréé à CHAQUE tentative : le budget vaut par tentative, pas pour la boucle. Un
+        // dépassement est une erreur transitoire comme une autre — il consomme une tentative puis
+        // repart après back-off — donc le pire cas d'un appel en masse reste 3 × 15 s + 1,5 s de
+        // back-off ≈ 47 s (au lieu des 15 min qu'imposait le plafond undici de 300 s), et les appels
+        // de distance, lancés en { retries: 0 }, coûtent au plus 15 s chacun.
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
       if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}`);
       const body = await res.json();
@@ -54,7 +74,12 @@ function log(...a) {
 async function fetchDeployedSignature(url) {
   if (!url) return null;
   try {
-    const res = await fetch(url, { headers: { "User-Agent": "best-hauling/1.0 (conditional rebuild)" } });
+    // Le dépassement de délai rejette comme n'importe quelle erreur réseau : le `catch` ci-dessous
+    // l'avale et renvoie null, ce qui revient simplement à reconstruire sans court-circuit.
+    const res = await fetch(url, {
+      headers: { "User-Agent": "best-hauling/1.0 (conditional rebuild)" },
+      signal: AbortSignal.timeout(META_TIMEOUT_MS),
+    });
     if (!res.ok) return null;
     const body = await res.json();
     return body.data_signature || null;
@@ -129,6 +154,25 @@ export function sellDemand(p) {
 export function maxBoxSize(t) {
   const n = Number(t.max_container_size) || 0;
   return n > 0 ? n : 32;
+}
+
+// Capacités de soute relevées EN JEU, là où UEX se trompe. UEX est notre source, pas une autorité :
+// la soute borne le volume de fret, donc les unités, donc le profit et le classement de TOUTES les
+// vues — une valeur fausse ne se voit nulle part et fausse tout. La correction doit vivre ici et
+// non dans data/ships.json : la CI reconstruit les données toutes les 30 min et écraserait le
+// fichier, tandis que les corrections locales (localStorage) ne portent que sur les prix et ne
+// suivraient pas les autres joueurs.
+// Table volontairement minuscule et nominative : chaque entrée est une MESURE en jeu, datée, pas
+// une préférence. À supprimer dès qu'UEX publie la bonne valeur (le test de non-régression le dira).
+export const SCU_RELEVES = {
+  "Drake Ironclad": 2216, // UEX annonce 2 200 ; relevé en jeu (2026-08-12) : 2 216 SCU
+};
+// Nom + soute d'un véhicule UEX, correction appliquée. Exportée pour être testée : sinon la règle
+// vit au fond de main() et rien ne garantit qu'elle survive au prochain refactor du pipeline.
+export function shipEntry(v) {
+  const name = v.name_full || v.name;
+  const releve = SCU_RELEVES[name];
+  return { name, scu: releve ?? numField(v.scu), photo: v.url_photo || "" };
 }
 
 // Génère les routes d'arbitrage pour une commodité.
@@ -423,11 +467,25 @@ async function main() {
   // Vaisseaux avec soute (>= 1 SCU), hors véhicules terrestres. Pour le filtre "vaisseau".
   const ships = vehicles
     .filter((v) => v.scu >= 1 && !v.is_ground_vehicle)
-    .map((v) => ({ name: v.name_full || v.name, scu: v.scu, photo: v.url_photo || "" }))
+    .map(shipEntry)
     .sort((a, b) => a.name.localeCompare(b.name));
 
   // Graphe d'échange complet pour les modes « En route » et « remplissage » (chargé à la demande).
   const market = buildMarket(byCommodity, term);
+
+  // Garde-fou de volumétrie : rien ne s'écrit ni ne se déploie sur une donnée amont dégradée. Un
+  // `terminals` tronqué fait échouer `term.get(p.id_terminal)` pour tous les prix (« continue »
+  // plus haut), donc routes/boucles/marché tombent à zéro — en code de sortie 0, c'est-à-dire un
+  // site vidé en silence. L'échec bruyant, lui, remonte à main().catch -> exit 1, et `notify` ouvre
+  // une issue. Comparer à la volumétrie DÉJÀ déployée serait plus fin, mais l'information n'est pas
+  // disponible ici sans requête supplémentaire : fetchDeployedSignature ne lit que `data_signature`
+  // (aucun compteur) et n'est même pas appelée quand FORCE=1 (push / lancement manuel). D'où un
+  // plancher absolu, volontairement très bas pour ne jamais bloquer une variation normale d'UEX.
+  if (term.size < MIN_TERMINALS || top.length < MIN_ROUTES) {
+    throw new Error(
+      `Volumétrie anormale (terminaux=${term.size}, routes=${top.length} ; minimums ${MIN_TERMINALS}/${MIN_ROUTES}) — publication annulée`,
+    );
+  }
 
   await mkdir(OUT_DIR, { recursive: true });
   await writeFile(join(OUT_DIR, "routes.json"), JSON.stringify(top));

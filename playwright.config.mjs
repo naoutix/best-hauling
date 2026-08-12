@@ -10,7 +10,10 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  reporter: process.env.CI ? "list" : "line",
+  // En CI : `list` reste le journal lisible dans la sortie du job, et `html` produit en plus le
+  // rapport sur disque que l'étape upload-artifact archive avec les traces (`open: "never"` :
+  // un runner n'a pas de navigateur à ouvrir, et le serveur du rapport bloquerait le job).
+  reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "line",
   use: {
     baseURL: "http://127.0.0.1:4173",
     trace: "on-first-retry",

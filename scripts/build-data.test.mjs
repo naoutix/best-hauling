@@ -2,7 +2,10 @@
 // Lancer : `node --test` (ou `npm test`).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeKind, routesForCommodity, buildBestLegs, buildMarket, sellDemand, maxBoxSize, numField } from "./build-data.mjs";
+import {
+  normalizeKind, routesForCommodity, buildBestLegs, buildMarket, sellDemand, maxBoxSize, numField,
+  MIN_TERMINALS, MIN_ROUTES, shipEntry, SCU_RELEVES,
+} from "./build-data.mjs";
 import { readFileSync } from "node:fs";
 
 test("normalizeKind corrige la casse, les fautes de frappe et les valeurs vides", () => {
@@ -165,6 +168,7 @@ test("une commodité « vente seule » ne produit ni route ni segment (inerte po
 // Il lit l'INSTANTANÉ commité, pas des données fraîches : `node --test` tourne avant
 // `npm run build` dans update-data.yml, donc il ne peut pas bloquer un déploiement sur un aléa UEX.
 const MARKET = JSON.parse(readFileSync(new URL("../data/market.json", import.meta.url), "utf8"));
+const SHIPS = JSON.parse(readFileSync(new URL("../data/ships.json", import.meta.url), "utf8"));
 
 // `autoload` / `maxBox` ne sont volontairement PAS vérifiés ici : `node --test` tourne AVANT
 // `npm run build` (update-data.yml) et la CI ne re-commite jamais les data/*.json. L'instantané
@@ -208,6 +212,29 @@ test("data/market.json : chaque commodité est vendable et bien formée", () => 
   }
 });
 
+// ---------- Plancher de volumétrie : une donnée amont dégradée ne doit pas se publier ----------
+// Le garde-fou lui-même vit dans main() (juste avant mkdir + les writeFile), donc hors de portée d'un
+// test unitaire : ce qui se teste ici, ce sont ses deux seuils et le réglage qu'ils imposent.
+test("plancher de volumétrie : des seuils réellement bloquants", () => {
+  // Un seuil à 0 (ou négatif) rendrait la comparaison `term.size < MIN_TERMINALS` toujours fausse :
+  // le garde-fou existerait dans le code sans jamais pouvoir se déclencher.
+  assert.ok(Number.isInteger(MIN_TERMINALS) && MIN_TERMINALS > 0, `MIN_TERMINALS = ${MIN_TERMINALS}`);
+  assert.ok(Number.isInteger(MIN_ROUTES) && MIN_ROUTES > 0, `MIN_ROUTES = ${MIN_ROUTES}`);
+});
+
+test("plancher de volumétrie : un instantané sain passe LARGEMENT au-dessus des seuils", () => {
+  // Contre-épreuve du test précédent : le garde-fou doit rester une alarme, pas un faux positif qui
+  // annulerait une publication normale. On compare aux deux mêmes grandeurs que main() — le nombre
+  // de terminaux du marché et le nombre de routes publiées — sur l'instantané versionné.
+  // Aucun nombre exact n'est asserté : data/*.json est rafraîchi par la CI et varie à chaque relevé.
+  const routes = JSON.parse(readFileSync(new URL("../data/routes.json", import.meta.url), "utf8"));
+  assert.ok(MARKET.terminals.length > MIN_TERMINALS, `${MARKET.terminals.length} terminaux <= seuil ${MIN_TERMINALS}`);
+  assert.ok(routes.length > MIN_ROUTES, `${routes.length} routes <= seuil ${MIN_ROUTES}`);
+  // Marge d'au moins ×2 : un seuil frôlé se déclencherait au premier creux d'UEX.
+  assert.ok(MARKET.terminals.length >= 2 * MIN_TERMINALS, "seuil terminaux trop proche du nominal");
+  assert.ok(routes.length >= 2 * MIN_ROUTES, "seuil routes trop proche du nominal");
+});
+
 test("data/market.json : les commodités « vente seule » du mode Butin sont présentes", () => {
   // Régression de la PR #37 : le pipeline les excluait, le mode Butin n'avait rien à montrer.
   const sellOnly = MARKET.commodities.filter((c) => !c.buys.length);
@@ -229,6 +256,34 @@ test("sellDemand : `null` (inconnu) et `0` (saturé) ne se confondent pas", () =
   assert.equal(sellDemand({ scu_sell: 0, scu_sell_stock: 50 }), null);
   assert.notEqual(sellDemand({}), 0);
   assert.equal(sellDemand({ scu_sell: 50, scu_sell_stock: 50 }), 0);
+});
+
+// ---------- Vaisseaux : les capacités relevées en jeu l'emportent sur UEX ----------
+test("shipEntry : un vaisseau sans relevé garde la valeur UEX", () => {
+  assert.deepEqual(shipEntry({ name_full: "Aegis Avenger Titan", scu: 8, url_photo: "u" }), { name: "Aegis Avenger Titan", scu: 8, photo: "u" });
+  assert.equal(shipEntry({ name: "Sans photo", scu: 4 }).photo, ""); // photo absente -> chaîne vide
+  assert.equal(shipEntry({ name: "Champ pourri", scu: "1e3; DROP" }).scu, 0); // coercition, comme partout
+});
+
+test("shipEntry : le relevé en jeu corrige UEX (Drake Ironclad)", () => {
+  // UEX annonce 2 200 SCU ; le vaisseau en tient 2 216. Sans cette correction, la soute — donc les
+  // unités, donc le profit et le classement de toutes les vues — est fausse à chaque rebuild.
+  assert.equal(shipEntry({ name_full: "Drake Ironclad", scu: 2200 }).scu, 2216);
+  assert.equal(shipEntry({ name_full: "Drake Ironclad Assault", scu: 1440 }).scu, 1440); // pas d'effet de bord sur le voisin
+  assert.equal(SCU_RELEVES["Drake Ironclad"], 2216);
+});
+
+test("les relevés ne visent que des vaisseaux qui existent chez UEX", () => {
+  // Un nom mal orthographié ne corrigerait rien et ne se verrait jamais : la table doit toujours
+  // pointer sur un vaisseau réel de l'instantané versionné.
+  const noms = new Set(SHIPS.map((s) => s.name));
+  for (const n of Object.keys(SCU_RELEVES)) assert.ok(noms.has(n), `relevé orphelin : « ${n} » n'est pas un vaisseau UEX`);
+});
+
+test("data/ships.json : l'instantané versionné porte bien les relevés", () => {
+  for (const [nom, scu] of Object.entries(SCU_RELEVES)) {
+    assert.equal(SHIPS.find((s) => s.name === nom).scu, scu, `instantané pas régénéré pour ${nom}`);
+  }
 });
 
 // ---------- Frais d'autoload : ce que le terminal impose à la manutention ----------

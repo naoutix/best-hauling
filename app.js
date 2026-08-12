@@ -11,7 +11,9 @@ import {
   commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
   manifestTotals, freeAddUnits, manifestLine, freeManifestLine, hydrateManifestLine, stationLabel, parseStationLabel,
   multiTrips, tripMetrics, legFromTrip,
-  legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
+  legFromRoute, legsFromLoop, legsFromChain, legFromManifest, stopSuggestions, bestLegBetween,
+  manifestJourneyState, manifestIntent, sameIntent, legsToPin, journeyMap,
+  startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   removeJourneyStop as removeStopPure,
   encodeJourney, decodeJourney,
@@ -416,6 +418,9 @@ function readFilters() {
     maxAge: Number($("freshness").value) || 0,
     q: $("search").value.trim().toLowerCase(),
     multi: $("multiCommodity").checked,
+    // « avec les simples » : les chargements à UNE commodité rentrent dans le même classement que
+    // les combinés. Par défaut ils en sont exclus — ils sont déjà dans la vue « Trajets » normale.
+    multiAll: $("multiMode").value === "all",
     autoload: $("autoload").checked,
   };
 }
@@ -461,7 +466,7 @@ function renderMulti(f) {
   if (!MARKET) { withMarket(refresh); return; } // graphe requis
   // Le contexte de frais descend DANS multiTrips (et non après coup) : c'est lui qui trie puis
   // TRONQUE à 300 trajets, un trajet meilleur en net serait donc coupé avant d'atteindre le tableau.
-  const trips = multiTrips(MARKET, f, effVals, 300, 2, feeResolver(f))
+  const trips = multiTrips(MARKET, f, effVals, 300, f.multiAll ? 1 : 2, feeResolver(f))
     .map((t) => ({ ...t, feeInfo: feeCtx(f, t.origin.name, t.dest.name, t.origin, t.dest), ...tripMetrics(t) }));
   normalizeScores(trips);
   trips.sort(bySort(sortKey, sortDir));
@@ -470,7 +475,11 @@ function renderMulti(f) {
   empty.hidden = trips.length > 0;
   // Rappel : seuls les chargements COMBINÉS (≥ 2 commodités) sont listés ici — un trajet dont le
   // remplissage optimal tient en une seule commodité est déjà dans la vue « Trajets » normale.
-  if (!trips.length) empty.textContent = "Aucun chargement combinant plusieurs commodités avec ces filtres — agrandis la soute, ou décoche « Multi commodité » pour les trajets à une commodité.";
+  if (!trips.length) {
+    empty.textContent = f.multiAll
+      ? "Aucun chargement depuis ces terminaux avec ces filtres — élargis la soute ou le budget."
+      : "Aucun chargement combinant plusieurs commodités avec ces filtres — agrandis la soute, ou passe la liste sur « avec les simples ».";
+  }
   notifySuperseded();
 }
 
@@ -688,6 +697,19 @@ function loadMarket() {
   return MARKET_LOADING;
 }
 
+// Géométrie des systèmes pour la carte du voyage (cf. ADR-001). 1,5 ko, chargé à la demande et une
+// seule fois : la carte n'existe que s'il y a un voyage, inutile de le payer sur une page nue.
+// Un échec ne bloque rien — la carte reste simplement absente, le reste du compagnon fonctionne.
+let STARMAP = null, starmapPending = false;
+function ensureStarmap(then) {
+  if (STARMAP || starmapPending) return;
+  starmapPending = true;
+  fetch("data/starmap.json")
+    .then((r) => r.json())
+    .then((s) => { STARMAP = s; starmapPending = false; then(); })
+    .catch(() => { starmapPending = false; }); // silencieux : un panneau décoratif n'alarme personne
+}
+
 // Prévient que le marché est indisponible plutôt que de laisser la vue vide ET muette.
 const marketUnavailable = () => showToast("⚠ Marché indisponible — vérifie ta connexion, puis réessaie");
 
@@ -862,6 +884,25 @@ function removeManifestLine(name) {
   paintManifest();
 }
 
+// Engager le chargement dans le voyage : le bouton, ou la phrase qui dit pourquoi il n'y est pas.
+// L'état vient de manifestJourneyState (pur, testé) — le rendu ne décide de rien.
+// Le bouton n'existe QUE dans l'état « ajouter », donc la branche REMPLACER d'addToJourney, qui
+// efface un voyage sans prévenir, est inatteignable depuis cette carte.
+function manifestJourneyHTML(m) {
+  if (!m.lines.length) return `<span class="journey-hint">Manifeste vide — ajoute une commodité pour l'engager.</span>`;
+  const st = manifestJourneyState(JOURNEY, m.origin, m.dest);
+  if (st.etat === "ajouter") {
+    const neuf = !JOURNEY;
+    return `<button id="manifestToJourney" class="chain-pick" title="${neuf ? "Démarrer un voyage avec ce chargement" : "Ajouter ce chargement à la suite du voyage"}">▶ ${neuf ? "Démarrer un voyage" : "Ajouter au voyage"}</button>`;
+  }
+  // « Déjà » est l'état NORMAL après tout ▶ (En route est pré-rempli avec la jambe courante) et
+  // celui où l'on retombe après un ajout réussi : la phrase fait donc office de confirmation, à
+  // l'endroit exact du clic. Un bouton y serait un clic mort.
+  if (st.etat === "deja") return `<span class="journey-hint">✓ C'est déjà la jambe ${st.leg + 1} de ton voyage.</span>`;
+  if (!st.fin) return "";
+  return `<span class="journey-hint">Ce chargement part de <b>${esc(m.origin.name)}</b>, mais le voyage se termine à <b>${esc(st.fin)}</b> — seul un chargement au départ de <b>${esc(st.fin)}</b> s'y ajoute.</span>`;
+}
+
 // Dessine le manifeste courant : totaux + lignes (SCU/prix/stock éditables) + suggestions.
 function paintManifest() {
   const m = currentManifest;
@@ -872,6 +913,7 @@ function paintManifest() {
     `<div class="manifest-head">
       <span class="manifest-title">◈ Manifeste — ${esc(m.origin.name)}${sysBadge(m.origin.system)} → ${esc(m.dest.name)}${sysBadge(m.dest.system)}${m.cross ? ' <span class="cross">⚡ inter-système</span>' : ""}</span>
       <span class="manifest-tot" id="manifestTot">${manifestTotalsHTML(m, totals)}</span>
+      ${manifestJourneyHTML(m)}
       <button id="copyManifest" class="copy-btn" title="Copier le plan de chargement">⧉ Copier</button>
     </div>
     <div class="manifest-lines">` +
@@ -1084,14 +1126,108 @@ function renderChain() {
   notifySuperseded();
 }
 
+// ---------- Carte 2D du parcours (ADR-001) ----------
+// Le calcul est PUR (journeyMap, logic.mjs) : ici on n'émet que du SVG. Aucun asset, aucune image.
+
+// Semis d'étoiles déterministe (générateur congruentiel) : même ciel à chaque rendu, donc aucun
+// scintillement quand la carte se redessine — et statique, décision de l'ADR : rien ne doit bouger
+// en périphérie de tableaux qu'on lit.
+function etoilesHTML(n, w, h) {
+  let s = 20260812, out = "";
+  const suivant = () => ((s = (s * 1103515245 + 12345) % 2147483648) / 2147483648);
+  for (let i = 0; i < n; i++) {
+    const x = (suivant() * w).toFixed(1), y = (suivant() * h).toFixed(1), o = (0.12 + suivant() * 0.45).toFixed(2);
+    out += `<circle cx="${x}" cy="${y}" r="${suivant() > 0.9 ? 0.9 : 0.5}" fill="#dfe6f5" opacity="${o}"/>`;
+  }
+  return out;
+}
+
+const SYS_TEINTE = { Stanton: "var(--stanton)", Pyro: "var(--pyro)", Nyx: "var(--nyx)" };
+const teinte = (nom) => SYS_TEINTE[nom] || "var(--acc)";
+
+function journeyMapHTML(c) {
+  const nf = (v) => Number(v).toFixed(1);
+  let svg = `<rect width="${c.largeur}" height="${c.hauteur}" fill="#080b14"/>${etoilesHTML(70, c.largeur, c.hauteur)}`;
+
+  for (const sys of c.systemes) {
+    const t = teinte(sys.nom);
+    svg += `<g class="jm-sys"><circle cx="${nf(sys.cx)}" cy="${nf(sys.cy)}" r="${nf(sys.r * 1.1)}" fill="none" stroke="${t}" stroke-opacity="0.13" stroke-dasharray="2 5"/>`;
+    for (const b of sys.corps) {
+      svg += `<circle cx="${nf(sys.cx)}" cy="${nf(sys.cy)}" r="${nf(b.orbite)}" fill="none" stroke="${t}" stroke-opacity="0.15"/>`;
+      svg += `<circle cx="${nf(b.x)}" cy="${nf(b.y)}" r="3.2" fill="${t}" fill-opacity="0.85"/>`;
+      // Le libellé du corps s'efface quand une escale s'y pose : son nom est déjà écrit là.
+      if (!b.occupe) svg += `<text class="jm-corps" x="${nf(b.x + 6)}" y="${nf(b.y + 3)}">${esc(b.nom)}</text>`;
+    }
+    svg += `<circle cx="${nf(sys.cx)}" cy="${nf(sys.cy)}" r="6.5" fill="${t}" fill-opacity="0.18"/>`;
+    svg += `<circle cx="${nf(sys.cx)}" cy="${nf(sys.cy)}" r="3" fill="${t}"/>`;
+    svg += `<text class="jm-sysnom" x="${nf(sys.cx)}" y="${nf(Math.max(13, sys.cy - sys.r * 1.22))}" fill="${t}">${esc(sys.nom.toUpperCase())}</text></g>`;
+  }
+
+  for (const j of c.jambes) {
+    svg += j.saut
+      ? `<path class="jm-saut" d="M${nf(j.x1)} ${nf(j.y1)} L${nf(j.x2)} ${nf(j.y2)}"/>` +
+        `<circle class="jm-saut-noeud" cx="${nf((j.x1 + j.x2) / 2)}" cy="${nf((j.y1 + j.y2) / 2)}" r="7"/>` +
+        `<text class="jm-saut-glyphe" x="${nf((j.x1 + j.x2) / 2)}" y="${nf((j.y1 + j.y2) / 2 + 3)}">⚡</text>`
+      : `<path class="jm-jambe${j.faite ? " faite" : ""}" d="M${nf(j.x1)} ${nf(j.y1)} L${nf(j.x2)} ${nf(j.y2)}"/>`;
+  }
+
+  // Les arrêts sont des boutons : cliquer une escale déplace « je suis ici », comme le fil
+  // d'étapes textuel juste au-dessus (décision de l'ADR — un second chemin, pas une nouveauté).
+  c.arrets.forEach((a, i) => {
+    const fait = i < c.vaisseau.arret, ici = i === c.vaisseau.arret;
+    const droite = a.x < c.largeur / 2;
+    svg += `<g class="jm-arret${fait ? " fait" : ""}${ici ? " ici" : ""}" data-i="${i}" role="button" tabindex="0" aria-label="Se placer à ${esc(a.nom)}">` +
+      `<circle class="jm-cible" cx="${nf(a.x)}" cy="${nf(a.y)}" r="11"/>` +
+      `<circle class="jm-point" cx="${nf(a.x)}" cy="${nf(a.y)}" r="4.5"/>` +
+      `<text class="jm-nom" x="${nf(a.x + (droite ? 9 : -9))}" y="${nf(a.y - 9)}" text-anchor="${droite ? "start" : "end"}">${esc(a.nom)}</text></g>`;
+  });
+
+  const v = c.vaisseau;
+  svg += `<g class="jm-vaisseau" style="transform: translate(${nf(v.x)}px, ${nf(v.y)}px) rotate(${nf(v.angle)}deg)">` +
+    `<circle r="10" fill="var(--acc)" fill-opacity="0.12"/><path d="M8 0 L-5 5 L-2.5 0 L-5 -5 Z" fill="var(--acc)" stroke="#140c00" stroke-width="0.5"/></g>`;
+
+  return `<svg class="jm-svg" viewBox="0 0 ${c.largeur} ${c.hauteur}" role="img" aria-label="Carte du parcours : ${esc(c.arrets.map((a) => a.nom).join(", puis "))}">${svg}</svg>`;
+}
+
+// Dessine (ou masque) le panneau carte. Appelé par renderJourney, donc à chaque refresh.
+function renderJourneyMap() {
+  const box = $("journeyMap");
+  if (!box) return;
+  if (!JOURNEY || !MARKET) { box.hidden = true; return; }
+  if (!STARMAP) { ensureStarmap(renderJourneyMap); box.hidden = true; return; }
+  const info = (nom) => {
+    const i = stationMap.get(stationLabel(nom, (journeyStations(JOURNEY).find((s) => s.name === nom) || {}).system || ""));
+    return i == null ? null : MARKET.terminals[i];
+  };
+  const c = journeyMap(journeyStations(JOURNEY), JOURNEY.current, STARMAP, info);
+  if (!c) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = `<span class="jm-label">◈ <b>Carte du parcours</b> <span class="muted">schéma — rayons compressés</span></span>${journeyMapHTML(c)}`;
+}
+
 // ---------- Compagnon de voyage : résumé du parcours (près du vaisseau) ----------
 // Sélectionne un trajet/une boucle/une chaîne -> met à jour le parcours (étend si ça s'enchaîne).
-function pickJourney(legs) {
+// `apresAjout` (optionnel) tourne une fois le parcours à jour mais AVANT le rendu : c'est là que le
+// manifeste d'« En route » dépose son chargement ajusté, pour que la jambe s'affiche du premier
+// coup avec les bons SCU et son badge ✎.
+function pickJourney(legs, apresAjout) {
   if (!legs || !legs.length) return;
   JOURNEY = addToJourney(JOURNEY, legs);
+  if (apresAjout) apresAjout();
   syncViewsToJourney();
   renderJourney();
   refresh(); // reflète la nouvelle destination/origine dans la vue courante
+}
+
+// « Je suis ici » : pose la position courante et recale les vues. Deux chemins y mènent — le fil
+// d'étapes textuel (⦿) et les escales de la carte — et c'est délibéré : la carte n'introduit pas
+// une commande, elle en offre une seconde entrée.
+function setJourneyStop(i) {
+  if (!JOURNEY || !Number.isFinite(i)) return;
+  JOURNEY = setJourneyPosition(JOURNEY, i);
+  syncViewsToJourney();
+  renderJourney();
+  refresh();
 }
 
 // Pré-remplit les contrôles des vues d'après la POSITION COURANTE du parcours.
@@ -1116,6 +1252,7 @@ function clearJourney() {
   // Sans cette purge, les manifestes édités survivaient à l'effacement du voyage et ressortaient
   // sur un parcours ULTÉRIEUR passant par les mêmes terminaux, badge ✎ compris.
   JOURNEY_EDITS = {}; saveJourneyEdits();
+  JOURNEY_PINS = {}; saveJourneyPins();
   journeyExpandedLeg = -1;
   renderJourney();
   saveState();
@@ -1151,6 +1288,16 @@ const legFeeCtx = (leg, f) => feeCtx(f, leg.from, leg.to);
 // Clé versionnée : l'ancien format stockait des lignes complètes sous une clé « from|to » qui
 // confondait deux jambes identiques d'un même parcours. Les anciennes éditions sont abandonnées.
 const JOURNEY_EDITS_KEY = "best-hauling-journey-edits-v2";
+// Jambes dont les quantités ont été FIGÉES par une correction de volume, et non ajustées à la main.
+// Store séparé plutôt qu'un champ dans JOURNEY_EDITS : le format persisté de l'intention reste
+// intact (aucune migration), et les deux notions se lisent indépendamment. La valeur n'existe que
+// si une entrée d'intention existe au même rang — le gel EST une intention, avec un autre motif.
+const JOURNEY_PINS_KEY = "best-hauling-journey-pins";
+let JOURNEY_PINS = {};
+function loadJourneyPins() {
+  try { JOURNEY_PINS = JSON.parse(localStorage.getItem(JOURNEY_PINS_KEY)) || {}; } catch { JOURNEY_PINS = {}; }
+}
+function saveJourneyPins() { try { localStorage.setItem(JOURNEY_PINS_KEY, JSON.stringify(JOURNEY_PINS)); } catch {} }
 let JOURNEY_EDITS = {};
 let journeyExpandedLeg = -1; // index de la jambe dépliée en édition (-1 = aucune)
 function loadJourneyEdits() {
@@ -1190,12 +1337,54 @@ function legEffectiveLines(leg, i, f) {
 }
 
 // Bascule la jambe en mode « édité » la 1re fois : on y copie l'intention issue de l'optimal.
+// Toucher au chargement fait de la jambe une édition PERSONNELLE : si elle n'était que figée par
+// une correction de volume, elle cesse de l'être (🔒 -> ✎). Le geste de l'utilisateur prime sur
+// la raison technique qui avait gelé les quantités.
 function legIntent(leg, i, f) {
   const k = legKey(leg, i);
-  if (!JOURNEY_EDITS[k]) {
-    JOURNEY_EDITS[k] = (legManifest(leg, f)?.lines || []).map((l) => ({ name: l.name, units: l.units }));
-  }
+  if (!JOURNEY_EDITS[k]) JOURNEY_EDITS[k] = manifestIntent(legManifest(leg, f)?.lines || []);
+  if (JOURNEY_PINS[k]) { delete JOURNEY_PINS[k]; saveJourneyPins(); }
   return JOURNEY_EDITS[k];
+}
+
+// Fige les jambes qu'une correction de volume rebattrait, AVANT qu'elle soit appliquée : on capture
+// donc les quantités telles qu'elles sont encore. La sélection est pure (legsToPin) ; ici on ne
+// fournit que ce que logic.mjs ne peut pas connaître — les chargements effectifs du moment.
+function pinLegsForVolume(commodity, terminal, side) {
+  if (!JOURNEY || !JOURNEY.legs.length || !MARKET) return;
+  const f = readFilters();
+  const lignes = JOURNEY.legs.map((leg, i) => legEffectiveLines(leg, i, f));
+  let change = false;
+  for (const i of legsToPin(JOURNEY.legs, lignes, commodity, terminal, side)) {
+    const k = legKey(JOURNEY.legs[i], i);
+    if (JOURNEY_EDITS[k]) continue; // déjà ajustée ou figée : ses quantités ne bougeaient déjà plus
+    JOURNEY_EDITS[k] = manifestIntent(lignes[i]);
+    JOURNEY_PINS[k] = true;
+    change = true;
+  }
+  if (change) { saveJourneyEdits(); saveJourneyPins(); }
+}
+
+// Engage le manifeste d'« En route » comme nouvelle jambe du voyage (bouton de la carte Manifeste).
+// La garde d'état est REJOUÉE ici : le rendu peut dater d'avant un changement de parcours.
+function manifestToJourney() {
+  const m = currentManifest;
+  if (!m || !m.lines.length || !MARKET) return;
+  if (manifestJourneyState(JOURNEY, m.origin, m.dest).etat !== "ajouter") return;
+  const intent = manifestIntent(m.lines);
+  pickJourney([legFromManifest(m)], () => {
+    const i = JOURNEY.legs.length - 1;
+    const k = legKey(JOURNEY.legs[i], i);
+    // Ce que legManifest recalculera pour cette jambe. Si le chargement affiché EST celui-là, on ne
+    // persiste rien : la jambe reste branchée sur le marché et sur les filtres, et ne porte pas le
+    // badge ✎ à tort. On impose l'état de la clé dans les DEUX sens, pour qu'une édition laissée
+    // par un voyage abandonné au même rang et au même couple de stations ne vienne pas contredire
+    // le chargement qu'on envoie.
+    const opt = bestManifest(MARKET, m.originIdx, "", m.f, effVals, m.destIdx, feeResolver(m.f));
+    if (sameIntent(intent, manifestIntent(opt ? opt.lines : []))) delete JOURNEY_EDITS[k];
+    else JOURNEY_EDITS[k] = intent;
+    saveJourneyEdits();
+  });
 }
 
 // Contexte de manifeste d'une jambe, à la forme attendue par suggestionsFor/manifestRemaining
@@ -1276,7 +1465,12 @@ function delLegLine(i, name) {
   JOURNEY_EDITS[legKey(leg, i)] = legIntent(leg, i, readFilters()).filter((e) => e.name !== name);
   saveJourneyEdits(); renderJourney();
 }
-function resetLeg(i) { delete JOURNEY_EDITS[legKey(JOURNEY.legs[i], i)]; saveJourneyEdits(); renderJourney(); }
+// « ↺ optimal » lève les deux formes d'intention, l'ajustement manuel comme le gel.
+function resetLeg(i) {
+  const k = legKey(JOURNEY.legs[i], i);
+  delete JOURNEY_EDITS[k]; delete JOURNEY_PINS[k];
+  saveJourneyEdits(); saveJourneyPins(); renderJourney();
+}
 // Ajout LIBRE d'une commodité à une jambe (même non vendable à l'arrivée -> ligne « carry-only »).
 // Même règle qu'« En route » : freeManifestLine (logic.mjs) en est la source unique.
 function addLegLine(i, name) {
@@ -1301,13 +1495,11 @@ function journeyEndIndex() {
   return end && stationMap.size ? stationMap.get(stationLabel(end.name, end.system)) : null;
 }
 // Meilleure jambe (commodité de marge max) entre deux terminaux, ou null si aucun fret rentable.
+// `readFilters()` fait choisir la vente au profit RÉALISABLE et non au prix affiché : sans lui,
+// la jambe proposée peut viser un terminal déjà saturé, qui n'écoulera qu'une poignée de SCU.
 function bestLegTo(fromIdx, toIdx) {
   if (fromIdx == null || toIdx == null) return null;
-  // `readFilters()` fait choisir la vente au profit RÉALISABLE et non au prix affiché : sans lui,
-  // la jambe proposée peut viser un terminal déjà saturé, qui n'écoulera qu'une poignée de SCU.
-  const deals = enRouteDeals(MARKET, fromIdx, "", toIdx, readFilters()); // meilleure vente vers toIdx par commodité
-  if (!deals.length) return null;
-  return legFromRoute(deals.reduce((a, b) => (b.margin > a.margin ? b : a)));
+  return bestLegBetween(MARKET, fromIdx, toIdx, readFilters());
 }
 // Jambe « à vide » (aucune commodité) entre deux terminaux — pour ajouter un arrêt même sans fret rentable.
 function emptyLeg(fromIdx, toIdx) {
@@ -1327,14 +1519,7 @@ function resolveStationLabel(input) {
 // Suggestions d'arrêts : meilleures destinations rentables depuis la fin du parcours (top 4).
 function journeyStopSuggestions() {
   const fromIdx = journeyEndIndex();
-  if (fromIdx == null) return [];
-  const byDest = new Map();
-  enRouteDeals(MARKET, fromIdx, "", null, readFilters()).forEach((d) => {
-    const label = stationLabel(d.sell.terminal, d.sell.system);
-    const cur = byDest.get(label);
-    if (!cur || d.margin > cur.margin) byDest.set(label, { label, terminal: d.sell.terminal, commodity: d.commodity, margin: d.margin });
-  });
-  return [...byDest.values()].sort((a, b) => b.margin - a.margin).slice(0, 4);
+  return fromIdx == null ? [] : stopSuggestions(MARKET, fromIdx, readFilters());
 }
 // Ajoute un arrêt (terminal) : nouvelle jambe optimale depuis la fin du parcours -> étend.
 function addStopByTerminal(label) {
@@ -1365,17 +1550,23 @@ function beginJourney(label) {
 // jambe, donc retirer un arrêt décalerait sinon l'édition d'une jambe sur sa voisine.
 function reindexLegEdits(removedFrom, removedCount, insertedCount) {
   const decalage = removedCount - insertedCount;
-  const suivant = {};
-  for (const [k, v] of Object.entries(JOURNEY_EDITS)) {
-    const sep = k.indexOf("|");
-    const i = Number(k.slice(0, sep));
-    if (i < removedFrom) suivant[k] = v;                       // avant la coupe : inchangé
-    else if (i < removedFrom + removedCount) continue;         // jambe disparue : son édition part
-    else suivant[`${i - decalage}${k.slice(sep)}`] = v;        // après : recule d'autant
-  }
-  JOURNEY_EDITS = suivant;
+  // Les deux stores sont indexés par le MÊME rang de jambe : les décaler séparément les ferait
+  // diverger, et un 🔒 se retrouverait sur une jambe dont l'intention a disparu.
+  const decale = (store) => {
+    const suivant = {};
+    for (const [k, v] of Object.entries(store)) {
+      const sep = k.indexOf("|");
+      const i = Number(k.slice(0, sep));
+      if (i < removedFrom) suivant[k] = v;                       // avant la coupe : inchangé
+      else if (i < removedFrom + removedCount) continue;         // jambe disparue : son édition part
+      else suivant[`${i - decalage}${k.slice(sep)}`] = v;        // après : recule d'autant
+    }
+    return suivant;
+  };
+  JOURNEY_EDITS = decale(JOURNEY_EDITS);
+  JOURNEY_PINS = decale(JOURNEY_PINS);
   if (journeyExpandedLeg >= removedFrom) journeyExpandedLeg = -1; // le panneau déplié n'existe plus
-  saveJourneyEdits();
+  saveJourneyEdits(); saveJourneyPins();
 }
 
 function removeJourneyStop(stopIndex) {
@@ -1393,7 +1584,10 @@ function removeJourneyStop(stopIndex) {
   const r = removeStopPure(JOURNEY, stopIndex, bridge);
   if (!r) { clearJourney(); return; }
   reindexLegEdits(r.removedFrom, r.removedCount, r.insertedCount);
-  JOURNEY = { legs: r.legs, current: r.current };
+  // `start` n'est présent que sur le parcours réduit à un seul arrêt : le reporter tel quel, sinon
+  // la station survivante n'a plus rien pour se décrire (journeyStations la lit là) et le voyage
+  // s'affiche vide alors qu'il reste un point de départ.
+  JOURNEY = r.start ? { legs: [], current: 0, start: r.start } : { legs: r.legs, current: r.current };
   syncViewsToJourney();
   renderJourney();
   refresh();
@@ -1407,6 +1601,7 @@ function renderJourney() {
     card.hidden = false;
     const recap0 = $("journeyRecap"); if (recap0) recap0.hidden = true; // pas de récap sans voyage
     const row0 = $("shipJourneyRow"); if (row0) row0.classList.remove("stacked");
+    renderJourneyMap();
     card.innerHTML =
       `<div class="journey-head"><span class="journey-title">◈ Nouveau voyage</span></div>
        <p class="journey-hint">Choisis un trajet (▶) dans une vue, ou démarre de zéro :</p>
@@ -1433,6 +1628,7 @@ function renderJourney() {
     const lines = MARKET ? legEffectiveLines(leg, i, f) : null;
     const pair = MARKET ? (legFeeCtx(leg, f) || {}).pair : null;
     const edited = MARKET && !!JOURNEY_EDITS[legKey(leg, i)];
+    const pinned = edited && !!JOURNEY_PINS[legKey(leg, i)]; // figée par une correction, pas par toi
     const expanded = i === journeyExpandedLeg;
     let cargo, total;
     if (!MARKET) { cargo = '<span class="muted">calcul…</span>'; total = "—"; }
@@ -1461,7 +1657,9 @@ function renderJourney() {
       </div>`;
     }
     return `<div class="jleg${i === JOURNEY.current ? " current" : ""}${expanded ? " expanded" : ""}">
-        <div class="jleg-head" data-leg="${i}" role="button" tabindex="0" title="Éditer le manifeste de cette jambe"><span class="jleg-n">${i + 1}</span><span class="jleg-route">${esc(leg.from)} → ${esc(leg.to)}</span>${edited ? '<span class="jleg-edited" title="Manifeste personnalisé">✎</span>' : ""}<span class="jleg-profit profit">+${total}</span><span class="jleg-caret">${expanded ? "▾" : "▸"}</span></div>
+        <div class="jleg-head" data-leg="${i}" role="button" tabindex="0" title="Éditer le manifeste de cette jambe"><span class="jleg-n">${i + 1}</span><span class="jleg-route">${esc(leg.from)} → ${esc(leg.to)}</span>${edited ? (pinned
+          ? '<span class="jleg-pinned" title="Quantités figées : le stock ou la demande de ce chargement a été corrigé depuis. Le trajet reste tel que tu l\'as décidé — les prix, eux, continuent de suivre le marché. « ↺ optimal » recalcule tout.">🔒</span>'
+          : '<span class="jleg-edited" title="Manifeste personnalisé">✎</span>') : ""}<span class="jleg-profit profit">+${total}</span><span class="jleg-caret">${expanded ? "▾" : "▸"}</span></div>
         <div class="jleg-cargo">${cargo}</div>
         ${editor}
       </div>`;
@@ -1487,6 +1685,7 @@ function renderJourney() {
      <div class="journey-meta">${n} saut${n > 1 ? "s" : ""} · marge cumulée <b class="profit">${fmt(journeyMargin(JOURNEY))}</b> aUEC/SCU</div>`;
 
   renderJourneyRecap({ n, totalProfit, totalScu, totalFees, systems: new Set(stations.map((s) => s.system)).size });
+  renderJourneyMap();
 }
 
 // Récap du voyage (colonne de gauche, sous le vaisseau) : remplit l'espace avec des KPIs utiles.
@@ -1529,6 +1728,12 @@ function refresh() {
   else if (view === "corrections") renderCorrections();
   else if (view === "commodities") renderCommodities();
   else render();
+  // La carte Voyage est affichée À CÔTÉ des tableaux, dans toutes les vues : la laisser hors du
+  // cycle de rendu la figeait sur l'état d'avant. Corriger un prix ne mettait donc pas à jour les
+  // bénéfices du voyage — alors qu'une jambe non ajustée est justement, par contrat, branchée sur
+  // le marché et sur les filtres (cf. README). Le coût est celui d'un manifeste par jambe, sur un
+  // parcours qui en compte une poignée ; les champs à saisie libre passent déjà par un debounce.
+  if (JOURNEY) renderJourney();
   saveState();
 }
 const refreshDebounced = debounce(refresh);
@@ -1720,7 +1925,7 @@ async function loadShips() {
 // hash de l'URL, pour reprendre là où on s'est arrêté et partager une vue précise.
 // `alk` = coefficient d'autoload global : partageable, comme tous les réglages. Les relevés PAR
 // STATION, eux, restent locaux — c'est la même frontière que pour les corrections de prix.
-const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem", "destTerminal", "chainOrigin", "hops", "station", "alk"];
+const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem", "destTerminal", "chainOrigin", "hops", "station", "alk", "multiMode"];
 const STATE_CHECKS = ["useCargo", "useBudget", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiCommodity", "autoload"];
 // Champs qui gardent leur défaut HTML quand la clé est absente de l'état. #system, #freshness et
 // #destSystem ont chacun une option VIDE (« Tous », « Toutes », « N'importe où ») : leur poser ""
@@ -1883,9 +2088,13 @@ function startEdit(span) {
     // Corrections (n) », marqueur « corrigé localement » sur la cellule, et plus tard un toast
     // « correction périmée par une mise à jour UEX » à propos d'une correction fantôme.
     if (save && inp.value !== v) {
+      // Un VOLUME rebat les quantités de tout chargement qui touche ce point : on fige d'abord les
+      // jambes déjà planifiées (avant d'écrire, pour capturer les SCU encore en vigueur). Un PRIX
+      // ne change aucune quantité — il ne fige rien, il met juste les bénéfices à jour.
+      if (field === "vol") pinLegsForVolume(c, t, s);
       setOverride(c, t, s, field, inp.value === "" ? null : inp.value, Number(u));
       updateOvBadge();
-      refresh(); // re-render la vue courante avec la valeur corrigée
+      refresh(); // re-render la vue courante ET le voyage avec la valeur corrigée
       return;
     }
     // Rien n'a changé : on remet l'affichage tel quel. Un refresh() global détruirait le nœud
@@ -2119,10 +2328,16 @@ function paintCommodityDetail() {
       : '<p class="manifest-hint">Sélectionne une commodité (ligne du tableau ou champ « Commodité ») pour voir tous ses points d\'achat et de vente.</p>';
     return;
   }
-  const p = commodityPoints(MARKET, commSelected, readFilters()); // exclut les avant-postes si le filtre est actif
+  // `effVals` : le détail affiche les valeurs CORRIGÉES, comme les tableaux. Et puisqu'elles le
+  // sont, elles passent par `editv` — le même composant qu'ailleurs : marqueur ✎ sur ce qui est
+  // corrigé, et clic pour corriger sur place. Le board devient ainsi le point d'entrée naturel
+  // pour rectifier un prix « chez toutes les stations qui vendent cette commodité ».
+  const p = commodityPoints(MARKET, commSelected, readFilters(), effVals); // avant-postes exclus si le filtre est actif
   if (!p) { box.innerHTML = ""; return; }
-  const buyRow = (b) => `<tr><td class="loc"><div>${esc(b.terminal)}${sysBadge(b.system)}${outpostTag(b.outpost)}</div><div class="loc-sub">${esc(b.planet)}</div></td><td class="num">${fmt(b.price)}</td><td class="num">${statusDot(b.status, "buy")} ${fmt(b.stock)}</td><td>${freshChip(b.updated)}</td></tr>`;
-  const sellRow = (s) => `<tr><td class="loc"><div>${esc(s.terminal)}${sysBadge(s.system)}${outpostTag(s.outpost)}</div><div class="loc-sub">${esc(s.planet)}</div></td><td class="num">${fmt(s.price)}</td><td class="num">${statusDot(s.status, "sell")} ${fmtVol(s.demand)}</td><td>${freshChip(s.updated)}</td></tr>`;
+  const cell = (terminal, side, field, value, updated) =>
+    editv(p.name, terminal, side, field, value, isOv(p.name, terminal, side, field), updated);
+  const buyRow = (b) => `<tr><td class="loc"><div>${esc(b.terminal)}${sysBadge(b.system)}${outpostTag(b.outpost)}</div><div class="loc-sub">${esc(b.planet)}</div></td><td class="num">${cell(b.terminal, "buy", "price", b.price, b.updated)}</td><td class="num">${statusDot(b.status, "buy")} ${cell(b.terminal, "buy", "vol", b.stock, b.updated)}</td><td>${freshChip(b.updated)}</td></tr>`;
+  const sellRow = (s) => `<tr><td class="loc"><div>${esc(s.terminal)}${sysBadge(s.system)}${outpostTag(s.outpost)}</div><div class="loc-sub">${esc(s.planet)}</div></td><td class="num">${cell(s.terminal, "sell", "price", s.price, s.updated)}</td><td class="num">${statusDot(s.status, "sell")} ${cell(s.terminal, "sell", "vol", s.demand, s.updated)}</td><td>${freshChip(s.updated)}</td></tr>`;
   const table = (rows, head, mapper) => rows.length
     ? `<table class="comm-points"><thead><tr><th>Terminal</th><th class="num">Prix</th><th class="num">${head}</th><th>Relevé</th></tr></thead><tbody>${rows.map(mapper).join("")}</tbody></table>`
     : '<p class="muted">Aucun point.</p>';
@@ -2166,7 +2381,9 @@ function renderCommodities() {
   if (!enrouteReady) setupEnRoute();
   const f = { ...readFilters(), board: commBoard };
   const q = f.q;
-  const all = commoditySummaries(MARKET, f); // légales + avant-postes + board s'appliquent ici
+  // `effVals` : marge, couleur de tuile et rang suivent les corrections locales. Sans lui, la tuile
+  // continuait d'afficher la marge d'UEX après qu'on ait corrigé le prix dans un tableau.
+  const all = commoditySummaries(MARKET, f, effVals); // légales + avant-postes + board s'appliquent ici
   // Les DEUX heatmaps se calculent sur TOUT le board, jamais sur le sous-ensemble visible : la
   // couleur d'une tuile prétend situer la commodité dans l'ensemble du marché. Calculée après le
   // filtre de recherche, taper « iron » suffisait à repeindre Iron (3 900 aUEC/SCU, le bas du
@@ -2205,6 +2422,8 @@ function syncToggles() {
   // sinon (il reste dans l'état, donc dans le lien). La coche, elle, n'est PAS grisée sans soute :
   // le budget ou le plafond de stock bornent aussi le volume, et un volume borné suffit à facturer.
   $("alkField").hidden = !$("autoload").checked;
+  // Portée de la liste multi : ne se règle que si la liste multi existe.
+  $("multiModeField").hidden = !$("multiCommodity").checked;
 }
 
 async function init() {
@@ -2218,11 +2437,14 @@ async function init() {
   // absurdes quand on tape « 696 » dans la soute (6 puis 69 SCU).
   // Menus et cases à cocher restent IMMÉDIATS : ils n'émettent qu'un seul événement.
   ["cargo", "budget", "search", "alk"].forEach((id) => $(id).addEventListener("input", refreshDebounced));
-  ["system", "freshness", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiCommodity"].forEach((id) =>
+  ["system", "freshness", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiMode"].forEach((id) =>
     $(id).addEventListener("input", refresh)
   );
-  // L'interrupteur d'autoload fait aussi apparaître/disparaître le champ du coefficient global.
-  $("autoload").addEventListener("input", () => { syncToggles(); refresh(); });
+  // Ces deux-là commandent en plus l'affichage de leur propre sous-réglage (coefficient k, portée
+  // de la liste multi) : ils passent donc par syncToggles avant de recalculer.
+  ["autoload", "multiCommodity"].forEach((id) =>
+    $(id).addEventListener("input", () => { syncToggles(); refresh(); })
+  );
   ["useCargo", "useBudget"].forEach((id) =>
     $(id).addEventListener("change", () => {
       syncToggles();
@@ -2267,7 +2489,16 @@ async function init() {
     const alDel = e.target.closest(".al-del");
     if (alDel) { forgetStationReading(alDel.dataset.key); return; }
     const del = e.target.closest(".corr-del");
-    if (del) { delete OVERRIDES[del.dataset.key]; saveOverrides(); updateOvBadge(); refresh(); return; }
+    if (del) {
+      // Supprimer une correction de volume rend le stock d'UEX : c'est encore un changement de
+      // volume, donc la même règle s'applique — le voyage déjà planifié ne doit pas s'y rebattre.
+      const cle = del.dataset.key;
+      if (OVERRIDES[cle] && OVERRIDES[cle].vol != null) {
+        const [commodity, terminal, side] = cle.split("|");
+        pinLegsForVolume(commodity, terminal, side);
+      }
+      delete OVERRIDES[cle]; saveOverrides(); updateOvBadge(); refresh(); return;
+    }
     if (e.target.closest("#alSave")) { saveStationReading(); return; }
     if (e.target.closest("#resetAllK")) { resetAllReadings(); return; }
     if (e.target.closest("#resetAll")) resetAllOverrides();
@@ -2281,6 +2512,9 @@ async function init() {
     if (e.target.classList.contains("mqty-input")) updateManifestTotals();
   });
   $("manifest").addEventListener("click", (e) => {
+    // Ici et pas dans le délégué global du compagnon : celui-ci lit `pick.closest("table").id`,
+    // qui lèverait un TypeError depuis une carte. La carte n'est pas un tableau.
+    if (e.target.closest("#manifestToJourney")) { manifestToJourney(); return; }
     if (e.target.closest("#copyManifest")) { copyManifest(); return; }
     if (e.target.closest("#manifestAddBtn")) { addManifestCommodity($("manifestAddInput").value); return; }
     const del = e.target.closest(".mline-del");
@@ -2306,6 +2540,15 @@ async function init() {
     const html = tableId === "loops" ? loopSchemaHTML(item) : multi ? multiSchemaHTML(item) : routeSchemaHTML(item);
     tr.insertAdjacentHTML("afterend", `<tr class="schema-row"><td colspan="${tr.children.length}">${html}</td></tr>`);
     btn.classList.add("open");
+  });
+  // Carte du parcours : cliquer une escale déplace « je suis ici », comme le fil d'étapes.
+  $("journeyMap").addEventListener("click", (e) => {
+    const a = e.target.closest(".jm-arret");
+    if (a) setJourneyStop(Number(a.dataset.i));
+  });
+  $("journeyMap").addEventListener("keydown", (e) => {
+    const a = e.target.closest(".jm-arret");
+    if (a && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); setJourneyStop(Number(a.dataset.i)); }
   });
   // Compagnon de voyage : ▶ sélectionne un trajet (Trajets / En route) ; ✕ efface le parcours.
   document.addEventListener("click", (e) => {
@@ -2343,12 +2586,7 @@ async function init() {
     if (head) { toggleLegEditor(Number(head.dataset.leg)); return; }
     // Parcours interactif : clic sur une étape (⦿) = « je suis ici » -> recale les vues.
     const step = e.target.closest(".jstep");
-    if (step && JOURNEY) {
-      JOURNEY = setJourneyPosition(JOURNEY, Number(step.dataset.i));
-      syncViewsToJourney();
-      renderJourney();
-      refresh();
-    }
+    if (step) setJourneyStop(Number(step.dataset.i));
   });
   // Ajout d'arrêt / de commodité à la touche Entrée.
   document.addEventListener("keydown", (e) => {
@@ -2397,6 +2635,7 @@ async function init() {
   loadOverrides();
   loadAutoloadK();
   loadJourneyEdits();
+  loadJourneyPins();
   updateOvBadge();
   syncToggles();
 
