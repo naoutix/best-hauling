@@ -156,6 +156,25 @@ export function maxBoxSize(t) {
   return n > 0 ? n : 32;
 }
 
+// Capacités de soute relevées EN JEU, là où UEX se trompe. UEX est notre source, pas une autorité :
+// la soute borne le volume de fret, donc les unités, donc le profit et le classement de TOUTES les
+// vues — une valeur fausse ne se voit nulle part et fausse tout. La correction doit vivre ici et
+// non dans data/ships.json : la CI reconstruit les données toutes les 30 min et écraserait le
+// fichier, tandis que les corrections locales (localStorage) ne portent que sur les prix et ne
+// suivraient pas les autres joueurs.
+// Table volontairement minuscule et nominative : chaque entrée est une MESURE en jeu, datée, pas
+// une préférence. À supprimer dès qu'UEX publie la bonne valeur (le test de non-régression le dira).
+export const SCU_RELEVES = {
+  "Drake Ironclad": 2216, // UEX annonce 2 200 ; relevé en jeu (2026-08-12) : 2 216 SCU
+};
+// Nom + soute d'un véhicule UEX, correction appliquée. Exportée pour être testée : sinon la règle
+// vit au fond de main() et rien ne garantit qu'elle survive au prochain refactor du pipeline.
+export function shipEntry(v) {
+  const name = v.name_full || v.name;
+  const releve = SCU_RELEVES[name];
+  return { name, scu: releve ?? numField(v.scu), photo: v.url_photo || "" };
+}
+
 // Génère les routes d'arbitrage pour une commodité.
 // `c` = { name, kind, illegal, refBuy, refSell, buys[], sells[] } où chaque buy/sell porte
 // { id, orbit, name, system, planet, price, stock|demand, updated, status }.
@@ -448,7 +467,7 @@ async function main() {
   // Vaisseaux avec soute (>= 1 SCU), hors véhicules terrestres. Pour le filtre "vaisseau".
   const ships = vehicles
     .filter((v) => v.scu >= 1 && !v.is_ground_vehicle)
-    .map((v) => ({ name: v.name_full || v.name, scu: v.scu, photo: v.url_photo || "" }))
+    .map(shipEntry)
     .sort((a, b) => a.name.localeCompare(b.name));
 
   // Graphe d'échange complet pour les modes « En route » et « remplissage » (chargé à la demande).

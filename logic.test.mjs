@@ -14,7 +14,10 @@ import {
   pairEligible, suggestionsFrom,
   manifestsFrom, multiTrips, tripMetrics, legFromTrip,
   commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
-  legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
+  legFromRoute, legsFromLoop, legsFromChain, legFromManifest, stopSuggestions, bestLegBetween,
+  manifestJourneyState, manifestIntent, sameIntent, legsToPin,
+  journeyMap, nameAngle, CARTE,
+  startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   encodeJourney, decodeJourney, removeJourneyStop, freeManifestLine, hydrateManifestLine,
 } from "./logic.mjs";
@@ -699,6 +702,26 @@ test("decodeState : chaîne vide -> null", () => {
   assert.equal(decodeState(undefined), null);
 });
 
+test("encodeState : un champ VIDÉ disparaît de l'état — c'est ce qui le signale comme vidé", () => {
+  // Contrat dont dépend applyState : l'écriture omet les valeurs vides (URL courte), donc à la
+  // relecture d'un état VENU DE L'APP une clé absente veut dire « champ vidé », pas « jamais
+  // renseigné ». Sans cette lecture symétrique, un budget effacé revenait au 1 000 000 du HTML
+  // au rechargement, et le destinataire du lien voyait un autre classement que son émetteur.
+  const s = decodeState(encodeState({ v: "routes", cargo: "", budget: "", system: "Pyro" }));
+  assert.equal(s.cargo, undefined);
+  assert.equal(s.budget, undefined);
+  assert.equal(s.system, "Pyro");
+});
+
+test("decodeState : seule la vue signe un état de l'app (une ancre quelconque n'en est pas un)", () => {
+  // `v` est écrite à CHAQUE sauvegarde et n'est jamais vide : c'est la signature qui autorise à lire
+  // les clés absentes comme « vidées ». N'importe quelle ancre se décode aussi en objet — vider tous
+  // les champs sur cette foi accueillerait l'arrivant sans soute ni budget.
+  assert.equal(decodeState("top").v, undefined);
+  assert.equal(decodeState("section-2").v, undefined);
+  assert.equal(decodeState(encodeState({ v: "loops", cargo: "" })).v, "loops");
+});
+
 // ---------- routeMetrics / loopMetrics (cœurs de calcul dérivés) ----------
 test("routeMetrics : borné par la soute -> units/profit/investment/temps", () => {
   const m = { buyPrice: 100, buyStock: 500, sellDemand: 300, margin: 50, distance: 0, sameSystem: true, buyUpdated: NOW, sellUpdated: NOW };
@@ -1188,6 +1211,23 @@ test("valueTiers : une seule commodité est en tête", () => {
   assert.equal(valueTiers([]).size, 0);
 });
 
+test("valueTiers : le palier dépend de l'ENSEMBLE reçu — d'où le calcul avant la recherche", () => {
+  // Contrat que renderCommodities doit respecter : la couleur d'une tuile prétend situer la
+  // commodité dans TOUT le board. Restreindre l'ensemble reçu (ici : ne garder que les « Iron »)
+  // remonte mécaniquement la tête de liste en t-hot — la commodité la MOINS payée du jeu
+  // s'affichait alors dans le palier des 15 % les mieux payées, rien qu'en tapant « iron ».
+  const board = [
+    ...rowsOf([34_000_000, 25_000, 12_000, 9_600, 8_000, 6_000, 5_000, 4_500]),
+    { name: "Iron", bestSell: 3900 }, { name: "Iron (Ore)", bestSell: 1000 },
+  ];
+  const complet = valueTiers(board);
+  assert.equal(complet.get("Iron"), "t-low");
+  assert.equal(complet.get("Iron (Ore)"), "t-low");
+  const filtre = valueTiers(board.filter((c) => c.name.startsWith("Iron")));
+  assert.equal(filtre.get("Iron"), "t-hot"); // rang 0 sur 2 : la preuve par l'absurde
+  assert.notEqual(filtre.get("Iron"), complet.get("Iron"));
+});
+
 test("enRouteDeals : destTerminal force le terminal d'arrivée", () => {
   const toC = enRouteDeals(MKT(), 0, "", 2); // force C (idx 2)
   const gold = toC.find((d) => d.commodity === "Gold");
@@ -1550,6 +1590,52 @@ test("bestManifest reste le 1er de manifestsFrom (comportement inchangé)", () =
   assert.equal(bestManifest(MKT(), 0, "", f, idResolve).dest.name, manifestsFrom(MKT(), 0, "", f, idResolve)[0].dest.name);
 });
 
+// ---------- Fraîcheur (maxAge) sur le chemin des manifestes ----------
+// manifestsFrom est le SEUL point d'application du filtre pour « En route », les manifestes de jambe
+// du compagnon de voyage et le mode multi-commodité : ni bestManifest ni multiTrips ne refiltrent.
+// MKT() date ses relevés à NOW (une seconde de 2001, figée pour les calculs déterministes) alors que
+// pairAge se compare à l'horloge réelle : on redate donc tout à RECENT, puis on vieillit le SEUL
+// relevé que le test veut voir écarté.
+const MKT_FRAIS = () => {
+  const m = MKT();
+  m.commodities.forEach((c) => {
+    c.buys.forEach((b) => (b[3] = RECENT));
+    c.sells.forEach((s) => (s[3] = RECENT));
+  });
+  return m;
+};
+
+test("manifestsFrom : maxAge écarte les destinations aux relevés trop vieux", () => {
+  // Gold vers C (la destination la plus rentable) date de 10 jours ; tout le reste est frais.
+  const mkt = MKT_FRAIS();
+  mkt.commodities[0].sells[1][3] = RECENT - 10 * 86400;
+  assert.deepEqual(manifestsFrom(mkt, 0, "", F({ useCargo: true, cargo: 400, maxAge: 3 }), idResolve).map((t) => t.dest.name), ["B"]);
+  // Contre-épreuve : 0 = filtre inactif, la destination périmée revient (et reprend la tête).
+  assert.deepEqual(manifestsFrom(mkt, 0, "", F({ useCargo: true, cargo: 400, maxAge: 0 }), idResolve).map((t) => t.dest.name), ["C", "B"]);
+});
+
+test("manifestsFrom : une date INCONNUE des deux côtés est écartée comme un relevé périmé", () => {
+  // pairAge(0, 0) renvoie null : le couple n'est pas « frais faute de preuve », il est inéligible.
+  // Ici Gold n'a plus de date nulle part -> C (qui n'a que Gold) disparaît, B garde Drug.
+  const mkt = MKT_FRAIS();
+  mkt.commodities[0].buys[0][3] = 0;
+  mkt.commodities[0].sells.forEach((s) => (s[3] = 0));
+  const trips = manifestsFrom(mkt, 0, "", F({ useCargo: true, cargo: 400, maxAge: 3 }), idResolve);
+  assert.deepEqual(trips.map((t) => t.dest.name), ["B"]);
+  assert.deepEqual(trips[0].lines.map((l) => l.name), ["Drug"]); // Gold, sans date, n'est pas chargé
+  // Contre-épreuve : sans filtre de fraîcheur, une date inconnue ne gêne personne.
+  assert.equal(manifestsFrom(mkt, 0, "", F({ useCargo: true, cargo: 400, maxAge: 0 }), idResolve).length, 2);
+});
+
+test("bestManifest : maxAge peut changer la destination retenue", () => {
+  const mkt = MKT_FRAIS();
+  mkt.commodities[0].sells[1][3] = RECENT - 10 * 86400; // la vente vers C date de 10 j
+  assert.equal(bestManifest(mkt, 0, "", F({ useCargo: true, cargo: 400, maxAge: 0 }), idResolve).dest.name, "C");
+  assert.equal(bestManifest(mkt, 0, "", F({ useCargo: true, cargo: 400, maxAge: 3 }), idResolve).dest.name, "B");
+  // Sans repli possible (destination forcée sur C), le manifeste n'existe simplement pas.
+  assert.equal(bestManifest(mkt, 0, "", F({ useCargo: true, cargo: 400, maxAge: 3 }), idResolve, 2), null);
+});
+
 test("multiTrips : ne garde que les chargements COMBINÉS (≥ 2 commodités)", () => {
   // Vers C, Gold seul sature les 400 SCU -> chargement à 1 commodité, déjà couvert par la vue
   // « Trajets » normale, donc écarté du mode multi.
@@ -1591,6 +1677,22 @@ test("multiTrips : limit tronque la liste (garde-fou de perf)", () => {
   assert.equal(multiTrips(MKT(), F({ useCargo: true, cargo: 400 }), idResolve, 1, 1).length, 1);
 });
 
+test("multiTrips : maxAge écarte les trajets aux relevés trop vieux (hérité de manifestsFrom)", () => {
+  // multiTrips délègue TOUT le filtre de fraîcheur à manifestsFrom : sans couverture ici, un
+  // manifestsFrom qui cesserait de l'appliquer ne serait signalé par rien côté « Trajets multi ».
+  const mkt = MKT_FRAIS();
+  mkt.commodities[0].sells[1][3] = RECENT - 10 * 86400; // Gold vers C : 10 jours
+  const noms = (o) => multiTrips(mkt, F({ useCargo: true, cargo: 400, ...o }), idResolve, 300, 1).map((t) => t.dest.name);
+  assert.deepEqual(noms({ maxAge: 0 }), ["C", "B"]); // filtre inactif
+  assert.deepEqual(noms({ maxAge: 3 }), ["B"]);
+  // Date inconnue des deux côtés : même sort qu'un relevé périmé.
+  const inconnu = MKT_FRAIS();
+  inconnu.commodities[0].buys[0][3] = 0;
+  inconnu.commodities[0].sells.forEach((s) => (s[3] = 0));
+  assert.equal(multiTrips(inconnu, F({ useCargo: true, cargo: 400, maxAge: 3 }), idResolve, 300, 1).length, 1);
+  assert.equal(multiTrips(inconnu, F({ useCargo: true, cargo: 400, maxAge: 0 }), idResolve, 300, 1).length, 2);
+});
+
 test("tripMetrics : totaux, marge moyenne pondérée par SCU et ROI", () => {
   const toB = manifestsFrom(MKT(), 0, "", F({ useCargo: true, cargo: 400 }), idResolve)
     .find((t) => t.dest.name === "B");
@@ -1623,6 +1725,345 @@ test("legFromTrip : jambe de voyage depuis un trajet multi (commodité de tête)
   assert.equal(leg.to, "B");
   assert.equal(leg.commodity, "Gold");
   assert.equal(leg.margin, 45);            // marge moyenne du chargement
+});
+
+test("legFromManifest : la jambe porte la marge du chargement, sans passer par tripMetrics", () => {
+  const toB = manifestsFrom(MKT(), 0, "", F({ useCargo: true, cargo: 400 }), idResolve)
+    .find((t) => t.dest.name === "B");
+  const leg = legFromManifest(toB);
+  assert.deepEqual(Object.keys(leg).sort(), ["buyPrice", "commodity", "from", "fromSystem", "margin", "sellPrice", "to", "toSystem"]);
+  assert.deepEqual([leg.from, leg.to, leg.commodity], ["A", "B", "Gold"]);
+  assert.equal(leg.margin, 45); // un manifeste n'a pas de champ `margin` : sans le calcul, ce serait 0
+  assert.deepEqual(leg, legFromTrip({ ...toB, ...tripMetrics(toB) })); // même jambe que la vue Trajets multi
+});
+
+test("legFromManifest : la marge reste BRUTE quand les frais d'autoload sont actifs", () => {
+  // La jambe est persistée et voyage dans le permalien : une marge nette y survivrait à
+  // l'extinction de l'interrupteur et se cumulerait avec les marges brutes des autres vues.
+  const f = F({ useCargo: true, cargo: 400 });
+  // Frais réels mais supportables : à k plus élevé, manifestsFrom écarte les lignes dont la
+  // manutention mange la marge et le chargement disparaît — il n'y aurait plus rien à mesurer.
+  const cher = () => ({ maxBox: 32, k: 0.1 });
+  const toB = manifestsFrom(MKT(), 0, "", f, idResolve, null, cher).find((t) => t.dest.name === "B");
+  const m = tripMetrics(toB);
+  assert.ok(m.fees > 0, "fixture sans frais : le test ne prouverait rien");
+  assert.ok(m.marginGross > m.margin, "la marge nette doit être plus basse que la brute");
+  assert.equal(legFromManifest(toB).margin, m.marginGross);
+});
+
+test("legFromManifest : un chargement « vend ailleurs » ne produit ni NaN ni jambe cassée", () => {
+  const man = { origin: { name: "A", system: "Stanton" }, dest: { name: "B", system: "Stanton" }, cross: false, cargo: 96, fee: null,
+    lines: [{ name: "Butin", units: 10, buyPrice: 0, sellPrice: null, margin: 0, stock: null, demand: null, acquired: true }] };
+  const leg = legFromManifest(man);
+  assert.equal(leg.commodity, "Butin");
+  assert.equal(leg.sellPrice, 0);   // `null` coercé, jamais NaN
+  assert.equal(leg.margin, 0);
+  assert.deepEqual(decodeJourney(encodeJourney(startJourney([leg]))).legs[0], leg); // survit au lien
+});
+
+// ---------- Manifeste -> voyage : ce que le parcours en cours autorise ----------
+test("manifestJourneyState : sans voyage, on en démarre un", () => {
+  assert.deepEqual(manifestJourneyState(null, { name: "A" }, { name: "B" }), { etat: "ajouter" });
+});
+
+test("manifestJourneyState : un chargement au départ de la FIN du parcours s'ajoute", () => {
+  const j = parcours(["A", "B", "C", "D"], 1);
+  assert.deepEqual(manifestJourneyState(j, { name: "D" }, { name: "E" }), { etat: "ajouter" });
+  // Voyage « de zéro » : la fin, c'est le point de départ posé.
+  assert.deepEqual(manifestJourneyState(startJourneyAt({ name: "Z", system: "S" }), { name: "Z" }, { name: "Y" }), { etat: "ajouter" });
+});
+
+test("manifestJourneyState : la jambe COURANTE n'est pas une incompatibilité", () => {
+  // État par défaut après tout ▶ : syncViewsToJourney pré-remplit En route avec la station
+  // courante, donc la carte affiche la jambe qu'on vient de choisir. Sans cet état, un clic
+  // passerait par la branche REMPLACER d'addToJourney et réduirait le voyage à cette seule jambe.
+  const j = parcours(["A", "B", "C", "D"], 1);
+  assert.deepEqual(manifestJourneyState(j, { name: "B" }, { name: "C" }), { etat: "deja", leg: 1 });
+  assert.deepEqual(manifestJourneyState(j, { name: "C" }, { name: "D" }), { etat: "deja", leg: 2 }); // autre jambe planifiée
+});
+
+test("manifestJourneyState : sur un parcours cyclique, le raccord PRIME sur « déjà »", () => {
+  // A→B→A, arrivé au bout : le chargement A→B est un nouveau tour, pas la jambe 0 déjà faite.
+  // C'est ce test qui verrouille l'ordre des branches ; il tombe si on cherche « déjà » en premier.
+  const boucle = { legs: [jambe("A", "B"), jambe("B", "A")], current: 2 };
+  assert.deepEqual(manifestJourneyState(boucle, { name: "A" }, { name: "B" }), { etat: "ajouter" });
+});
+
+test("manifestJourneyState : sinon conflit, en nommant la fin du parcours", () => {
+  const r = manifestJourneyState(parcours(["A", "B"], 0), { name: "A" }, { name: "Z" });
+  assert.deepEqual(r, { etat: "conflit", fin: "B" });
+});
+
+test("manifestJourneyState : une jambe venue d'un permalien reste reconnue", () => {
+  // decodeJourney coerce les systèmes absents à "" : la comparaison ne doit porter que sur les noms.
+  const j = decodeJourney(encodeJourney(startJourney([jambe("A", "B")])));
+  assert.equal(manifestJourneyState(j, { name: "B" }, { name: "C" }).etat, "ajouter");
+  assert.equal(manifestJourneyState(j, { name: "A" }, { name: "B" }).etat, "deja");
+});
+
+// ---------- Carte 2D du parcours (ADR-001) ----------
+const STARMAP = {
+  Pyro: { ancres: {
+    "Pyro I": { au: 0.553, lon: 53 }, Monox: { au: 0.71, lon: 80 }, Terminus: { au: 4.57, lon: 152 },
+    "Stanton Gateway (Pyro)": { au: 9, lon: -5 },
+  } },
+  Stanton: { ancres: {
+    Hurston: { au: 0.859, lon: -30 }, MicroTech: { au: 2.904, lon: -90 },
+    "Pyro Gateway (Stanton)": { au: 1.8, lon: 130 },
+  } },
+};
+const TERMS = {
+  Megumi: { system: "Pyro", planet: "Terminus" },
+  Checkmate: { system: "Pyro", planet: "Monox" },
+  "Stanton Gateway (Pyro)": { system: "Pyro", planet: "" },
+  "Pyro Gateway (Stanton)": { system: "Stanton", planet: "" },
+  "New Babbage": { system: "Stanton", planet: "MicroTech" },
+  Levski: { system: "Nyx", planet: "" }, // UEX ne le rattache à aucun corps
+};
+const infoT = (n) => TERMS[n] || null;
+const st = (...noms) => noms.map((n) => ({ name: n, system: TERMS[n].system }));
+const dansLeCadre = (p, c) => p.x >= 0 && p.x <= c.largeur && p.y >= 0 && p.y <= c.hauteur;
+
+test("journeyMap : un parcours intra-système tient dans un seul disque", () => {
+  const c = journeyMap(st("Megumi", "Checkmate"), 0, STARMAP, infoT);
+  assert.equal(c.systemes.length, 1);
+  assert.equal(c.systemes[0].nom, "Pyro");
+  assert.equal(c.arrets.length, 2);
+  assert.equal(c.jambes.length, 1);
+  assert.equal(c.jambes[0].saut, false);
+  for (const a of c.arrets) assert.ok(dansLeCadre(a, c), `${a.nom} hors cadre`);
+});
+
+test("journeyMap : l'ORDRE des orbites est celui de la starmap, pas celui de la table", () => {
+  // Terminus (4,57 UA) doit être plus loin de l'étoile que Monox (0,71) : c'est tout l'intérêt
+  // d'être allé chercher la vraie géométrie plutôt que d'inventer des anneaux.
+  const c = journeyMap(st("Megumi", "Checkmate"), 0, STARMAP, infoT);
+  const sys = c.systemes[0];
+  const orbite = (n) => sys.corps.find((b) => b.nom === n).orbite;
+  assert.ok(orbite("Pyro I") < orbite("Monox"));
+  assert.ok(orbite("Monox") < orbite("Terminus"));
+  assert.ok(orbite("Terminus") < orbite("Stanton Gateway (Pyro)")); // la passerelle est au-delà
+});
+
+test("journeyMap : un saut inter-système fait DEUX disques et une jambe marquée", () => {
+  const c = journeyMap(st("Megumi", "Stanton Gateway (Pyro)", "Pyro Gateway (Stanton)", "New Babbage"), 1, STARMAP, infoT);
+  assert.deepEqual(c.systemes.map((s) => s.nom), ["Pyro", "Stanton"]);
+  assert.deepEqual(c.jambes.map((j) => j.saut), [false, true, false]);
+  assert.ok(c.systemes[0].cx < c.systemes[1].cx); // Pyro à gauche, Stanton à droite
+  for (const a of c.arrets) assert.ok(dansLeCadre(a, c), `${a.nom} hors cadre`);
+});
+
+test("journeyMap : une passerelle se place sur SA propre ancre, pas sur une planète", () => {
+  const c = journeyMap(st("Megumi", "Stanton Gateway (Pyro)"), 0, STARMAP, infoT);
+  const g = c.arrets[1];
+  assert.equal(g.parent, "Stanton Gateway (Pyro)");
+  assert.equal(g.orphelin, false);
+});
+
+test("journeyMap : un terminal sans corps parent tombe sur l'anneau externe, sans casser", () => {
+  // Levski (Nyx) : UEX ne le rattache à rien, et Nyx n'a aucune ancre de planète. Cas NOMINAL.
+  const c = journeyMap(st("Levski"), 0, STARMAP, infoT);
+  assert.equal(c.arrets[0].orphelin, true);
+  assert.ok(Number.isFinite(c.arrets[0].x) && Number.isFinite(c.arrets[0].y));
+  assert.equal(c.jambes.length, 0); // un seul arrêt : aucune jambe
+});
+
+test("journeyMap : le vaisseau se pose sur l'arrêt courant et vise le suivant", () => {
+  const noms = st("Megumi", "Checkmate");
+  const a = journeyMap(noms, 0, STARMAP, infoT);
+  assert.deepEqual([a.vaisseau.x, a.vaisseau.y], [a.arrets[0].x, a.arrets[0].y]);
+  const b = journeyMap(noms, 1, STARMAP, infoT);
+  assert.deepEqual([b.vaisseau.x, b.vaisseau.y], [b.arrets[1].x, b.arrets[1].y]);
+  assert.notEqual(a.vaisseau.angle, b.vaisseau.angle); // au bout, il regarde d'où il vient
+});
+
+test("journeyMap : une position hors bornes est ramenée dans le parcours", () => {
+  const noms = st("Megumi", "Checkmate");
+  assert.equal(journeyMap(noms, 99, STARMAP, infoT).vaisseau.arret, 1);
+  assert.equal(journeyMap(noms, -5, STARMAP, infoT).vaisseau.arret, 0);
+});
+
+test("journeyMap : les jambes déjà parcourues sont marquées", () => {
+  const c = journeyMap(st("Megumi", "Checkmate", "Stanton Gateway (Pyro)"), 1, STARMAP, infoT);
+  assert.deepEqual(c.jambes.map((j) => j.faite), [true, false]);
+});
+
+test("journeyMap : sans arrêt, ou sur un système inconnu de la table, rien ne casse", () => {
+  assert.equal(journeyMap([], 0, STARMAP, infoT), null);
+  assert.equal(journeyMap(null, 0, STARMAP, infoT), null);
+  const c = journeyMap([{ name: "Ailleurs", system: "Odin" }], 0, {}, () => null); // table vide
+  assert.equal(c.systemes.length, 1);
+  assert.equal(c.systemes[0].corps.length, 0);
+  assert.ok(Number.isFinite(c.arrets[0].x));
+});
+
+test("journeyMap : deux escales d'une MÊME planète ne se superposent jamais", () => {
+  // Rod's Fuel et Rat's Nest sont tous deux sur Pyro V : sans répartition, ils tombaient à 6 px
+  // l'un de l'autre et la seconde escale devenait inatteignable au clic.
+  const terms = { ...TERMS, A1: { system: "Pyro", planet: "Monox" }, A2: { system: "Pyro", planet: "Monox" }, A3: { system: "Pyro", planet: "Monox" } };
+  const stations = ["A1", "A2", "A3"].map((n) => ({ name: n, system: "Pyro" }));
+  const c = journeyMap(stations, 0, STARMAP, (n) => terms[n]);
+  for (let i = 0; i < c.arrets.length; i++) {
+    for (let j = i + 1; j < c.arrets.length; j++) {
+      const d = Math.hypot(c.arrets[i].x - c.arrets[j].x, c.arrets[i].y - c.arrets[j].y);
+      assert.ok(d >= 22, `escales ${i} et ${j} distantes de ${d.toFixed(1)} px — les cibles (r=11) se recouvrent`);
+    }
+  }
+});
+
+test("journeyMap : sur les vraies données, aucune paire d'escales ne se recouvre", () => {
+  const starmap = JSON.parse(readFileSync(new URL("./data/starmap.json", import.meta.url), "utf8"));
+  const info = new Map(REAL.terminals.map((t) => [t.name, t]));
+  // Le pire cas réel : tous les terminaux d'une même planète, d'un coup.
+  for (const planete of ["Pyro V", "Hurston", "MicroTech"]) {
+    const noms = REAL.terminals.filter((t) => t.planet === planete).slice(0, 8);
+    if (noms.length < 2) continue;
+    const c = journeyMap(noms.map((t) => ({ name: t.name, system: t.system })), 0, starmap, (n) => info.get(n));
+    for (let i = 0; i < c.arrets.length; i++) {
+      for (let j = i + 1; j < c.arrets.length; j++) {
+        const d = Math.hypot(c.arrets[i].x - c.arrets[j].x, c.arrets[i].y - c.arrets[j].y);
+        assert.ok(d >= 20, `${planete} : ${c.arrets[i].nom} et ${c.arrets[j].nom} à ${d.toFixed(1)} px`);
+      }
+    }
+  }
+});
+
+test("nameAngle : déterministe, borné, et distinct pour deux noms proches", () => {
+  assert.equal(nameAngle("Megumi"), nameAngle("Megumi")); // aucun hasard : la carte ne scintille pas
+  assert.ok(nameAngle("Megumi") >= 0 && nameAngle("Megumi") < 360);
+  assert.notEqual(nameAngle("Ruin Station"), nameAngle("Ruin Statiom"));
+});
+
+test("carte : sur les VRAIES données, tout arrêt reste dans le cadre", () => {
+  const starmap = JSON.parse(readFileSync(new URL("./data/starmap.json", import.meta.url), "utf8"));
+  const info = new Map(REAL.terminals.map((t) => [t.name, t]));
+  const noms = REAL.terminals.map((t) => t.name);
+  let vus = 0;
+  for (let i = 0; i + 1 < noms.length; i += 7) { // un échantillon de paires, tous systèmes confondus
+    const paire = [noms[i], noms[i + 1]].map((n) => ({ name: n, system: info.get(n).system }));
+    const c = journeyMap(paire, 0, starmap, (n) => info.get(n));
+    vus++;
+    for (const a of c.arrets) {
+      assert.ok(Number.isFinite(a.x) && Number.isFinite(a.y), `${a.nom} : coordonnée non finie`);
+      assert.ok(dansLeCadre(a, c), `${a.nom} hors cadre (${a.x}, ${a.y})`);
+    }
+  }
+  assert.ok(vus > 10, `échantillon trop petit (${vus})`);
+});
+
+// ---------- Board Commodités : les corrections locales s'y appliquent aussi ----------
+// Corrige le prix d'un point précis, laisse tout le reste intact (même contrat qu'effVals).
+const corrigeur = (corrections) => (commodity, terminal, side, price, vol) => {
+  const c = corrections[`${commodity}|${terminal}|${side}`];
+  return { price: c && c.price != null ? c.price : price, vol: c && c.vol != null ? c.vol : vol, ovol: vol != null };
+};
+
+test("commoditySummaries : sans résolveur, les prix bruts d'UEX (comportement historique)", () => {
+  const [gold] = commoditySummaries(MKT()).filter((c) => c.name === "Gold");
+  assert.deepEqual([gold.bestBuy, gold.bestSell, gold.margin], [100, 300, 200]);
+});
+
+test("commoditySummaries : une correction de prix change la marge, donc le rang et la couleur", () => {
+  // Le bug : on corrigeait le prix de vente dans un tableau, et la tuile de la commodité gardait
+  // la marge d'UEX — board classé et colorié sur un chiffre qu'on venait de démentir.
+  const r = corrigeur({ "Gold|C|sell": { price: 900 } });
+  const [gold] = commoditySummaries(MKT(), {}, r).filter((c) => c.name === "Gold");
+  assert.equal(gold.bestSell, 900);
+  assert.equal(gold.margin, 800); // 900 - 100
+});
+
+test("commoditySummaries : corriger l'achat le moins cher rebat aussi la marge", () => {
+  const r = corrigeur({ "Gold|A|buy": { price: 250 } });
+  const [gold] = commoditySummaries(MKT(), {}, r).filter((c) => c.name === "Gold");
+  assert.equal(gold.bestBuy, 250);
+  assert.equal(gold.margin, 50); // 300 - 250
+});
+
+test("commodityPoints : les points affichent les valeurs corrigées ET se trient dessus", () => {
+  // B paie 150, C paie 300 : « mieux payé d'abord » met C en tête. En corrigeant B à 500,
+  // c'est B qui doit passer devant — sinon la liste s'ordonne sur un prix démenti.
+  const brut = commodityPoints(MKT(), "Gold");
+  assert.deepEqual(brut.sells.map((s) => s.terminal), ["C", "B"]);
+  const p = commodityPoints(MKT(), "Gold", {}, corrigeur({ "Gold|B|sell": { price: 500 } }));
+  assert.deepEqual(p.sells.map((s) => s.terminal), ["B", "C"]);
+  assert.equal(p.sells[0].price, 500);
+});
+
+test("commodityPoints : une correction de volume passe aussi (stock et demande)", () => {
+  const p = commodityPoints(MKT(), "Gold", {}, corrigeur({ "Gold|A|buy": { vol: 7 }, "Gold|B|sell": { vol: 3 } }));
+  assert.equal(p.buys.find((b) => b.terminal === "A").stock, 7);
+  assert.equal(p.sells.find((s) => s.terminal === "B").demand, 3);
+});
+
+// ---------- Gel des jambes quand un VOLUME est corrigé ----------
+const CHARGEMENTS = [
+  [{ name: "Copper", units: 59 }, { name: "Aluminum", units: 37 }], // jambe 0 : Megumi -> Rat's Nest
+  [{ name: "Titanium", units: 96 }],                                 // jambe 1 : Rat's Nest -> Checkmate
+];
+// `jambe` est défini plus bas dans le fichier : on ne l'appelle donc pas à l'évaluation du module.
+const jambeDe = (from, to) => ({ from, fromSystem: "S", to, toSystem: "S", commodity: "X", buyPrice: 1, sellPrice: 2, margin: 1 });
+const PARCOURS = [jambeDe("Megumi", "Rat's Nest"), jambeDe("Rat's Nest", "Checkmate")];
+
+test("legsToPin : seule la jambe qui ACHÈTE ce point est figée", () => {
+  // Stock du Copper corrigé à Megumi : la jambe 0 en charge, elle garde ses SCU. La jambe 1 part
+  // d'ailleurs et n'en dépend pas — la figer la marquerait pour rien.
+  assert.deepEqual(legsToPin(PARCOURS, CHARGEMENTS, "Copper", "Megumi", "buy"), [0]);
+  assert.deepEqual(legsToPin(PARCOURS, CHARGEMENTS, "Titanium", "Rat's Nest", "buy"), [1]);
+});
+
+test("legsToPin : une demande corrigée regarde l'ARRIVÉE, pas le départ", () => {
+  assert.deepEqual(legsToPin(PARCOURS, CHARGEMENTS, "Copper", "Rat's Nest", "sell"), [0]);
+  assert.deepEqual(legsToPin(PARCOURS, CHARGEMENTS, "Copper", "Megumi", "sell"), []); // Megumi n'est l'arrivée de personne
+});
+
+test("legsToPin : ni le mauvais terminal ni la mauvaise commodité ne figent quoi que ce soit", () => {
+  assert.deepEqual(legsToPin(PARCOURS, CHARGEMENTS, "Copper", "Checkmate", "buy"), []);  // bon fret, mauvais bout
+  assert.deepEqual(legsToPin(PARCOURS, CHARGEMENTS, "Gold", "Megumi", "buy"), []);        // bon bout, fret absent
+  assert.deepEqual(legsToPin(PARCOURS, [[], []], "Copper", "Megumi", "buy"), []);         // chargements vides
+  assert.deepEqual(legsToPin([], [], "Copper", "Megumi", "buy"), []);                     // aucun voyage
+});
+
+test("legsToPin : un même terminal réutilisé plus loin fige TOUTES les jambes concernées", () => {
+  // Le joueur repasse par Megumi : les deux jambes qui y chargent du Copper sont déjà décidées.
+  const boucle = [jambeDe("Megumi", "Rat's Nest"), jambeDe("Rat's Nest", "Megumi"), jambeDe("Megumi", "Checkmate")];
+  const charges = [[{ name: "Copper", units: 59 }], [{ name: "Titanium", units: 96 }], [{ name: "Copper", units: 12 }]];
+  assert.deepEqual(legsToPin(boucle, charges, "Copper", "Megumi", "buy"), [0, 2]);
+});
+
+test("manifestIntent : ne persiste QUE le nom et les SCU, dans l'ordre", () => {
+  const lines = [
+    { name: "Gold", units: 300, buyPrice: 100, sellPrice: 150, stock: 500, buyUpdated: 1, cap: 300 },
+    { name: "Drug", units: 0, buyPrice: 50, sellPrice: 80 },   // 0 volontaire : doit survivre
+    { name: "Butin", units: 999, cap: 10 },                     // au-delà du cap : conservé tel quel
+  ];
+  const intent = manifestIntent(lines);
+  assert.deepEqual(intent, [{ name: "Gold", units: 300 }, { name: "Drug", units: 0 }, { name: "Butin", units: 999 }]);
+  // Le test qui interdit toute fuite d'instantané de marché dans le store.
+  for (const e of intent) assert.deepEqual(Object.keys(e), ["name", "units"]);
+});
+
+test("sameIntent : distingue longueur, nom et SCU", () => {
+  const a = [{ name: "Gold", units: 300 }, { name: "Drug", units: 10 }];
+  assert.equal(sameIntent(a, [{ name: "Gold", units: 300 }, { name: "Drug", units: 10 }]), true);
+  assert.equal(sameIntent(a, [{ name: "Gold", units: 300 }]), false);                              // longueur
+  assert.equal(sameIntent(a, [{ name: "Gold", units: 300 }, { name: "Butin", units: 10 }]), false); // nom
+  assert.equal(sameIntent(a, [{ name: "Gold", units: 299 }, { name: "Drug", units: 10 }]), false);  // SCU
+  assert.equal(sameIntent([], []), true);
+});
+
+test("manifeste intact : destination libre et destination forcée donnent le MÊME chargement", () => {
+  // C'est l'invariant qui justifie de ne RIEN persister quand le manifeste n'a pas été touché :
+  // legManifest, qui force le terminal d'arrivée, recalculera exactement ce que la carte affichait.
+  const f = F({ useCargo: true, cargo: 400 });
+  let compares = 0;
+  for (let o = 0; o < REAL.terminals.length; o++) {
+    const libre = bestManifest(REAL, o, "", f, idResolve);
+    if (!libre) continue;
+    const force = bestManifest(REAL, o, "", f, idResolve, libre.destIdx);
+    compares++;
+    assert.deepEqual(manifestIntent(force.lines), manifestIntent(libre.lines), `divergence depuis ${REAL.terminals[o].name}`);
+  }
+  assert.ok(compares > 10, `échantillon trop petit (${compares})`);
 });
 
 // ---------- Résolution confrontée aux VRAIES données ----------
@@ -1684,8 +2125,102 @@ test("removeJourneyStop : retirer le DERNIER arrêt ramène la position dans les
   assert.equal(r.legs.length, 1);
 });
 
-test("removeJourneyStop : parcours vidé -> null", () => {
-  assert.equal(removeJourneyStop(parcours(["A", "B"], 0), 0), null);
+test("removeJourneyStop : sur deux arrêts, retirer l'ARRIVÉE garde le départ", () => {
+  // A→B, on clique ✕ sur B. Avant : les DEUX arrêts disparaissaient d'un coup (retour à null).
+  const r = removeJourneyStop(parcours(["A", "B"], 0), 1);
+  assert.deepEqual(r.legs, []);
+  assert.deepEqual(r.start, { name: "A", system: "S" });
+  assert.deepEqual(journeyStations(r), [{ name: "A", system: "S" }]); // le voyage vit encore, à A
+  assert.equal(r.current, 0);
+  assert.deepEqual([r.removedFrom, r.removedCount, r.insertedCount], [0, 1, 0]);
+});
+
+test("removeJourneyStop : sur deux arrêts, retirer le DÉPART garde l'arrivée", () => {
+  const r = removeJourneyStop(parcours(["A", "B"], 0), 0);
+  assert.deepEqual(r.legs, []);
+  assert.deepEqual(r.start, { name: "B", system: "S" });
+  assert.equal(journeyEnd(r).name, "B"); // c'est de là que repartira le prochain arrêt
+});
+
+test("removeJourneyStop : le survivant se raccorde comme un vrai départ", () => {
+  // Le parcours réduit doit se comporter EXACTEMENT comme un startJourneyAt : une jambe qui
+  // part de la station survivante l'ÉTEND, elle ne remplace pas le voyage.
+  const r = removeJourneyStop(parcours(["A", "B"], 0), 1);
+  const suite = addToJourney(r, [jambe("A", "C")]);
+  assert.deepEqual(suite.legs.map((l) => l.from + "→" + l.to), ["A→C"]);
+  assert.equal(decodeJourney(encodeJourney(r)).start.name, "A"); // survit au lien partageable
+});
+
+test("removeJourneyStop : retirer le dernier arrêt restant -> null (voyage effacé)", () => {
+  const seul = removeJourneyStop(parcours(["A", "B"], 0), 1); // il ne reste que A
+  assert.equal(removeJourneyStop(seul, 0), null);
+  assert.equal(removeJourneyStop(startJourneyAt({ name: "A", system: "S" }), 0), null);
+});
+
+// ---------- Suggestions d'arrêts : mêmes filtres que la vue qui les affichera ----------
+const MARCHE_ARRETS = {
+  terminals: [
+    { name: "Dépôt", system: "Stanton", planet: "P", outpost: false },  // 0 : départ du parcours
+    { name: "Poste", system: "Stanton", planet: "P", outpost: true },   // 1 : avant-poste, même système
+    { name: "Relais", system: "Pyro", planet: "Q", outpost: false },    // 2 : autre système
+  ],
+  commodities: [
+    { name: "Poudre", code: "POUD", kind: "vice", illegal: true, buys: [[0, 100, 500, 9e9, 3]], sells: [[1, 400, 500, 9e9, 3]] },
+    { name: "Ferraille", code: "FERR", kind: "metal", illegal: false, buys: [[0, 100, 500, 9e9, 3]], sells: [[2, 200, 500, 9e9, 3]] },
+  ],
+};
+const filtres = (o = {}) => ({
+  cargo: 96, budget: 1e6, useCargo: true, useBudget: true, capStock: false,
+  sameOnly: false, noOutpost: false, legalOnly: false, sysFilter: "", maxAge: 0, q: "", ...o,
+});
+const terminaux = (sugs) => sugs.map((s) => s.terminal);
+
+test("stopSuggestions : sans filtre, une entrée par destination, la meilleure marge d'abord", () => {
+  const s = stopSuggestions(MARCHE_ARRETS, 0, filtres());
+  assert.deepEqual(terminaux(s), ["Poste", "Relais"]); // 300 puis 100
+  assert.equal(s[0].commodity, "Poudre");
+});
+
+test("stopSuggestions : ne propose JAMAIS un trajet que la vue refuse d'afficher", () => {
+  // Le bug : « Frais/légales uniquement » coché, la boîte proposait quand même une commodité
+  // illégale (Megumi → Devlin Scrap via WiDoW). L'arrêt s'ajoutait, puis sa jambe s'affichait
+  // « aucun fret rentable » — bestManifest, lui, applique pairEligible.
+  assert.deepEqual(terminaux(stopSuggestions(MARCHE_ARRETS, 0, filtres({ legalOnly: true }))), ["Relais"]);
+  assert.deepEqual(terminaux(stopSuggestions(MARCHE_ARRETS, 0, filtres({ noOutpost: true }))), ["Relais"]);
+  assert.deepEqual(terminaux(stopSuggestions(MARCHE_ARRETS, 0, filtres({ sameOnly: true }))), ["Poste"]);
+  assert.deepEqual(terminaux(stopSuggestions(MARCHE_ARRETS, 0, filtres({ q: "ferraille" }))), ["Relais"]);
+});
+
+test("stopSuggestions : le menu « système d'achat » ne bride PAS les suggestions", () => {
+  // Seule différence assumée avec routePasses : dans un parcours, l'origine est imposée par la
+  // jambe précédente. La filtrer par le menu viderait la boîte dès qu'on regarde un autre système.
+  assert.equal(stopSuggestions(MARCHE_ARRETS, 0, filtres({ sysFilter: "Pyro" })).length, 2);
+});
+
+test("bestLegBetween : la jambe suit les mêmes filtres, sinon null", () => {
+  const l = bestLegBetween(MARCHE_ARRETS, 0, 1, filtres());
+  assert.equal(l.commodity, "Poudre");
+  assert.deepEqual([l.from, l.to, l.margin], ["Dépôt", "Poste", 300]);
+  // Filtrée : l'appelant pose alors une jambe « à vide », cohérente avec son manifeste vide.
+  assert.equal(bestLegBetween(MARCHE_ARRETS, 0, 1, filtres({ legalOnly: true })), null);
+  assert.equal(bestLegBetween(MARCHE_ARRETS, 0, 2, filtres({ sameOnly: true })), null);
+});
+
+test("stopSuggestions : sur les vraies données, chaque suggestion passe routePasses", () => {
+  const jeux = [filtres(), filtres({ legalOnly: true }), filtres({ noOutpost: true }), filtres({ sameOnly: true })];
+  let vues = 0;
+  for (const f of jeux) {
+    for (let o = 0; o < REAL.terminals.length; o++) {
+      for (const s of stopSuggestions(REAL, o, f)) {
+        vues++;
+        const d = enRouteDeals(REAL, o, "", null, f)
+          .find((x) => x.sell.terminal === s.terminal && x.commodity === s.commodity);
+        assert.ok(d, `suggestion ${s.terminal}/${s.commodity} introuvable dans les deals`);
+        assert.ok(routePasses(d, { ...f, sysFilter: "" }), `suggestion filtrée par la vue : ${s.terminal} via ${s.commodity}`);
+      }
+    }
+  }
+  assert.ok(vues > 100, `instantané trop petit pour être significatif (${vues} suggestions)`);
 });
 
 // ---------- Lignes de manifeste : ajout libre et ré-hydratation ----------

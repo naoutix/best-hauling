@@ -2,7 +2,10 @@
 // Lancer : `node --test` (ou `npm test`).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeKind, routesForCommodity, buildBestLegs, buildMarket, sellDemand, maxBoxSize, numField, MIN_TERMINALS, MIN_ROUTES } from "./build-data.mjs";
+import {
+  normalizeKind, routesForCommodity, buildBestLegs, buildMarket, sellDemand, maxBoxSize, numField,
+  MIN_TERMINALS, MIN_ROUTES, shipEntry, SCU_RELEVES,
+} from "./build-data.mjs";
 import { readFileSync } from "node:fs";
 
 test("normalizeKind corrige la casse, les fautes de frappe et les valeurs vides", () => {
@@ -165,6 +168,7 @@ test("une commodité « vente seule » ne produit ni route ni segment (inerte po
 // Il lit l'INSTANTANÉ commité, pas des données fraîches : `node --test` tourne avant
 // `npm run build` dans update-data.yml, donc il ne peut pas bloquer un déploiement sur un aléa UEX.
 const MARKET = JSON.parse(readFileSync(new URL("../data/market.json", import.meta.url), "utf8"));
+const SHIPS = JSON.parse(readFileSync(new URL("../data/ships.json", import.meta.url), "utf8"));
 
 // `autoload` / `maxBox` ne sont volontairement PAS vérifiés ici : `node --test` tourne AVANT
 // `npm run build` (update-data.yml) et la CI ne re-commite jamais les data/*.json. L'instantané
@@ -252,6 +256,34 @@ test("sellDemand : `null` (inconnu) et `0` (saturé) ne se confondent pas", () =
   assert.equal(sellDemand({ scu_sell: 0, scu_sell_stock: 50 }), null);
   assert.notEqual(sellDemand({}), 0);
   assert.equal(sellDemand({ scu_sell: 50, scu_sell_stock: 50 }), 0);
+});
+
+// ---------- Vaisseaux : les capacités relevées en jeu l'emportent sur UEX ----------
+test("shipEntry : un vaisseau sans relevé garde la valeur UEX", () => {
+  assert.deepEqual(shipEntry({ name_full: "Aegis Avenger Titan", scu: 8, url_photo: "u" }), { name: "Aegis Avenger Titan", scu: 8, photo: "u" });
+  assert.equal(shipEntry({ name: "Sans photo", scu: 4 }).photo, ""); // photo absente -> chaîne vide
+  assert.equal(shipEntry({ name: "Champ pourri", scu: "1e3; DROP" }).scu, 0); // coercition, comme partout
+});
+
+test("shipEntry : le relevé en jeu corrige UEX (Drake Ironclad)", () => {
+  // UEX annonce 2 200 SCU ; le vaisseau en tient 2 216. Sans cette correction, la soute — donc les
+  // unités, donc le profit et le classement de toutes les vues — est fausse à chaque rebuild.
+  assert.equal(shipEntry({ name_full: "Drake Ironclad", scu: 2200 }).scu, 2216);
+  assert.equal(shipEntry({ name_full: "Drake Ironclad Assault", scu: 1440 }).scu, 1440); // pas d'effet de bord sur le voisin
+  assert.equal(SCU_RELEVES["Drake Ironclad"], 2216);
+});
+
+test("les relevés ne visent que des vaisseaux qui existent chez UEX", () => {
+  // Un nom mal orthographié ne corrigerait rien et ne se verrait jamais : la table doit toujours
+  // pointer sur un vaisseau réel de l'instantané versionné.
+  const noms = new Set(SHIPS.map((s) => s.name));
+  for (const n of Object.keys(SCU_RELEVES)) assert.ok(noms.has(n), `relevé orphelin : « ${n} » n'est pas un vaisseau UEX`);
+});
+
+test("data/ships.json : l'instantané versionné porte bien les relevés", () => {
+  for (const [nom, scu] of Object.entries(SCU_RELEVES)) {
+    assert.equal(SHIPS.find((s) => s.name === nom).scu, scu, `instantané pas régénéré pour ${nom}`);
+  }
 });
 
 // ---------- Frais d'autoload : ce que le terminal impose à la manutention ----------

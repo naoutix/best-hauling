@@ -1,0 +1,82 @@
+{
+ "Pyro": {
+  "ancres": {
+   "Pyro V": {
+    "au": 2.87,
+    "lon": 116
+   },
+   "Terminus": {
+    "au": 4.57,
+    "lon": 152
+   },
+   "Pyro IV": {
+    "au": 1.9,
+    "lon": 55.1774
+   },
+   "Bloom": {
+    "au": 1.19,
+    "lon": 42
+   },
+   "Monox": {
+    "au": 0.71,
+    "lon": 80
+   },
+   "Pyro I": {
+    "au": 0.553,
+    "lon": 53
+   },
+   "Stanton Gateway (Pyro)": {
+    "au": 9,
+    "lon": -5
+   },
+   "Nyx Gateway (Pyro)": {
+    "au": 13,
+    "lon": -134
+   }
+  }
+ },
+ "Stanton": {
+  "ancres": {
+   "MicroTech": {
+    "au": 2.904,
+    "lon": -90
+   },
+   "Hurston": {
+    "au": 0.859,
+    "lon": -30
+   },
+   "Crusader": {
+    "au": 1.28,
+    "lon": -160
+   },
+   "ArcCorp": {
+    "au": 1.933,
+    "lon": 65
+   },
+   "Pyro Gateway (Stanton)": {
+    "au": 1.8,
+    "lon": 130
+   },
+   "Nyx Gateway (Stanton)": {
+    "au": 3.3,
+    "lon": -78
+   },
+   "Terra Gateway (Stanton)": {
+    "au": 4.1,
+    "lon": -135
+   }
+  }
+ },
+ "Nyx": {
+  "ancres": {
+   "Stanton Gateway (Nyx)": {
+    "au": 2.6,
+    "lon": 260
+   },
+   "Pyro Gateway (Nyx)": {
+    "au": 2.7,
+    "lon": 102
+   }
+  }
+ }
+}
