@@ -779,6 +779,18 @@ export function legFromTrip(t) {
   };
 }
 
+// Jambe de voyage depuis un MANIFESTE (vue « En route »). Un trajet de manifestsFrom a exactement
+// la forme d'un trajet multi-commodité — origin, dest, lines, fee, cargo — à une exception près :
+// il ne porte pas de marge, celle-ci vit dans tripMetrics. On la calcule donc ici, et on prend
+// `marginGross` : la jambe est persistée et voyage dans le permalien `j=`, où une marge NETTE des
+// frais d'autoload n'aurait plus de sens (l'interrupteur peut être éteint depuis) et se cumulerait
+// avec les marges brutes des jambes venues des autres vues. Sans ce calcul, legFromTrip retomberait
+// sur `t.margin` absent -> une jambe à 0 figée dans le lien.
+// Ne PAS dériver la marge de `man.profit` : il est déjà net des frais.
+export function legFromManifest(man) {
+  return legFromTrip({ ...man, marginGross: tripMetrics(man).marginGross });
+}
+
 // Balaye TOUT le marché : pour chaque terminal d'achat, tous les remplissages multi-commodité vers
 // chaque destination atteignable. Filtres appliqués : sysFilter/noOutpost sur le terminal de départ,
 // sameOnly sur le saut, q sur les commodités chargées (legalOnly/noOutpost-arrivée/maxAge le sont
@@ -877,9 +889,14 @@ export function buildChainAdjacency(market, f, resolve, autoloadFor = null) {
 //   - board = "market" (défaut) -> uniquement les commodités ÉCHANGEABLES (achat ET vente) ;
 //     board = "loot" -> mode Butin : tout ce qui se VEND, y compris ce qu'on ne peut acheter
 //     nulle part (minerais raffinés, salvage, drogues de wreck) — le cas « je l'ai trouvé ».
-export function commoditySummaries(market, f = {}) {
+// `resolve` applique les corrections locales, comme dans toutes les autres vues. Sans lui, le board
+// classait et coloriait sur les prix BRUTS d'UEX : on corrigeait un prix dans un tableau, et la
+// tuile de la commodité — sa marge, sa couleur, son rang — continuait d'afficher l'ancien chiffre.
+// Optionnel pour rester pur par défaut (les tests l'appellent sans).
+export function commoditySummaries(market, f = {}, resolve = null) {
   const loot = f.board === "loot";
   const out = [];
+  const prix = (c, p, side) => (resolve ? resolve(c.name, market.terminals[p[0]].name, side, p[1], p[2], p[3]).price : p[1]);
   for (const c of market.commodities) {
     if (f.legalOnly && c.illegal) continue;
     // « Échangeable » se juge sur les données BRUTES : le juger après `noOutpost` ferait
@@ -890,9 +907,9 @@ export function commoditySummaries(market, f = {}) {
     const sells = f.noOutpost ? c.sells.filter((s) => !market.terminals[s[0]].outpost) : c.sells;
     // Achat le moins cher / vente la plus chère + le statut d'inventaire à ce point.
     let bestBuy = null, buyStatus = 0;
-    for (const b of buys) if (bestBuy == null || b[1] < bestBuy) { bestBuy = b[1]; buyStatus = b[4] || 0; }
+    for (const b of buys) { const v = prix(c, b, "buy"); if (bestBuy == null || v < bestBuy) { bestBuy = v; buyStatus = b[4] || 0; } }
     let bestSell = null, sellStatus = 0;
-    for (const s of sells) if (bestSell == null || s[1] > bestSell) { bestSell = s[1]; sellStatus = s[4] || 0; }
+    for (const s of sells) { const v = prix(c, s, "sell"); if (bestSell == null || v > bestSell) { bestSell = v; sellStatus = s[4] || 0; } }
     // En mode Butin, une commodité sans point de vente restant n'a plus de réponse à offrir.
     if (loot && bestSell == null) continue;
     const margin = bestBuy != null && bestSell != null ? bestSell - bestBuy : null;
@@ -907,17 +924,24 @@ export function commoditySummaries(market, f = {}) {
 
 // Tous les points d'ACHAT (les moins chers d'abord) et de VENTE (les plus chers d'abord)
 // d'une commodité, avec la localisation du terminal. Null si commodité inconnue.
-export function commodityPoints(market, name, f = {}) {
+// `resolve` : mêmes corrections locales que partout ailleurs (cf. commoditySummaries). Le tri
+// « moins cher d'abord » / « mieux payé d'abord » porte donc sur les valeurs CORRIGÉES — sinon la
+// liste se serait ordonnée sur des prix que l'utilisateur venait justement de démentir.
+export function commodityPoints(market, name, f = {}, resolve = null) {
   const c = market.commodities.find((x) => x.name === name);
   if (!c) return null;
   const T = (i) => market.terminals[i];
   const keep = (p) => !(f.noOutpost && T(p[0]).outpost); // exclut les avant-postes si demandé
-  const point = (p, volKey) => ({
-    terminal: T(p[0]).name, system: T(p[0]).system, planet: T(p[0]).planet, outpost: T(p[0]).outpost,
-    price: p[1], [volKey]: p[2], updated: p[3], status: p[4],
-  });
-  const buys = c.buys.filter(keep).map((b) => point(b, "stock")).sort((a, b) => a.price - b.price);
-  const sells = c.sells.filter(keep).map((s) => point(s, "demand")).sort((a, b) => b.price - a.price);
+  const point = (p, volKey, side) => {
+    const t = T(p[0]);
+    const e = resolve ? resolve(c.name, t.name, side, p[1], p[2], p[3]) : null;
+    return {
+      terminal: t.name, system: t.system, planet: t.planet, outpost: t.outpost,
+      price: e ? e.price : p[1], [volKey]: e ? e.vol : p[2], updated: p[3], status: p[4],
+    };
+  };
+  const buys = c.buys.filter(keep).map((b) => point(b, "stock", "buy")).sort((a, b) => a.price - b.price);
+  const sells = c.sells.filter(keep).map((s) => point(s, "demand", "sell")).sort((a, b) => b.price - a.price);
   return { name: c.name, code: c.code || "", kind: c.kind, illegal: c.illegal, buys, sells };
 }
 
@@ -1007,6 +1031,38 @@ export function legFromRoute(r) {
     commodity: r.commodity, buyPrice: r.buy.price, sellPrice: r.sell.price, margin: r.margin,
   };
 }
+// Les filtres de la vue, appliqués à une destination candidate du VOYAGE. `sysFilter` borne le
+// système d'ACHAT : dans un parcours l'origine est imposée par la jambe précédente, pas choisie
+// dans le menu — le neutraliser ici, comme le fait « En route », est la seule différence.
+const legPasses = (r, f) => routePasses(r, { ...f, sysFilter: "" });
+
+// Destinations rentables depuis `origin` (index de terminal), pour proposer un arrêt de voyage :
+// une entrée par terminal d'arrivée, celle de meilleure marge, les `limit` premières.
+// Les filtres de la vue s'appliquent, exactement comme dans « En route ». Sans eux, la boîte
+// proposait des trajets qu'AUCUNE vue n'accepte de montrer — commodité illégale alors que
+// « légales uniquement » est coché, avant-poste exclu, relevé périmé — et la jambe ajoutée
+// s'affichait « aucun fret rentable », son manifeste étant filtré, lui, par pairEligible.
+// Même divergence de règles que celle qui a donné pairEligible : une seule source, partagée.
+export function stopSuggestions(market, origin, f, limit = 4) {
+  const byDest = new Map();
+  for (const d of enRouteDeals(market, origin, "", null, f)) {
+    if (!legPasses(d, f)) continue;
+    const label = stationLabel(d.sell.terminal, d.sell.system);
+    const cur = byDest.get(label);
+    if (!cur || d.margin > cur.margin) {
+      byDest.set(label, { label, terminal: d.sell.terminal, system: d.sell.system, commodity: d.commodity, margin: d.margin });
+    }
+  }
+  return [...byDest.values()].sort((a, b) => b.margin - a.margin).slice(0, limit);
+}
+// Meilleure jambe entre deux terminaux (commodité de marge max), filtres appliqués comme
+// ci-dessus, ou null si aucun fret éligible : l'appelant pose alors une jambe « à vide ».
+export function bestLegBetween(market, fromIdx, toIdx, f) {
+  const deals = enRouteDeals(market, fromIdx, "", toIdx, f).filter((d) => legPasses(d, f));
+  if (!deals.length) return null;
+  return legFromRoute(deals.reduce((a, b) => (b.margin > a.margin ? b : a)));
+}
+
 // Deux jambes depuis une boucle évaluée (aller puis retour).
 // `startAt` = terminal par lequel entrer dans le cycle : une boucle A⇄B se parcourt aussi bien
 // B->A->B que A->B->A. Sans lui, on partirait toujours de `a`, et une boucle raccordée au parcours
@@ -1058,13 +1114,76 @@ export function addToJourney(journey, legs) {
   if (journeyConnects(journey, legs)) return { legs: journey.legs.concat(legs), current: journey.current };
   return startJourney(legs);
 }
+// Que peut-on faire d'un chargement (origine -> destination) vis-à-vis du parcours en cours ?
+// Renvoie { etat: "ajouter" | "deja" | "conflit", leg, fin }.
+//
+// L'ORDRE DES BRANCHES EST SIGNIFIANT :
+//   1. pas de voyage        -> ajouter (on en démarre un, comme le ▶ des tableaux) ;
+//   2. ça se RACCORDE       -> ajouter. Testé AVANT « déjà » : sur un parcours cyclique A→B→A dont
+//      on est au bout, le chargement A→B est un nouveau tour, pas la jambe 0 qu'on a déjà faite ;
+//   3. c'est la jambe COURANTE, puis n'importe quelle jambe planifiée -> déjà (aucune action) ;
+//   4. sinon                -> conflit, en nommant la fin du parcours.
+//
+// « déjà » est l'état NORMAL, pas une anomalie : après tout ▶, syncViewsToJourney pré-remplit
+// « En route » avec la station courante, donc la carte affiche précisément la jambe qu'on vient de
+// choisir. C'est aussi l'état d'arrivée après un ajout réussi — la phrase sert alors de
+// confirmation, à l'endroit exact du clic.
+//
+// Le raccord passe par journeyConnects et non par une comparaison recopiée : une seule source de
+// vérité, qui suivra son durcissement éventuel. Comme elle — et comme legKey — on compare les NOMS
+// de station seuls : introduire ici une seconde règle d'identité (nom + système) ferait diverger
+// deux définitions du même mot.
+export function manifestJourneyState(journey, origin, dest) {
+  if (!journey) return { etat: "ajouter" };
+  if (journeyConnects(journey, [{ from: origin.name }])) return { etat: "ajouter" };
+  const cur = currentLeg(journey);
+  if (cur && cur.from === origin.name && cur.to === dest.name) return { etat: "deja", leg: journey.current };
+  const i = journey.legs.findIndex((l) => l.from === origin.name && l.to === dest.name);
+  if (i >= 0) return { etat: "deja", leg: i };
+  const fin = journeyEnd(journey);
+  return { etat: "conflit", fin: fin ? fin.name : null };
+}
+
+// Jambes qu'une correction de VOLUME (stock ou demande) rebattrait, et qu'il faut donc figer avant
+// de l'appliquer. Corriger un stock, c'est dire « j'ai vidé ce terminal » — le plus souvent parce
+// qu'on vient d'y charger. Le trajet, lui, est décidé : ses SCU ne doivent pas rétrécir sous les
+// pieds du joueur. Les jambes SUIVANTES, elles, doivent bien voir ce qu'il reste.
+// Une jambe n'est concernée que si elle touche vraiment ce point : le terminal corrigé est son
+// départ (correction d'un stock d'ACHAT) ou son arrivée (correction d'une demande de VENTE), et
+// son chargement porte cette commodité. Les autres n'en dépendent pas — les figer les marquerait
+// pour rien. Un prix, lui, ne rebat aucune quantité : il ne fige rien.
+// `lignesPar[i]` = chargement effectif de la jambe i (l'appelant le connaît, pas nous).
+export function legsToPin(legs, lignesPar, commodity, terminal, side) {
+  const bouts = legs.map((l) => (side === "buy" ? l.from : l.to));
+  return legs.map((_, i) => i).filter((i) =>
+    bouts[i] === terminal && (lignesPar[i] || []).some((l) => l.name === commodity)
+  );
+}
+
+// INTENTION d'un chargement : la seule forme persistable. Jamais un instantané de marché — prix,
+// stock, demande et dates sont relus au rendu (cf. hydrateManifestLine), sinon un manifeste
+// continuerait d'afficher le prix du jour de l'édition longtemps après qu'UEX l'ait republié.
+// Aucun filtre sur `units` : un 0 posé volontairement est une décision de l'utilisateur
+// (editLegQty l'autorise explicitement) et doit survivre.
+export function manifestIntent(lines) {
+  return lines.map((l) => ({ name: l.name, units: l.units }));
+}
+// Deux intentions décrivent-elles le même chargement ? Sert à ne RIEN persister quand le manifeste
+// n'a pas été touché : la jambe reste alors branchée sur le marché et sur les filtres.
+export function sameIntent(a, b) {
+  return a.length === b.length && a.every((l, i) => l.name === b[i].name && l.units === b[i].units);
+}
+
 // Retire un ARRÊT du parcours (stopIndex indexe les STATIONS, pas les jambes).
 // `bridge` = jambe de remplacement pour un arrêt du MILIEU, calculée par l'appelant depuis le
 // marché (elle reconnecte stations[stopIndex-1] à stations[stopIndex+1]) ; ignorée aux extrémités.
-// Renvoie { legs, current, removedFrom, removedCount, insertedCount }, ou null si le parcours
-// devient vide. Les trois derniers champs servent à réindexer les manifestes édités par jambe.
+// Renvoie { legs, current, removedFrom, removedCount, insertedCount }, plus `start` quand il ne
+// reste qu'un arrêt (parcours « départ posé »), ou null quand il ne reste plus rien du tout.
+// Les trois compteurs servent à réindexer les manifestes édités par jambe.
 export function removeJourneyStop(journey, stopIndex, bridge) {
   const legs = journey.legs;
+  // Parcours déjà réduit à son point de départ : retirer ce dernier arrêt efface tout.
+  if (!legs.length) return null;
   let newLegs, removedFrom, removedCount, insertedCount = 0;
   if (stopIndex <= 0) {
     newLegs = legs.slice(1); removedFrom = 0; removedCount = 1;          // 1er arrêt -> 1re jambe
@@ -1075,7 +1194,16 @@ export function removeJourneyStop(journey, stopIndex, bridge) {
     newLegs = [...legs.slice(0, stopIndex - 1), bridge, ...legs.slice(stopIndex + 1)];
     removedFrom = stopIndex - 1; removedCount = 2; insertedCount = 1;
   }
-  if (!newLegs.length) return null;
+  // Une seule jambe, dont on retire une extrémité : l'AUTRE extrémité reste un arrêt légitime.
+  // Le parcours ne disparaît donc pas — il retombe sur sa forme « départ posé » (startJourneyAt),
+  // celle d'un voyage qu'on vient de commencer, prête à recevoir un nouvel arrêt. Renvoyer null
+  // ici faisait s'évanouir les DEUX arrêts d'un coup, alors qu'un seul avait été cliqué.
+  if (!newLegs.length) {
+    const reste = stopIndex <= 0
+      ? { name: legs[0].to, system: legs[0].toSystem }     // on a retiré le départ -> l'arrivée survit
+      : { name: legs[0].from, system: legs[0].fromSystem }; // on a retiré l'arrivée -> le départ survit
+    return { legs: [], current: 0, start: reste, removedFrom, removedCount, insertedCount };
+  }
   // `current` indexe les STATIONS. Retirer l'arrêt `stopIndex` fait reculer d'un cran TOUTES les
   // stations situées à partir de lui : sans ce décalage, le marqueur « je suis ici » sautait à la
   // station suivante, `currentLeg` devenait null (parcours cru terminé) et « En route » se
@@ -1099,6 +1227,132 @@ export function currentLeg(journey) {
 // Profit total du parcours = somme des marges (les unités sont décidées ailleurs par vue).
 export function journeyMargin(journey) {
   return journey ? journey.legs.reduce((a, l) => a + (l.margin || 0), 0) : 0;
+}
+
+// ---------- Carte 2D du parcours (cf. ADR-001) ----------
+// Projection PURE d'un parcours en coordonnées de dessin. app.js n'a plus qu'à émettre du SVG.
+// La géométrie vient de data/starmap.json : `au` (distance à l'étoile) et `lon` (degrés), relevés
+// sur la starmap publiée par RSI. On ne dessine QUE des corps qui portent un terminal — c'est ce
+// filtre, appliqué à la collecte, qui tient les systèmes du lore hors de la carte.
+export const CARTE = { largeur: 680, hauteur: 296, marge: 26 };
+
+// Angle déterministe dérivé d'un nom : deux terminaux d'une même planète ne se superposent pas,
+// et la carte ne bouge pas d'un rendu à l'autre (aucun hasard, donc aucun scintillement).
+export function nameAngle(nom) {
+  let h = 0;
+  for (let i = 0; i < nom.length; i++) h = (h * 31 + nom.charCodeAt(i)) % 360;
+  return h;
+}
+
+// Les rayons réels s'étalent de 0,55 à 13 UA : à l'échelle, tout se tasserait sur l'étoile. On
+// compresse par une racine — l'ORDRE et les écarts relatifs survivent, la lisibilité aussi.
+// C'est le seul endroit où la carte s'écarte du réel, et c'est assumé (cf. ADR « schéma »).
+const rayonRelatif = (au, auMax) => 0.24 + 0.72 * Math.sqrt(Math.max(au, 0) / (auMax || 1));
+
+// Projette le parcours. `stations` = journeyStations(journey) ; `infoTerminal(nom)` rend
+// { system, planet } ou null ; `starmap` = data/starmap.json.
+// Renvoie tout ce qu'il faut dessiner, en pixels du viewBox — jamais de HTML.
+export function journeyMap(stations, current, starmap, infoTerminal) {
+  if (!stations || !stations.length) return null;
+  const { largeur, hauteur, marge } = CARTE;
+
+  // Un disque par système TRAVERSÉ, dans l'ordre où le parcours les rencontre.
+  const ordre = [];
+  for (const s of stations) if (s.system && !ordre.includes(s.system)) ordre.push(s.system);
+  if (!ordre.length) return null;
+  const n = ordre.length;
+  const rayon = Math.min((largeur - marge * 2) / (n * 2.35), (hauteur - marge * 2) / 2);
+  const systemes = ordre.map((nom, i) => ({
+    nom,
+    cx: (largeur / n) * (i + 0.5),
+    cy: hauteur / 2,
+    r: rayon,
+    corps: [],
+  }));
+  const parSysteme = new Map(systemes.map((s) => [s.nom, s]));
+
+  // Les corps du système, aux vraies distances et longitudes.
+  for (const sys of systemes) {
+    const ancres = (starmap[sys.nom] && starmap[sys.nom].ancres) || {};
+    const auMax = Math.max(...Object.values(ancres).map((a) => a.au), 1);
+    sys.auMax = auMax;
+    for (const [nom, a] of Object.entries(ancres)) {
+      const rr = rayonRelatif(a.au, auMax);
+      const rad = (a.lon * Math.PI) / 180;
+      sys.corps.push({ nom, orbite: rr * sys.r, x: sys.cx + Math.cos(rad) * rr * sys.r, y: sys.cy + Math.sin(rad) * rr * sys.r });
+    }
+    sys.corps.sort((a, b) => a.orbite - b.orbite);
+  }
+
+  // Un arrêt se pose sur son corps parent — sa planète, ou lui-même s'il est une passerelle.
+  // Sans corps connu (Levski et tout Nyx : UEX ne les rattache à rien), anneau externe. Cas
+  // NOMINAL : 12 terminaux sur 114 sont dans ce cas.
+  const rattache = stations.map((st) => {
+    const info = infoTerminal(st.name) || {};
+    const ancres = (starmap[st.system] && starmap[st.system].ancres) || {};
+    const parent = ancres[st.name] ? st.name : (info.planet && ancres[info.planet] ? info.planet : null);
+    return { nom: st.name, systeme: st.system, parent, sys: parSysteme.get(st.system) };
+  });
+
+  // Deux terminaux d'une MÊME planète (Rod's Fuel et Rat's Nest sont tous deux sur Pyro V) se
+  // superposaient : un décalage tiré du nom ne garantit aucune distance minimale, et deux escales
+  // à 6 px l'une de l'autre rendent la seconde inatteignable au clic. On répartit donc les escales
+  // d'un même corps sur une couronne, à intervalles réguliers — déterministe, et jamais confondu.
+  const grappes = new Map();
+  rattache.forEach((a, i) => {
+    const k = `${a.systeme}|${a.parent || "*"}`;
+    if (!grappes.has(k)) grappes.set(k, []);
+    grappes.get(k).push(i);
+  });
+
+  const borne = (v, max) => Math.max(marge * 0.4, Math.min(max - marge * 0.4, v));
+  const arrets = rattache.map((a, i) => {
+    const sys = a.sys;
+    if (!sys) return { nom: a.nom, systeme: a.systeme, orphelin: true, x: largeur / 2, y: hauteur / 2 };
+    const groupe = grappes.get(`${a.systeme}|${a.parent || "*"}`);
+    const rang = groupe.indexOf(i), n = groupe.length;
+    if (!a.parent) {
+      // Orphelins : répartis sur l'anneau externe, à intervalles réguliers.
+      const base = nameAngle(a.nom);
+      const ang = ((n > 1 ? (360 / n) * rang : base) * Math.PI) / 180;
+      return { nom: a.nom, systeme: a.systeme, orphelin: true, x: borne(sys.cx + Math.cos(ang) * sys.r * 1.06, largeur), y: borne(sys.cy + Math.sin(ang) * sys.r * 1.06, hauteur) };
+    }
+    const ancre = starmap[a.systeme].ancres[a.parent];
+    const rr = rayonRelatif(ancre.au, sys.auMax);
+    const rad = (ancre.lon * Math.PI) / 180;
+    const bx = sys.cx + Math.cos(rad) * rr * sys.r, by = sys.cy + Math.sin(rad) * rr * sys.r;
+    // Couronne autour du corps : rayon suffisant pour que les cibles de clic (r = 11) ne se
+    // touchent pas, angle de départ vers l'extérieur du système pour ne pas rentrer dans l'étoile.
+    const couronne = n > 1 ? Math.max(13, 4 + 3.4 * n) : 7;
+    const depart = Math.atan2(by - sys.cy, bx - sys.cx);
+    const ang = depart + (n > 1 ? (2 * Math.PI * rang) / n : 0);
+    return {
+      nom: a.nom, systeme: a.systeme, parent: a.parent, orphelin: false,
+      x: borne(bx + Math.cos(ang) * couronne, largeur), y: borne(by + Math.sin(ang) * couronne, hauteur),
+    };
+  });
+
+  // Les jambes. Un SAUT relie deux systèmes : il ne se dessine pas comme un vol intra-système.
+  const jambes = [];
+  for (let i = 1; i < arrets.length; i++) {
+    const a = arrets[i - 1], b = arrets[i];
+    jambes.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, saut: a.systeme !== b.systeme, faite: i <= current });
+  }
+
+  // Le vaisseau, sur l'arrêt courant, orienté vers le suivant (ou depuis le précédent au bout).
+  const i = Math.max(0, Math.min(current | 0, arrets.length - 1));
+  const ici = arrets[i], suiv = arrets[i + 1], prec = arrets[i - 1];
+  const vers = suiv || prec || ici;
+  const angle = (Math.atan2(vers.y - ici.y, vers.x - ici.x) * 180) / Math.PI + (suiv ? 0 : 180);
+  // Un corps qui porte une escale n'a pas besoin de son propre libellé : le nom de l'escale est
+  // juste à côté, et les deux se chevauchaient. Le rendu s'en sert pour ne pas l'écrire.
+  const occupes = new Set(arrets.filter((a) => a.parent).map((a) => `${a.systeme}|${a.parent}`));
+  for (const sys of systemes) for (const b of sys.corps) b.occupe = occupes.has(`${sys.nom}|${b.nom}`);
+
+  return {
+    largeur, hauteur, systemes, arrets, jambes,
+    vaisseau: { x: ici.x, y: ici.y, angle: vers === ici ? 0 : angle, arret: i },
+  };
 }
 
 // Encode un parcours en chaîne compacte auto-suffisante (pour localStorage / URL partageable).

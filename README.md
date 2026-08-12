@@ -14,6 +14,7 @@ reconstruites/redéployées **quand UEX a réellement changé** — et le site e
 - [Démarrage rapide (local)](#démarrage-rapide-local)
 - [Déploiement (une seule fois)](#déploiement-une-seule-fois)
 - [Architecture](#architecture)
+- [Compagnon de voyage](#compagnon-de-voyage)
 - [Corrections locales](#corrections-locales)
 - [Frais d'autoload](#frais-dautoload)
 - [Tests](#tests)
@@ -37,7 +38,7 @@ Autres éléments :
 
 - **Vaisseau** : autocomplétion par sous-chaîne (128 modèles UEX), remplit la soute automatiquement, affiche la photo.
 - **Contraintes désactivables** : couper le budget → meilleure route pour la soute ; couper la soute → meilleure route pour le budget.
-- **Multi commodité** (vue Trajets) : balaie tout le marché et propose les **chargements combinés** A→B — la soute se remplit par marge décroissante, plafonnée par le stock et la demande. Quand c'est le **budget** qui borne, ce glouton se fait drainer par les lignes chères — une commodité à 50 000 aUEC/SCU épuise 100 000 en 2 SCU et laisse la soute vide. L'app essaie donc aussi un remplissage par **rendement du capital** et garde le meilleur des deux : jamais pire, et 31 manifestes sur 4 316 y gagnent plus de 5 % sur l'instantané actuel. Seuls les chargements d'**au moins 2 commodités** sont listés (un trajet qui tient en une seule commodité est déjà dans la liste normale). Nécessite la soute activée ; la coche est grisée sinon.
+- **Multi commodité** (vue Trajets) : balaie tout le marché et propose les **chargements combinés** A→B — la soute se remplit par marge décroissante, plafonnée par le stock et la demande. Quand c'est le **budget** qui borne, ce glouton se fait drainer par les lignes chères — une commodité à 50 000 aUEC/SCU épuise 100 000 en 2 SCU et laisse la soute vide. L'app essaie donc aussi un remplissage par **rendement du capital** et garde le meilleur des deux : jamais pire, et 31 manifestes sur 4 316 y gagnent plus de 5 % sur l'instantané actuel. Le menu **liste** à côté de la coche décide de la portée : **combinés seuls** (défaut — un trajet qui tient en une seule commodité est déjà dans la liste normale) ou **avec les simples**, qui remet les deux sortes dans le **même classement** quand on veut juste la meilleure option, combinée ou non. Nécessite la soute activée ; la coche est grisée sinon.
 - **Frais d'autoload** (interrupteur **inactif par défaut**, à côté de « Multi commodité ») : déduit du profit le coût du chargement et du déchargement automatiques, facturé **des deux côtés** du trajet. Ces frais ne dépendent **ni du prix ni de la commodité** (c'est de la manutention, pas une commission) : indolores sur du fret cher (≈ 0,2 % sur 96 SCU d'or), décisifs sur du fret pauvre (≈ 29 % sur les mêmes 96 SCU de déchets) — exactement là où le classement se joue. Actif, les colonnes profit, profit/heure, **marge et ROI** passent en **net** et **le tri suit le net** ; sans quoi le tableau continuerait de classer sur un profit qu'on n'encaisse pas. La marge nette répartit les frais sur le volume transporté — une même colonne garde donc la même définition dans les deux modes de la vue. Seule la **jambe de voyage** retient la marge de marché : elle est persistée et voyage dans le lien, où des frais estimés au moment du clic n'auraient plus de sens. Les montants sont **estimés** et portent un `≈` : [pourquoi](#frais-dautoload).
 - **Mode Butin** (vue Commodités) : quand le coût d'acquisition est nul, la marge n'a plus de sens — seul compte le **prix de revente**. Ce mode liste **tout ce qui se vend** chez UEX, y compris les ~36 commodités sans aucun point d'achat, et n'affiche que **où l'écouler**. Sa heatmap se calcule **par rang** et non par ratio : les prix de revente s'étalent sur cinq ordres de grandeur (34 M aUEC/SCU pour le Saldynium contre 1 000 pour l'Iron Ore), une échelle linéaire écraserait tout le board.
 - **Décomposition SCU en caisses** (32/24/16/8/4/2/1) sur le manifeste et en infobulle.
@@ -159,6 +160,70 @@ Le workflow tourne **toutes les 30 min** mais évite le travail inutile :
 Pourquoi 30 min : UEX met ses prix en cache ~30 min (`Cache-Control: max-age=1800`), donc interroger
 plus souvent ne renverrait pas de données plus fraîches. Le dépôt étant **public**, les minutes GitHub
 Actions sont gratuites — l'intérêt du rebuild conditionnel est surtout d'**éviter les déploiements à vide**.
+
+## Compagnon de voyage
+
+Le **voyage en cours** est un parcours d'arrêts (`A → B → C…`) avec un marqueur « je suis ici ».
+Chaque jambe porte son propre manifeste, recalculé au marché et ajustable à la main.
+
+**Cinq points d'entrée**, tous marqués `▶` :
+
+| Depuis | Geste | Ce qui part au voyage |
+|--------|-------|-----------------------|
+| Trajets, Trajets multi, En route (tableaux) | `▶` sur une ligne | la route de cette ligne |
+| Boucles | `▶` sur une boucle | ses **deux** jambes, entrées par le bout qui touche le parcours |
+| Chaîne | `▶ Ajouter au voyage` | tous les sauts de la chaîne |
+| **En route** (carte Manifeste) | `▶ Ajouter au voyage` | le **chargement composé**, tes ajustements compris |
+
+**La règle de raccord** : une jambe s'ajoute si elle **part de la dernière station** du parcours,
+sinon elle le **remplace**. La carte Manifeste, elle, ne propose son bouton *que* dans le premier
+cas — c'est là qu'on efface un voyage par mégarde, et l'entrée la plus récente ferme cette porte.
+Elle affiche sinon soit `✓ C'est déjà la jambe N` (cas normal : après tout `▶`, « En route » est
+pré-rempli avec la jambe courante), soit une phrase nommant les deux bouts qui ne se rejoignent pas.
+
+**La frontière à connaître** : le **parcours** voyage dans le permalien `j=` ; le **chargement**
+reste **local** (localStorage), comme les corrections. Un lien partagé transmet donc les arrêts, et
+le destinataire voit des manifestes recalculés avec **ses** filtres et le marché du moment. Pour
+transmettre un chargement précis, c'est `⧉ Copier`.
+
+Un manifeste que tu ajustes avant de l'engager part **tel quel** : la jambe porte alors le badge
+`✎` et cesse de suivre les prix UEX et les filtres, jusqu'à `↺ optimal`. Un manifeste que tu
+n'as pas touché n'est **pas** persisté — la jambe reste branchée sur le marché.
+
+### La carte du parcours
+
+Sous le compagnon, un bandeau pose les arrêts **dans l'espace** : un disque par système traversé,
+le vaisseau sur l'escale courante, et un corridor violet `⚡` quand le parcours change de système.
+**Cliquer une escale déplace « je suis ici »**, exactement comme le fil d'étapes textuel — la carte
+n'ajoute pas de commande, elle en offre une seconde entrée.
+
+C'est un **schéma**, et il faut le lire comme tel. La géométrie est réelle — distances et longitudes
+publiées par la [starmap de RSI](https://robertsspaceindustries.com), relevées une fois par
+`scripts/fetch-starmap.mjs` et figées dans `data/starmap.json` — mais **les rayons sont compressés** :
+à l'échelle, microTech (2,9 UA) et Hurston (0,86 UA) laisseraient un cadre vide avec deux points
+aux extrémités. Deux conséquences visibles : les corps de Pyro sont groupés dans un même secteur
+(leurs longitudes vont de 42° à 152°, c'est la vraie donnée), et les orbites sont resserrées.
+
+Aucune image n'est embarquée : tout est dessiné en SVG par le code, dans la palette du site. Le
+script de collecte se lance **à la main** et jamais depuis la CI — l'endpoint de la starmap est
+interne et non documenté, le site ne doit pas en dépendre. On ne dessine que ce qui porte un
+terminal chez UEX, ce qui tient les systèmes du lore (Castra, Terra…) hors de la carte.
+
+### Ce qu'une correction fait au voyage
+
+Une jambe non ajustée suit le marché : corriger un **prix** mesure donc aussitôt ses effets sur les
+bénéfices du parcours, jambe par jambe.
+
+Corriger un **volume** (stock ou demande) est autre chose. Dire « il ne reste que 3 SCU ici », c'est
+le plus souvent constater qu'on vient soi-même de vider la station — le trajet, lui, est déjà
+décidé. Les jambes qui **touchent ce point** (le terminal corrigé est leur départ pour un stock,
+leur arrivée pour une demande, et leur chargement porte cette commodité) **figent donc leurs SCU**
+et prennent le marqueur `🔒`. Elles continuent de suivre les prix ; seules leurs quantités sont
+gelées. Tout ce qui est calculé **ensuite** — les autres jambes, les six vues, un arrêt ajouté plus
+tard — voit le stock tel que tu l'as corrigé. `↺ optimal` lève le gel.
+
+`🔒` et `✎` se distinguent : le premier vient d'une correction, le second de ta main. Toucher au
+chargement d'une jambe figée la fait passer de l'un à l'autre.
 
 ## Corrections locales
 
