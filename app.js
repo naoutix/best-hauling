@@ -2401,13 +2401,21 @@ function stationTableHTML(S, q) {
     const sellCell = s
       ? (() => { const e = effVals(c.name, t.name, "sell", s[1], s[2], s[3]); return `${editv(c.name, t.name, "sell", "price", e.price, e.oprice, s[3])} aUEC · dem. ${editv(c.name, t.name, "sell", "vol", e.vol, e.ovol, s[3])}`; })()
       : '<span class="muted">—</span>';
-    rows.push(`<tr><td class="loc"><div class="commodity-cell">${commodityIcon(c.kind)}<span>${esc(c.name)}${illegalTag(c.illegal)}</span></div></td><td>${buyCell}</td><td>${sellCell}</td></tr>`);
+    // Une TUILE par commodité, et non une ligne de tableau. Une station bien fournie en compte 92
+    // (GrimHEX) : en une colonne, ça faisait 4 546 px — quatre écrans et demi à parcourir pour
+    // corriger un chiffre — alors que les trois colonnes du tableau mesuraient 444 px chacune pour
+    // du contenu qui en demande 200. La grille rend l'espace horizontal et divise la hauteur d'autant.
+    rows.push(`<div class="scomm">
+        <div class="scomm-name">${commodityIcon(c.kind)}<span>${esc(c.name)}${illegalTag(c.illegal)}</span></div>
+        <div class="scomm-side"><span class="scomm-lbl">achat</span>${buyCell}</div>
+        <div class="scomm-side"><span class="scomm-lbl">vente</span>${sellCell}</div>
+      </div>`);
   });
   const fee = stationFeeHTML(S);
   if (!rows.length) return `${fee}<p class="empty">Aucune commodité ${q ? "correspondante " : ""}à ${esc(t.name)}.</p>`;
-  return `<div class="station-title">◈ ${esc(t.name)}${sysBadge(t.system)} — clique un chiffre pour le corriger localement</div>
+  return `<div class="station-title">◈ ${esc(t.name)}${sysBadge(t.system)} — clique un chiffre pour le corriger localement <span class="station-count">${rows.length} commodité${rows.length > 1 ? "s" : ""}${q ? " filtrées" : ""}</span></div>
     ${fee}
-    <table class="station-table"><thead><tr><th>Commodité</th><th>Achat (prix · stock)</th><th>Vente (prix · demande)</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
+    <div class="station-grid">${rows.join("")}</div>`;
 }
 
 // Liste des relevés d'autoload, à côté des corrections locales et sur le même modèle : ils sont de
