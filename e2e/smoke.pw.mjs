@@ -311,6 +311,21 @@ test("Compagnon de voyage : retirer un arrêt du milieu reconnecte le parcours",
   expect((await page.locator("#journeyCard .jstep").nth(1).innerText()).trim()).toBe(last);
 });
 
+test("Multi commodité : « avec les simples » remet les trajets à une commodité dans le classement", async ({ page }) => {
+  const simples = page.locator("#rows tr .cname").filter({ hasText: /^1 commodité$/ });
+  await expect(page.locator("#multiModeField")).toBeHidden(); // réglage de la coche : caché sans elle
+  await page.check("#multiCommodity");
+  await expect(page.locator("#multiModeField")).toBeVisible();
+  await expect(page.locator("#rows tr").first()).toBeVisible();
+  await expect(simples).toHaveCount(0); // par défaut : chargements combinés seulement
+  await page.selectOption("#multiMode", "all");
+  await expect(simples.first()).toBeVisible(); // les deux sortes, dans le MÊME classement
+  expect(page.url()).toContain("multiMode=all");
+  await page.reload();
+  await expect(page.locator("#multiMode")).toHaveValue("all"); // le mode survit au rechargement
+  await expect(page.locator("#multiModeField")).toBeVisible();
+});
+
 // ---------- Carte Manifeste (« En route ») -> jambe de voyage ----------
 // Ouvre « En route » sur un terminal de départ donné et attend que la carte Manifeste soit peinte.
 async function manifesteDepuis(page, label) {

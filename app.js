@@ -418,6 +418,9 @@ function readFilters() {
     maxAge: Number($("freshness").value) || 0,
     q: $("search").value.trim().toLowerCase(),
     multi: $("multiCommodity").checked,
+    // « avec les simples » : les chargements à UNE commodité rentrent dans le même classement que
+    // les combinés. Par défaut ils en sont exclus — ils sont déjà dans la vue « Trajets » normale.
+    multiAll: $("multiMode").value === "all",
     autoload: $("autoload").checked,
   };
 }
@@ -457,7 +460,7 @@ function renderMulti(f) {
   if (!MARKET) { withMarket(render); return; } // graphe requis
   // Le contexte de frais descend DANS multiTrips (et non après coup) : c'est lui qui trie puis
   // TRONQUE à 300 trajets, un trajet meilleur en net serait donc coupé avant d'atteindre le tableau.
-  const trips = multiTrips(MARKET, f, effVals, 300, 2, feeResolver(f))
+  const trips = multiTrips(MARKET, f, effVals, 300, f.multiAll ? 1 : 2, feeResolver(f))
     .map((t) => ({ ...t, feeInfo: feeCtx(f, t.origin.name, t.dest.name, t.origin, t.dest), ...tripMetrics(t) }));
   normalizeScores(trips);
   trips.sort(bySort(sortKey, sortDir));
@@ -466,7 +469,11 @@ function renderMulti(f) {
   empty.hidden = trips.length > 0;
   // Rappel : seuls les chargements COMBINÉS (≥ 2 commodités) sont listés ici — un trajet dont le
   // remplissage optimal tient en une seule commodité est déjà dans la vue « Trajets » normale.
-  if (!trips.length) empty.textContent = "Aucun chargement combinant plusieurs commodités avec ces filtres — agrandis la soute, ou décoche « Multi commodité » pour les trajets à une commodité.";
+  if (!trips.length) {
+    empty.textContent = f.multiAll
+      ? "Aucun chargement depuis ces terminaux avec ces filtres — élargis la soute ou le budget."
+      : "Aucun chargement combinant plusieurs commodités avec ces filtres — agrandis la soute, ou passe la liste sur « avec les simples ».";
+  }
   notifySuperseded();
 }
 
@@ -1736,7 +1743,7 @@ async function loadShips() {
 // hash de l'URL, pour reprendre là où on s'est arrêté et partager une vue précise.
 // `alk` = coefficient d'autoload global : partageable, comme tous les réglages. Les relevés PAR
 // STATION, eux, restent locaux — c'est la même frontière que pour les corrections de prix.
-const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem", "destTerminal", "chainOrigin", "hops", "station", "alk"];
+const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem", "destTerminal", "chainOrigin", "hops", "station", "alk", "multiMode"];
 const STATE_CHECKS = ["useCargo", "useBudget", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiCommodity", "autoload"];
 // safeKey / encodeState / decodeState viennent de logic.mjs.
 
@@ -2144,6 +2151,8 @@ function syncToggles() {
   // sinon (il reste dans l'état, donc dans le lien). La coche, elle, n'est PAS grisée sans soute :
   // le budget ou le plafond de stock bornent aussi le volume, et un volume borné suffit à facturer.
   $("alkField").hidden = !$("autoload").checked;
+  // Portée de la liste multi : ne se règle que si la liste multi existe.
+  $("multiModeField").hidden = !$("multiCommodity").checked;
 }
 
 async function init() {
@@ -2156,11 +2165,14 @@ async function init() {
   // absurdes quand on tape « 696 » dans la soute (6 puis 69 SCU).
   // Menus et cases à cocher restent IMMÉDIATS : ils n'émettent qu'un seul événement.
   ["cargo", "budget", "search", "alk"].forEach((id) => $(id).addEventListener("input", refreshDebounced));
-  ["system", "freshness", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiCommodity"].forEach((id) =>
+  ["system", "freshness", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiMode"].forEach((id) =>
     $(id).addEventListener("input", refresh)
   );
-  // L'interrupteur d'autoload fait aussi apparaître/disparaître le champ du coefficient global.
-  $("autoload").addEventListener("input", () => { syncToggles(); refresh(); });
+  // Ces deux-là commandent en plus l'affichage de leur propre sous-réglage (coefficient k, portée
+  // de la liste multi) : ils passent donc par syncToggles avant de recalculer.
+  ["autoload", "multiCommodity"].forEach((id) =>
+    $(id).addEventListener("input", () => { syncToggles(); refresh(); })
+  );
   ["useCargo", "useBudget"].forEach((id) =>
     $(id).addEventListener("change", () => {
       syncToggles();

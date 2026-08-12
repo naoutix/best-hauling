@@ -95,7 +95,18 @@
             <label><input id="noOutpost" type="checkbox" /> Exclure les avant-postes</label>
             <label><input id="legalOnly" type="checkbox" /> Commodités légales uniquement</label>
             <label><input id="capStock" type="checkbox" /> Limiter au stock &amp; à la demande (UEX)</label>
-            <label id="multiCommodityLabel" title="Vue « Trajets » : remplit la soute avec PLUSIEURS commodités d'un même point A vers un même point B (nécessite la soute)."><input id="multiCommodity" type="checkbox" /> Multi commodité <span class="hint-tag">Trajets</span></label>
+            <!-- Le choix « combinés seuls / avec les simples » est un réglage DE cette coche : il vit
+                 sur sa ligne, et n'apparaît que quand elle est active (cf. syncToggles). -->
+            <div class="check-row">
+              <label id="multiCommodityLabel" title="Vue « Trajets » : remplit la soute avec PLUSIEURS commodités d'un même point A vers un même point B (nécessite la soute)."><input id="multiCommodity" type="checkbox" /> Multi commodité <span class="hint-tag">Trajets</span></label>
+              <span class="field sub-field" id="multiModeField" hidden>
+                <label for="multiMode">liste</label>
+                <select id="multiMode" title="« Combinés seuls » ne montre que les chargements à au moins 2 commodités : un trajet qui tient en une seule est déjà dans la liste normale. « Avec les simples » remet tout dans le même classement, pour comparer les deux d'un coup d'œil.">
+                  <option value="">combinés seuls</option>
+                  <option value="all">avec les simples</option>
+                </select>
+              </span>
+            </div>
             <!-- Le coefficient est un réglage DE cette coche : il vit sur sa ligne plutôt qu'en
                  champ autonome, sinon son apparition réorganisait tout le panneau (les champs
                  suivants passaient à la ligne). Masqué quand l'interrupteur est inactif (cf.

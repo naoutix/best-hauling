@@ -224,6 +224,7 @@ main { padding: 22px 30px 40px; }
 .field.sub-field { flex-direction: row; align-items: center; gap: 7px; }
 .field.sub-field > label { font-size: 10px; letter-spacing: 1px; color: var(--muted); cursor: pointer; }
 .field.sub-field input { min-width: 0; width: 74px; padding: 3px 7px; font-size: 12px; text-align: center; }
+.field.sub-field select { min-width: 0; padding: 2px 6px; font-size: 12px; }
 
 input[type="checkbox"] { accent-color: var(--acc); width: 15px; height: 15px; cursor: pointer; }
 input[type="number"], input[type="text"], select {
@@ -770,6 +771,7 @@ input.mqty-input.over-stock { color: var(--warn); border-color: var(--warn); box
   /* ...sauf le réglage accolé à une coche : pleine largeur, il mangerait la ligne. */
   .field.sub-field { flex: 0 0 auto; }
   .field.sub-field input[type="number"] { width: 74px; }
+  .field.sub-field select { width: auto; }
   .rail-nav .vbtn { flex: 1 1 auto; }
   .grid-overlay, .scanbar { display: none; } /* décor coûteux masqué sur petit écran */
 }
