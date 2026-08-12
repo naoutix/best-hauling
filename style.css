@@ -217,6 +217,15 @@ main { padding: 22px 30px 40px; }
 }
 .field label.toggle { color: var(--acc); text-transform: uppercase; letter-spacing: 1px; font-size: 10px; font-weight: 600; }
 
+/* Une coche et son réglage sur la MÊME ligne : un champ qui apparaît au milieu du panneau
+   repousserait les champs suivants à la ligne. Ici il pousse au plus le bord droit d'une ligne
+   de coches, où il n'y a rien. */
+.check-row { display: flex; align-items: center; gap: 12px; }
+.field.sub-field { flex-direction: row; align-items: center; gap: 7px; }
+.field.sub-field > label { font-size: 10px; letter-spacing: 1px; color: var(--muted); cursor: pointer; }
+.field.sub-field input { min-width: 0; width: 74px; padding: 3px 7px; font-size: 12px; text-align: center; }
+.field.sub-field select { min-width: 0; padding: 2px 6px; font-size: 12px; }
+
 input[type="checkbox"] { accent-color: var(--acc); width: 15px; height: 15px; cursor: pointer; }
 input[type="number"], input[type="text"], select {
   background: rgba(8, 11, 20, 0.9); border: 1px solid var(--line2); color: var(--text);
@@ -351,7 +360,10 @@ input.jman-qty { width: 56px; min-width: 0; padding: 3px 5px; text-align: right;
 /* Boucles pertinentes pour le parcours (partent de l'arrivée courante) : remontées + surlignées. */
 #loops tr.from-here td { background: rgba(169, 112, 255, 0.07); }
 #loops tr.from-here td.loop-cell { box-shadow: inset 2px 0 0 var(--acc-2); }
-.chain-pick { font-family: var(--font); font-size: 11px; font-weight: 700; white-space: nowrap; color: var(--acc-2); background: rgba(169, 112, 255, 0.1); border: 1px solid rgba(169, 112, 255, 0.4); border-radius: 3px; padding: 5px 11px; cursor: pointer; }
+/* `align-self` parce que ce bouton vit dans deux en-têtes flex (.chain-head, .manifest-head) dont
+   aucune ne pose align-items : sans lui il s'étire sur toute la hauteur de la ligne. Règle commune
+   aux deux, volontairement : le bouton du manifeste est le MÊME que celui de la chaîne. */
+.chain-pick { align-self: center; font-family: var(--font); font-size: 11px; font-weight: 700; white-space: nowrap; color: var(--acc-2); background: rgba(169, 112, 255, 0.1); border: 1px solid rgba(169, 112, 255, 0.4); border-radius: 3px; padding: 5px 11px; cursor: pointer; }
 .chain-pick:hover { color: #fff; background: rgba(169, 112, 255, 0.25); }
 
 /* ---------- Contrôles En route / Chaîne / Corrections ---------- */
@@ -538,6 +550,10 @@ input.editv-input { width: 80px; min-width: 0; padding: 2px 5px; font-size: 12px
 .manifest-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px 18px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
 .manifest-title { font-family: var(--display); font-weight: 600; font-size: 15px; letter-spacing: 0.5px; color: #fff; }
 .manifest-tot { font-family: var(--mono); font-size: 12px; color: var(--muted); align-self: center; }
+/* Refus d'engager le chargement : la phrase remplace le bouton, à sa place et sur sa ligne.
+   La marge haute de .journey-hint est faite pour un paragraphe de la carte Voyage, pas pour un
+   élément flex d'en-tête. */
+.manifest-head .journey-hint { margin: 0; align-self: center; max-width: 52ch; }
 .manifest-tot b { color: var(--text); }
 .manifest-tot b.profit { color: var(--good); }
 .copy-btn {
@@ -752,6 +768,10 @@ input.mqty-input.over-stock { color: var(--warn); border-color: var(--warn); box
   .controls { padding: 14px; gap: 12px; }
   .field { flex: 1 1 100%; }
   .field input[type="number"], .field input[type="text"], .field select { width: 100%; min-width: 0; }
+  /* ...sauf le réglage accolé à une coche : pleine largeur, il mangerait la ligne. */
+  .field.sub-field { flex: 0 0 auto; }
+  .field.sub-field input[type="number"] { width: 74px; }
+  .field.sub-field select { width: auto; }
   .rail-nav .vbtn { flex: 1 1 auto; }
   .grid-overlay, .scanbar { display: none; } /* décor coûteux masqué sur petit écran */
 }

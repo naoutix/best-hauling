@@ -11,7 +11,9 @@ import {
   commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
   manifestTotals, freeAddUnits, manifestLine, freeManifestLine, hydrateManifestLine, stationLabel, parseStationLabel,
   multiTrips, tripMetrics, legFromTrip,
-  legFromRoute, legsFromLoop, legsFromChain, startJourney, startJourneyAt, journeyStations, journeyEnd,
+  legFromRoute, legsFromLoop, legsFromChain, legFromManifest, stopSuggestions, bestLegBetween,
+  manifestJourneyState, manifestIntent, sameIntent,
+  startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   removeJourneyStop as removeStopPure,
   encodeJourney, decodeJourney,
@@ -416,6 +418,9 @@ function readFilters() {
     maxAge: Number($("freshness").value) || 0,
     q: $("search").value.trim().toLowerCase(),
     multi: $("multiCommodity").checked,
+    // « avec les simples » : les chargements à UNE commodité rentrent dans le même classement que
+    // les combinés. Par défaut ils en sont exclus — ils sont déjà dans la vue « Trajets » normale.
+    multiAll: $("multiMode").value === "all",
     autoload: $("autoload").checked,
   };
 }
@@ -455,7 +460,7 @@ function renderMulti(f) {
   if (!MARKET) { withMarket(render); return; } // graphe requis
   // Le contexte de frais descend DANS multiTrips (et non après coup) : c'est lui qui trie puis
   // TRONQUE à 300 trajets, un trajet meilleur en net serait donc coupé avant d'atteindre le tableau.
-  const trips = multiTrips(MARKET, f, effVals, 300, 2, feeResolver(f))
+  const trips = multiTrips(MARKET, f, effVals, 300, f.multiAll ? 1 : 2, feeResolver(f))
     .map((t) => ({ ...t, feeInfo: feeCtx(f, t.origin.name, t.dest.name, t.origin, t.dest), ...tripMetrics(t) }));
   normalizeScores(trips);
   trips.sort(bySort(sortKey, sortDir));
@@ -464,7 +469,11 @@ function renderMulti(f) {
   empty.hidden = trips.length > 0;
   // Rappel : seuls les chargements COMBINÉS (≥ 2 commodités) sont listés ici — un trajet dont le
   // remplissage optimal tient en une seule commodité est déjà dans la vue « Trajets » normale.
-  if (!trips.length) empty.textContent = "Aucun chargement combinant plusieurs commodités avec ces filtres — agrandis la soute, ou décoche « Multi commodité » pour les trajets à une commodité.";
+  if (!trips.length) {
+    empty.textContent = f.multiAll
+      ? "Aucun chargement depuis ces terminaux avec ces filtres — élargis la soute ou le budget."
+      : "Aucun chargement combinant plusieurs commodités avec ces filtres — agrandis la soute, ou passe la liste sur « avec les simples ».";
+  }
   notifySuperseded();
 }
 
@@ -849,6 +858,25 @@ function removeManifestLine(name) {
   paintManifest();
 }
 
+// Engager le chargement dans le voyage : le bouton, ou la phrase qui dit pourquoi il n'y est pas.
+// L'état vient de manifestJourneyState (pur, testé) — le rendu ne décide de rien.
+// Le bouton n'existe QUE dans l'état « ajouter », donc la branche REMPLACER d'addToJourney, qui
+// efface un voyage sans prévenir, est inatteignable depuis cette carte.
+function manifestJourneyHTML(m) {
+  if (!m.lines.length) return `<span class="journey-hint">Manifeste vide — ajoute une commodité pour l'engager.</span>`;
+  const st = manifestJourneyState(JOURNEY, m.origin, m.dest);
+  if (st.etat === "ajouter") {
+    const neuf = !JOURNEY;
+    return `<button id="manifestToJourney" class="chain-pick" title="${neuf ? "Démarrer un voyage avec ce chargement" : "Ajouter ce chargement à la suite du voyage"}">▶ ${neuf ? "Démarrer un voyage" : "Ajouter au voyage"}</button>`;
+  }
+  // « Déjà » est l'état NORMAL après tout ▶ (En route est pré-rempli avec la jambe courante) et
+  // celui où l'on retombe après un ajout réussi : la phrase fait donc office de confirmation, à
+  // l'endroit exact du clic. Un bouton y serait un clic mort.
+  if (st.etat === "deja") return `<span class="journey-hint">✓ C'est déjà la jambe ${st.leg + 1} de ton voyage.</span>`;
+  if (!st.fin) return "";
+  return `<span class="journey-hint">Ce chargement part de <b>${esc(m.origin.name)}</b>, mais le voyage se termine à <b>${esc(st.fin)}</b> — seul un chargement au départ de <b>${esc(st.fin)}</b> s'y ajoute.</span>`;
+}
+
 // Dessine le manifeste courant : totaux + lignes (SCU/prix/stock éditables) + suggestions.
 function paintManifest() {
   const m = currentManifest;
@@ -859,6 +887,7 @@ function paintManifest() {
     `<div class="manifest-head">
       <span class="manifest-title">◈ Manifeste — ${esc(m.origin.name)}${sysBadge(m.origin.system)} → ${esc(m.dest.name)}${sysBadge(m.dest.system)}${m.cross ? ' <span class="cross">⚡ inter-système</span>' : ""}</span>
       <span class="manifest-tot" id="manifestTot">${manifestTotalsHTML(m, totals)}</span>
+      ${manifestJourneyHTML(m)}
       <button id="copyManifest" class="copy-btn" title="Copier le plan de chargement">⧉ Copier</button>
     </div>
     <div class="manifest-lines">` +
@@ -1073,9 +1102,13 @@ function renderChain() {
 
 // ---------- Compagnon de voyage : résumé du parcours (près du vaisseau) ----------
 // Sélectionne un trajet/une boucle/une chaîne -> met à jour le parcours (étend si ça s'enchaîne).
-function pickJourney(legs) {
+// `apresAjout` (optionnel) tourne une fois le parcours à jour mais AVANT le rendu : c'est là que le
+// manifeste d'« En route » dépose son chargement ajusté, pour que la jambe s'affiche du premier
+// coup avec les bons SCU et son badge ✎.
+function pickJourney(legs, apresAjout) {
   if (!legs || !legs.length) return;
   JOURNEY = addToJourney(JOURNEY, legs);
+  if (apresAjout) apresAjout();
   syncViewsToJourney();
   renderJourney();
   refresh(); // reflète la nouvelle destination/origine dans la vue courante
@@ -1179,10 +1212,30 @@ function legEffectiveLines(leg, i, f) {
 // Bascule la jambe en mode « édité » la 1re fois : on y copie l'intention issue de l'optimal.
 function legIntent(leg, i, f) {
   const k = legKey(leg, i);
-  if (!JOURNEY_EDITS[k]) {
-    JOURNEY_EDITS[k] = (legManifest(leg, f)?.lines || []).map((l) => ({ name: l.name, units: l.units }));
-  }
+  if (!JOURNEY_EDITS[k]) JOURNEY_EDITS[k] = manifestIntent(legManifest(leg, f)?.lines || []);
   return JOURNEY_EDITS[k];
+}
+
+// Engage le manifeste d'« En route » comme nouvelle jambe du voyage (bouton de la carte Manifeste).
+// La garde d'état est REJOUÉE ici : le rendu peut dater d'avant un changement de parcours.
+function manifestToJourney() {
+  const m = currentManifest;
+  if (!m || !m.lines.length || !MARKET) return;
+  if (manifestJourneyState(JOURNEY, m.origin, m.dest).etat !== "ajouter") return;
+  const intent = manifestIntent(m.lines);
+  pickJourney([legFromManifest(m)], () => {
+    const i = JOURNEY.legs.length - 1;
+    const k = legKey(JOURNEY.legs[i], i);
+    // Ce que legManifest recalculera pour cette jambe. Si le chargement affiché EST celui-là, on ne
+    // persiste rien : la jambe reste branchée sur le marché et sur les filtres, et ne porte pas le
+    // badge ✎ à tort. On impose l'état de la clé dans les DEUX sens, pour qu'une édition laissée
+    // par un voyage abandonné au même rang et au même couple de stations ne vienne pas contredire
+    // le chargement qu'on envoie.
+    const opt = bestManifest(MARKET, m.originIdx, "", m.f, effVals, m.destIdx, feeResolver(m.f));
+    if (sameIntent(intent, manifestIntent(opt ? opt.lines : []))) delete JOURNEY_EDITS[k];
+    else JOURNEY_EDITS[k] = intent;
+    saveJourneyEdits();
+  });
 }
 
 // Contexte de manifeste d'une jambe, à la forme attendue par suggestionsFor/manifestRemaining
@@ -1288,13 +1341,11 @@ function journeyEndIndex() {
   return end && stationMap.size ? stationMap.get(stationLabel(end.name, end.system)) : null;
 }
 // Meilleure jambe (commodité de marge max) entre deux terminaux, ou null si aucun fret rentable.
+// `readFilters()` fait choisir la vente au profit RÉALISABLE et non au prix affiché : sans lui,
+// la jambe proposée peut viser un terminal déjà saturé, qui n'écoulera qu'une poignée de SCU.
 function bestLegTo(fromIdx, toIdx) {
   if (fromIdx == null || toIdx == null) return null;
-  // `readFilters()` fait choisir la vente au profit RÉALISABLE et non au prix affiché : sans lui,
-  // la jambe proposée peut viser un terminal déjà saturé, qui n'écoulera qu'une poignée de SCU.
-  const deals = enRouteDeals(MARKET, fromIdx, "", toIdx, readFilters()); // meilleure vente vers toIdx par commodité
-  if (!deals.length) return null;
-  return legFromRoute(deals.reduce((a, b) => (b.margin > a.margin ? b : a)));
+  return bestLegBetween(MARKET, fromIdx, toIdx, readFilters());
 }
 // Jambe « à vide » (aucune commodité) entre deux terminaux — pour ajouter un arrêt même sans fret rentable.
 function emptyLeg(fromIdx, toIdx) {
@@ -1314,14 +1365,7 @@ function resolveStationLabel(input) {
 // Suggestions d'arrêts : meilleures destinations rentables depuis la fin du parcours (top 4).
 function journeyStopSuggestions() {
   const fromIdx = journeyEndIndex();
-  if (fromIdx == null) return [];
-  const byDest = new Map();
-  enRouteDeals(MARKET, fromIdx, "", null, readFilters()).forEach((d) => {
-    const label = stationLabel(d.sell.terminal, d.sell.system);
-    const cur = byDest.get(label);
-    if (!cur || d.margin > cur.margin) byDest.set(label, { label, terminal: d.sell.terminal, commodity: d.commodity, margin: d.margin });
-  });
-  return [...byDest.values()].sort((a, b) => b.margin - a.margin).slice(0, 4);
+  return fromIdx == null ? [] : stopSuggestions(MARKET, fromIdx, readFilters());
 }
 // Ajoute un arrêt (terminal) : nouvelle jambe optimale depuis la fin du parcours -> étend.
 function addStopByTerminal(label) {
@@ -1380,7 +1424,10 @@ function removeJourneyStop(stopIndex) {
   const r = removeStopPure(JOURNEY, stopIndex, bridge);
   if (!r) { clearJourney(); return; }
   reindexLegEdits(r.removedFrom, r.removedCount, r.insertedCount);
-  JOURNEY = { legs: r.legs, current: r.current };
+  // `start` n'est présent que sur le parcours réduit à un seul arrêt : le reporter tel quel, sinon
+  // la station survivante n'a plus rien pour se décrire (journeyStations la lit là) et le voyage
+  // s'affiche vide alors qu'il reste un point de départ.
+  JOURNEY = r.start ? { legs: [], current: 0, start: r.start } : { legs: r.legs, current: r.current };
   syncViewsToJourney();
   renderJourney();
   refresh();
@@ -1696,7 +1743,7 @@ async function loadShips() {
 // hash de l'URL, pour reprendre là où on s'est arrêté et partager une vue précise.
 // `alk` = coefficient d'autoload global : partageable, comme tous les réglages. Les relevés PAR
 // STATION, eux, restent locaux — c'est la même frontière que pour les corrections de prix.
-const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem", "destTerminal", "chainOrigin", "hops", "station", "alk"];
+const STATE_FIELDS = ["cargo", "budget", "search", "system", "freshness", "ship", "origin", "destSystem", "destTerminal", "chainOrigin", "hops", "station", "alk", "multiMode"];
 const STATE_CHECKS = ["useCargo", "useBudget", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiCommodity", "autoload"];
 // safeKey / encodeState / decodeState viennent de logic.mjs.
 
@@ -2104,6 +2151,8 @@ function syncToggles() {
   // sinon (il reste dans l'état, donc dans le lien). La coche, elle, n'est PAS grisée sans soute :
   // le budget ou le plafond de stock bornent aussi le volume, et un volume borné suffit à facturer.
   $("alkField").hidden = !$("autoload").checked;
+  // Portée de la liste multi : ne se règle que si la liste multi existe.
+  $("multiModeField").hidden = !$("multiCommodity").checked;
 }
 
 async function init() {
@@ -2116,11 +2165,14 @@ async function init() {
   // absurdes quand on tape « 696 » dans la soute (6 puis 69 SCU).
   // Menus et cases à cocher restent IMMÉDIATS : ils n'émettent qu'un seul événement.
   ["cargo", "budget", "search", "alk"].forEach((id) => $(id).addEventListener("input", refreshDebounced));
-  ["system", "freshness", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiCommodity"].forEach((id) =>
+  ["system", "freshness", "sameSystem", "noOutpost", "legalOnly", "capStock", "multiMode"].forEach((id) =>
     $(id).addEventListener("input", refresh)
   );
-  // L'interrupteur d'autoload fait aussi apparaître/disparaître le champ du coefficient global.
-  $("autoload").addEventListener("input", () => { syncToggles(); refresh(); });
+  // Ces deux-là commandent en plus l'affichage de leur propre sous-réglage (coefficient k, portée
+  // de la liste multi) : ils passent donc par syncToggles avant de recalculer.
+  ["autoload", "multiCommodity"].forEach((id) =>
+    $(id).addEventListener("input", () => { syncToggles(); refresh(); })
+  );
   ["useCargo", "useBudget"].forEach((id) =>
     $(id).addEventListener("change", () => {
       syncToggles();
@@ -2174,6 +2226,9 @@ async function init() {
     if (e.target.classList.contains("mqty-input")) updateManifestTotals();
   });
   $("manifest").addEventListener("click", (e) => {
+    // Ici et pas dans le délégué global du compagnon : celui-ci lit `pick.closest("table").id`,
+    // qui lèverait un TypeError depuis une carte. La carte n'est pas un tableau.
+    if (e.target.closest("#manifestToJourney")) { manifestToJourney(); return; }
     if (e.target.closest("#copyManifest")) { copyManifest(); return; }
     if (e.target.closest("#manifestAddBtn")) { addManifestCommodity($("manifestAddInput").value); return; }
     const del = e.target.closest(".mline-del");

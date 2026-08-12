@@ -48,6 +48,43 @@ test("un stock UEX hostile ne devient jamais un attribut HTML (routes.json)", as
   expect(erreurs).toEqual([]);
 });
 
+test("un NOM de terminal hostile reste inerte dans la carte Manifeste (bouton voyage + phrase)", async ({ page }) => {
+  // Nouvelle surface d'interpolation : le bouton « Ajouter au voyage » et la phrase de refus
+  // recopient des noms de terminaux venus d'UEX. Les charges précédentes visaient des VOLUMES ;
+  // celle-ci vise le nom lui-même, qui traverse un autre chemin de rendu.
+  const erreurs = [];
+  page.on("pageerror", (e) => erreurs.push(String(e)));
+  await page.route("**/data/market.json", async (route) => {
+    const res = await route.fetch();
+    const market = await res.json();
+    for (const t of market.terminals) t.name += CHARGE;
+    await route.fulfill({ response: res, json: market });
+  });
+  await page.goto("/index.html");
+  await page.click("#viewEnroute");
+  await expect(page.locator("#originList option").first()).toBeAttached({ timeout: 8000 });
+  const [premier, second] = await page.locator("#originList option").evaluateAll((os) => os.slice(0, 2).map((o) => o.value));
+  await page.fill("#origin", premier);
+  await expect(page.locator("#manifest .manifest-head")).toBeVisible({ timeout: 8000 });
+
+  // 1) Le bouton : son title est statique, mais la carte entière porte des noms empoisonnés.
+  await expect(page.locator("#manifestToJourney")).toBeVisible();
+  await page.click("#manifestToJourney");
+  // 2) La phrase de refus, qui interpole DEUX noms de terminaux.
+  await page.fill("#origin", second);
+  await expect(page.locator("#manifest .journey-hint, #manifest .manifest-hint")).toBeVisible({ timeout: 8000 });
+
+  const attrs = await page.locator("#manifest").evaluate((el) =>
+    [...el.querySelectorAll("*")].flatMap((n) => n.getAttributeNames())
+  );
+  for (const interdit of ["onfocus", "autofocus", "onmouseover", "data-x"]) {
+    expect(attrs, `attribut injecté « ${interdit} » dans #manifest`).not.toContain(interdit);
+  }
+  await page.mouse.move(10, 10);
+  expect(await page.evaluate(() => window.__xss)).toBeUndefined();
+  expect(erreurs).toEqual([]);
+});
+
 test("la même charge venue de market.json (vue En route) reste inerte", async ({ page }) => {
   // Second flux de données, second chemin de rendu, même fonction editv : routes.json alimente le
   // tableau « Trajets », market.json alimente « En route ». Une seule correction couvre les deux,
