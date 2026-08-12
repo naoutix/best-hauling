@@ -1374,15 +1374,14 @@ export function sellAllAt(hold, market, terminalIdx, resolve) {
 // quoi il repose — afficher un plafond avec assurance quand la donnée ne le permet pas serait
 // exactement le défaut qui a rendu cette fonction nécessaire.
 //
-// LE CLASSEMENT PORTE SUR L'ENCAISSEMENT, PAS SUR LE PROFIT. Sur un résidu, le prix d'achat est un
-// coût COULÉ : il est déjà payé et ne dépend d'aucune décision restante. Trier au profit retranche
-// `paid × units`, donc pénalise proportionnellement la destination qui écoule le PLUS — exactement
-// celle qu'on cherche. Mesuré sur l'instantané : le défaut ne touche que 2 commodités sur 71, mais
-// il est brutal là où il frappe. Gold payé 28 928 : la destination qui vide les 2 170 SCU tombe au
-// rang 10 par profit, pendant que la tête n'en reprend que 671 et en laisse 1 499 à bord — soit le
-// second refus que toute cette fonctionnalité existe pour éviter.
-// Le profit reste CALCULÉ et affiché (on veut savoir si l'on vend à perte), simplement il ne classe
-// plus rien.
+// LE CLASSEMENT PORTE SUR LE PROFIT — ce que ça rapporte une fois le prix d'achat déduit, quitte à
+// être NÉGATIF. L'argument inverse (le prix payé est un coût coulé, donc seul l'encaissement
+// compte) est juste en comptabilité et faux ici, parce qu'il suppose que VIDER LA SOUTE est
+// l'objectif. Ce n'est pas l'objectif : gagner de l'argent l'est. Écouler 671 SCU à forte marge en
+// gardant 1 499 SCU revendables ailleurs rapporte plus que solder les 2 170 à marge nulle — et le
+// résidu a 15 débouchés en médiane, donc il repart.
+// L'encaissement reste calculé et rendu (`encaisse`), il n'ordonne simplement rien. `sousLePrixPaye`
+// et `aPerte` disent franchement quand une destination fait perdre de l'argent.
 //
 // La priorité posée (« la commodité qui rapporte le plus ») joue au CLASSEMENT et non au partage :
 // la demande d'une station est par commodité, les résidus ne se disputent donc rien. La « reine »
@@ -1463,10 +1462,10 @@ export function offloadPlan(market, hold, originIdx, f = {}, resolve = null, aut
     });
   });
 
-  // Encaissement d'abord ; à égalité, celle qui écoule le plus de la reine — un booléen « solde-t-elle
-  // la reine ? » abandonnerait la priorité dans tous les cas où AUCUNE destination ne la solde.
+  // Profit d'abord ; à égalité, celle qui écoule le plus de la reine — un booléen « solde-t-elle la
+  // reine ? » abandonnerait la priorité dans tous les cas où AUCUNE destination ne la solde.
   return out
-    .sort((a, b) => b.encaisse - a.encaisse || b.scuReine - a.scuReine || b.garanti - a.garanti)
+    .sort((a, b) => b.profit - a.profit || b.scuReine - a.scuReine || b.garanti - a.garanti)
     .slice(0, limit);
 }
 

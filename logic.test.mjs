@@ -2035,27 +2035,42 @@ test("offloadPlan : les filtres de vue s'appliquent, comme partout ailleurs", ()
   assert.equal(offloadPlan(MARCHE_ECOULER, g, 0, fEcouler({ sameOnly: true }), null).every((d) => !d.cross), true);
 });
 
-test("offloadPlan : le classement suit l'ENCAISSEMENT, pas le profit — le coût est coulé", () => {
-  // Le piège, mesuré sur les vraies données (Gold payé 28 928) : trier au profit retranche
-  // paid × units, donc pénalise la destination qui écoule le PLUS. Ici « Petit » paie très cher
-  // mais ne prend que 50 SCU ; « Grand » prend tout à un prix à peine au-dessus du coût.
+test("offloadPlan : le classement suit le PROFIT, prix d'achat déduit — pas l'encaissement brut", () => {
+  // « Petit » paie 40 000 mais ne prend que 50 SCU : 553 600 de profit, 2 M encaissés.
+  // « Grand » prend les 2 170 à 29 000 — à peine au-dessus du coût : 156 240 de profit, 62,9 M
+  // encaissés. L'encaissement mettrait « Grand » en tête, et ce serait se tromper d'objectif :
+  // vider la soute n'est pas le but, gagner de l'argent l'est. Écouler 50 SCU à forte marge en
+  // gardant 2 120 SCU revendables ailleurs (15 débouchés en médiane) rapporte plus que solder
+  // le tout à marge nulle.
   const marche = {
     terminals: [{ name: "Ici", system: "S" }, { name: "Petit", system: "S" }, { name: "Grand", system: "S" }],
     commodities: [{ name: "Gold", kind: "metal", illegal: false, buys: [],
-      // « Petit » paie 40 000 mais ne prend que 50 SCU : 553 600 de profit.
-      // « Grand » paie 29 000 — à peine au-dessus du coût — mais prend les 2 170 : 156 240 de profit,
-      // pour 62,9 M encaissés contre 2 M. C'est la forme exacte du cas Gold relevé sur l'instantané.
       sells: [[1, 40000, 50, 9e9, 3], [2, 29000, 3000, 9e9, 3]] }],
   };
   const h = loadHold([], [ligne(2170, 28928, 29000)], "X", 1);
   const p = offloadPlan(marche, h, 0, fEcouler(), null);
-  assert.equal(p[0].terminal, "Grand");          // celle qui VIDE la soute
-  assert.equal(p[0].reste, 0);
-  assert.ok(p[0].encaisse > p[1].encaisse);
-  // …alors qu'au profit, « Petit » l'emporterait largement.
-  const parProfit = [...p].sort((a, b) => b.profit - a.profit);
-  assert.equal(parProfit[0].terminal, "Petit");
-  assert.ok(parProfit[0].reste > 2000, "le tri au profit laisserait le gros du résidu à bord");
+  assert.equal(p[0].terminal, "Petit");
+  assert.ok(p[0].profit > p[1].profit);
+  assert.ok(p[0].encaisse < p[1].encaisse); // et l'encaissement, lui, dirait l'inverse
+  // Ce qui resterait à bord est rendu, pour que le choix se fasse en connaissance de cause.
+  assert.equal(p[0].reste, 2120);
+  assert.equal(p[1].reste, 0);
+});
+
+test("offloadPlan : une destination qui fait PERDRE de l'argent le dit, en négatif", () => {
+  // « quitte à nous dire tu vas perdre » : le chiffre affiché est le profit, il descend sous zéro.
+  const marche = {
+    terminals: [{ name: "Ici", system: "S" }, { name: "Perte", system: "S" }, { name: "Pire", system: "S" }],
+    commodities: [{ name: "Gold", kind: "metal", illegal: false, buys: [],
+      sells: [[1, 900, 500, 9e9, 3], [2, 400, 500, 9e9, 3]] }],
+  };
+  const h = loadHold([], [ligne(500, 1000, 900)], "X", 1);
+  const p = offloadPlan(marche, h, 0, fEcouler(), null);
+  assert.ok(p[0].profit < 0 && p[1].profit < 0);        // les deux font perdre
+  assert.equal(p[0].terminal, "Perte");                  // la MOINS mauvaise d'abord
+  assert.ok(p[0].profit > p[1].profit);
+  assert.equal(p[0].aPerte, true);
+  assert.ok(p[0].encaisse > 0);                          // on encaisse quand même : les deux se disent
 });
 
 test("offloadPlan : la REINE est celle qui rapporte le plus, pas celle qui a coûté le plus", () => {

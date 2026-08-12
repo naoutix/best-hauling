@@ -584,9 +584,10 @@ test("Soute : « où écouler » classe les destinations et affiche la certitude
   await expect(dest.first()).toBeVisible();
   expect(await dest.count()).toBeGreaterThan(1);
 
-  // Classé par ce qu'on encaisse vraiment : les profits décroissent.
+  // Classé par ce que ça RAPPORTE, prix d'achat déduit — et le signe est porté, pas gommé.
   const profits = (await dest.locator(".ec-profit").allTextContents())
-    .map((t) => Number(t.replace(/[^\d]/g, "")));
+    .map((t) => Number(t.replace(/\s/g, "").replace(/[^\d+-]/g, "")));
+  for (const v of profits) expect(Number.isFinite(v)).toBe(true);
   for (let i = 1; i < profits.length; i++) expect(profits[i - 1]).toBeGreaterThanOrEqual(profits[i]);
 
   // Chaque destination dit sur quoi son chiffre repose — 84 % des capacités ne sont pas publiées.

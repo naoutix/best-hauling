@@ -410,6 +410,7 @@ input.jman-qty { width: 56px; min-width: 0; padding: 3px 5px; text-align: right;
 .ec-sur { color: var(--good); }
 .ec-flou { color: var(--warn); cursor: help; }
 .ec-perte { color: var(--bad); cursor: help; }
+.ec-profit.perte { color: var(--bad); }
 .hold-store {
   font-family: var(--mono); font-size: 10px; color: var(--acc-2);
   background: none; border: 1px solid rgba(169, 112, 255, 0.4); border-radius: 2px;
