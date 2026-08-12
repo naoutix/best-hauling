@@ -1220,6 +1220,132 @@ export function journeyMargin(journey) {
   return journey ? journey.legs.reduce((a, l) => a + (l.margin || 0), 0) : 0;
 }
 
+// ---------- Carte 2D du parcours (cf. ADR-001) ----------
+// Projection PURE d'un parcours en coordonnées de dessin. app.js n'a plus qu'à émettre du SVG.
+// La géométrie vient de data/starmap.json : `au` (distance à l'étoile) et `lon` (degrés), relevés
+// sur la starmap publiée par RSI. On ne dessine QUE des corps qui portent un terminal — c'est ce
+// filtre, appliqué à la collecte, qui tient les systèmes du lore hors de la carte.
+export const CARTE = { largeur: 680, hauteur: 296, marge: 26 };
+
+// Angle déterministe dérivé d'un nom : deux terminaux d'une même planète ne se superposent pas,
+// et la carte ne bouge pas d'un rendu à l'autre (aucun hasard, donc aucun scintillement).
+export function nameAngle(nom) {
+  let h = 0;
+  for (let i = 0; i < nom.length; i++) h = (h * 31 + nom.charCodeAt(i)) % 360;
+  return h;
+}
+
+// Les rayons réels s'étalent de 0,55 à 13 UA : à l'échelle, tout se tasserait sur l'étoile. On
+// compresse par une racine — l'ORDRE et les écarts relatifs survivent, la lisibilité aussi.
+// C'est le seul endroit où la carte s'écarte du réel, et c'est assumé (cf. ADR « schéma »).
+const rayonRelatif = (au, auMax) => 0.24 + 0.72 * Math.sqrt(Math.max(au, 0) / (auMax || 1));
+
+// Projette le parcours. `stations` = journeyStations(journey) ; `infoTerminal(nom)` rend
+// { system, planet } ou null ; `starmap` = data/starmap.json.
+// Renvoie tout ce qu'il faut dessiner, en pixels du viewBox — jamais de HTML.
+export function journeyMap(stations, current, starmap, infoTerminal) {
+  if (!stations || !stations.length) return null;
+  const { largeur, hauteur, marge } = CARTE;
+
+  // Un disque par système TRAVERSÉ, dans l'ordre où le parcours les rencontre.
+  const ordre = [];
+  for (const s of stations) if (s.system && !ordre.includes(s.system)) ordre.push(s.system);
+  if (!ordre.length) return null;
+  const n = ordre.length;
+  const rayon = Math.min((largeur - marge * 2) / (n * 2.35), (hauteur - marge * 2) / 2);
+  const systemes = ordre.map((nom, i) => ({
+    nom,
+    cx: (largeur / n) * (i + 0.5),
+    cy: hauteur / 2,
+    r: rayon,
+    corps: [],
+  }));
+  const parSysteme = new Map(systemes.map((s) => [s.nom, s]));
+
+  // Les corps du système, aux vraies distances et longitudes.
+  for (const sys of systemes) {
+    const ancres = (starmap[sys.nom] && starmap[sys.nom].ancres) || {};
+    const auMax = Math.max(...Object.values(ancres).map((a) => a.au), 1);
+    sys.auMax = auMax;
+    for (const [nom, a] of Object.entries(ancres)) {
+      const rr = rayonRelatif(a.au, auMax);
+      const rad = (a.lon * Math.PI) / 180;
+      sys.corps.push({ nom, orbite: rr * sys.r, x: sys.cx + Math.cos(rad) * rr * sys.r, y: sys.cy + Math.sin(rad) * rr * sys.r });
+    }
+    sys.corps.sort((a, b) => a.orbite - b.orbite);
+  }
+
+  // Un arrêt se pose sur son corps parent — sa planète, ou lui-même s'il est une passerelle.
+  // Sans corps connu (Levski et tout Nyx : UEX ne les rattache à rien), anneau externe. Cas
+  // NOMINAL : 12 terminaux sur 114 sont dans ce cas.
+  const rattache = stations.map((st) => {
+    const info = infoTerminal(st.name) || {};
+    const ancres = (starmap[st.system] && starmap[st.system].ancres) || {};
+    const parent = ancres[st.name] ? st.name : (info.planet && ancres[info.planet] ? info.planet : null);
+    return { nom: st.name, systeme: st.system, parent, sys: parSysteme.get(st.system) };
+  });
+
+  // Deux terminaux d'une MÊME planète (Rod's Fuel et Rat's Nest sont tous deux sur Pyro V) se
+  // superposaient : un décalage tiré du nom ne garantit aucune distance minimale, et deux escales
+  // à 6 px l'une de l'autre rendent la seconde inatteignable au clic. On répartit donc les escales
+  // d'un même corps sur une couronne, à intervalles réguliers — déterministe, et jamais confondu.
+  const grappes = new Map();
+  rattache.forEach((a, i) => {
+    const k = `${a.systeme}|${a.parent || "*"}`;
+    if (!grappes.has(k)) grappes.set(k, []);
+    grappes.get(k).push(i);
+  });
+
+  const borne = (v, max) => Math.max(marge * 0.4, Math.min(max - marge * 0.4, v));
+  const arrets = rattache.map((a, i) => {
+    const sys = a.sys;
+    if (!sys) return { nom: a.nom, systeme: a.systeme, orphelin: true, x: largeur / 2, y: hauteur / 2 };
+    const groupe = grappes.get(`${a.systeme}|${a.parent || "*"}`);
+    const rang = groupe.indexOf(i), n = groupe.length;
+    if (!a.parent) {
+      // Orphelins : répartis sur l'anneau externe, à intervalles réguliers.
+      const base = nameAngle(a.nom);
+      const ang = ((n > 1 ? (360 / n) * rang : base) * Math.PI) / 180;
+      return { nom: a.nom, systeme: a.systeme, orphelin: true, x: borne(sys.cx + Math.cos(ang) * sys.r * 1.06, largeur), y: borne(sys.cy + Math.sin(ang) * sys.r * 1.06, hauteur) };
+    }
+    const ancre = starmap[a.systeme].ancres[a.parent];
+    const rr = rayonRelatif(ancre.au, sys.auMax);
+    const rad = (ancre.lon * Math.PI) / 180;
+    const bx = sys.cx + Math.cos(rad) * rr * sys.r, by = sys.cy + Math.sin(rad) * rr * sys.r;
+    // Couronne autour du corps : rayon suffisant pour que les cibles de clic (r = 11) ne se
+    // touchent pas, angle de départ vers l'extérieur du système pour ne pas rentrer dans l'étoile.
+    const couronne = n > 1 ? Math.max(13, 4 + 3.4 * n) : 7;
+    const depart = Math.atan2(by - sys.cy, bx - sys.cx);
+    const ang = depart + (n > 1 ? (2 * Math.PI * rang) / n : 0);
+    return {
+      nom: a.nom, systeme: a.systeme, parent: a.parent, orphelin: false,
+      x: borne(bx + Math.cos(ang) * couronne, largeur), y: borne(by + Math.sin(ang) * couronne, hauteur),
+    };
+  });
+
+  // Les jambes. Un SAUT relie deux systèmes : il ne se dessine pas comme un vol intra-système.
+  const jambes = [];
+  for (let i = 1; i < arrets.length; i++) {
+    const a = arrets[i - 1], b = arrets[i];
+    jambes.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, saut: a.systeme !== b.systeme, faite: i <= current });
+  }
+
+  // Le vaisseau, sur l'arrêt courant, orienté vers le suivant (ou depuis le précédent au bout).
+  const i = Math.max(0, Math.min(current | 0, arrets.length - 1));
+  const ici = arrets[i], suiv = arrets[i + 1], prec = arrets[i - 1];
+  const vers = suiv || prec || ici;
+  const angle = (Math.atan2(vers.y - ici.y, vers.x - ici.x) * 180) / Math.PI + (suiv ? 0 : 180);
+  // Un corps qui porte une escale n'a pas besoin de son propre libellé : le nom de l'escale est
+  // juste à côté, et les deux se chevauchaient. Le rendu s'en sert pour ne pas l'écrire.
+  const occupes = new Set(arrets.filter((a) => a.parent).map((a) => `${a.systeme}|${a.parent}`));
+  for (const sys of systemes) for (const b of sys.corps) b.occupe = occupes.has(`${sys.nom}|${b.nom}`);
+
+  return {
+    largeur, hauteur, systemes, arrets, jambes,
+    vaisseau: { x: ici.x, y: ici.y, angle: vers === ici ? 0 : angle, arret: i },
+  };
+}
+
 // Encode un parcours en chaîne compacte auto-suffisante (pour localStorage / URL partageable).
 // Chaque jambe -> tuple [from, fromSystem, to, toSystem, commodity, buyPrice, sellPrice, margin].
 export function encodeJourney(journey) {

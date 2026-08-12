@@ -12,7 +12,7 @@ import {
   manifestTotals, freeAddUnits, manifestLine, freeManifestLine, hydrateManifestLine, stationLabel, parseStationLabel,
   multiTrips, tripMetrics, legFromTrip,
   legFromRoute, legsFromLoop, legsFromChain, legFromManifest, stopSuggestions, bestLegBetween,
-  manifestJourneyState, manifestIntent, sameIntent, legsToPin,
+  manifestJourneyState, manifestIntent, sameIntent, legsToPin, journeyMap,
   startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   removeJourneyStop as removeStopPure,
@@ -690,6 +690,19 @@ function loadMarket() {
   return MARKET_LOADING;
 }
 
+// Géométrie des systèmes pour la carte du voyage (cf. ADR-001). 1,5 ko, chargé à la demande et une
+// seule fois : la carte n'existe que s'il y a un voyage, inutile de le payer sur une page nue.
+// Un échec ne bloque rien — la carte reste simplement absente, le reste du compagnon fonctionne.
+let STARMAP = null, starmapPending = false;
+function ensureStarmap(then) {
+  if (STARMAP || starmapPending) return;
+  starmapPending = true;
+  fetch("data/starmap.json")
+    .then((r) => r.json())
+    .then((s) => { STARMAP = s; starmapPending = false; then(); })
+    .catch(() => { starmapPending = false; }); // silencieux : un panneau décoratif n'alarme personne
+}
+
 // Prévient que le marché est indisponible plutôt que de laisser la vue vide ET muette.
 const marketUnavailable = () => showToast("⚠ Marché indisponible — vérifie ta connexion, puis réessaie");
 
@@ -1100,6 +1113,85 @@ function renderChain() {
   notifySuperseded();
 }
 
+// ---------- Carte 2D du parcours (ADR-001) ----------
+// Le calcul est PUR (journeyMap, logic.mjs) : ici on n'émet que du SVG. Aucun asset, aucune image.
+
+// Semis d'étoiles déterministe (générateur congruentiel) : même ciel à chaque rendu, donc aucun
+// scintillement quand la carte se redessine — et statique, décision de l'ADR : rien ne doit bouger
+// en périphérie de tableaux qu'on lit.
+function etoilesHTML(n, w, h) {
+  let s = 20260812, out = "";
+  const suivant = () => ((s = (s * 1103515245 + 12345) % 2147483648) / 2147483648);
+  for (let i = 0; i < n; i++) {
+    const x = (suivant() * w).toFixed(1), y = (suivant() * h).toFixed(1), o = (0.12 + suivant() * 0.45).toFixed(2);
+    out += `<circle cx="${x}" cy="${y}" r="${suivant() > 0.9 ? 0.9 : 0.5}" fill="#dfe6f5" opacity="${o}"/>`;
+  }
+  return out;
+}
+
+const SYS_TEINTE = { Stanton: "var(--stanton)", Pyro: "var(--pyro)", Nyx: "var(--nyx)" };
+const teinte = (nom) => SYS_TEINTE[nom] || "var(--acc)";
+
+function journeyMapHTML(c) {
+  const nf = (v) => Number(v).toFixed(1);
+  let svg = `<rect width="${c.largeur}" height="${c.hauteur}" fill="#080b14"/>${etoilesHTML(70, c.largeur, c.hauteur)}`;
+
+  for (const sys of c.systemes) {
+    const t = teinte(sys.nom);
+    svg += `<g class="jm-sys"><circle cx="${nf(sys.cx)}" cy="${nf(sys.cy)}" r="${nf(sys.r * 1.1)}" fill="none" stroke="${t}" stroke-opacity="0.13" stroke-dasharray="2 5"/>`;
+    for (const b of sys.corps) {
+      svg += `<circle cx="${nf(sys.cx)}" cy="${nf(sys.cy)}" r="${nf(b.orbite)}" fill="none" stroke="${t}" stroke-opacity="0.15"/>`;
+      svg += `<circle cx="${nf(b.x)}" cy="${nf(b.y)}" r="3.2" fill="${t}" fill-opacity="0.85"/>`;
+      // Le libellé du corps s'efface quand une escale s'y pose : son nom est déjà écrit là.
+      if (!b.occupe) svg += `<text class="jm-corps" x="${nf(b.x + 6)}" y="${nf(b.y + 3)}">${esc(b.nom)}</text>`;
+    }
+    svg += `<circle cx="${nf(sys.cx)}" cy="${nf(sys.cy)}" r="6.5" fill="${t}" fill-opacity="0.18"/>`;
+    svg += `<circle cx="${nf(sys.cx)}" cy="${nf(sys.cy)}" r="3" fill="${t}"/>`;
+    svg += `<text class="jm-sysnom" x="${nf(sys.cx)}" y="${nf(Math.max(13, sys.cy - sys.r * 1.22))}" fill="${t}">${esc(sys.nom.toUpperCase())}</text></g>`;
+  }
+
+  for (const j of c.jambes) {
+    svg += j.saut
+      ? `<path class="jm-saut" d="M${nf(j.x1)} ${nf(j.y1)} L${nf(j.x2)} ${nf(j.y2)}"/>` +
+        `<circle class="jm-saut-noeud" cx="${nf((j.x1 + j.x2) / 2)}" cy="${nf((j.y1 + j.y2) / 2)}" r="7"/>` +
+        `<text class="jm-saut-glyphe" x="${nf((j.x1 + j.x2) / 2)}" y="${nf((j.y1 + j.y2) / 2 + 3)}">⚡</text>`
+      : `<path class="jm-jambe${j.faite ? " faite" : ""}" d="M${nf(j.x1)} ${nf(j.y1)} L${nf(j.x2)} ${nf(j.y2)}"/>`;
+  }
+
+  // Les arrêts sont des boutons : cliquer une escale déplace « je suis ici », comme le fil
+  // d'étapes textuel juste au-dessus (décision de l'ADR — un second chemin, pas une nouveauté).
+  c.arrets.forEach((a, i) => {
+    const fait = i < c.vaisseau.arret, ici = i === c.vaisseau.arret;
+    const droite = a.x < c.largeur / 2;
+    svg += `<g class="jm-arret${fait ? " fait" : ""}${ici ? " ici" : ""}" data-i="${i}" role="button" tabindex="0" aria-label="Se placer à ${esc(a.nom)}">` +
+      `<circle class="jm-cible" cx="${nf(a.x)}" cy="${nf(a.y)}" r="11"/>` +
+      `<circle class="jm-point" cx="${nf(a.x)}" cy="${nf(a.y)}" r="4.5"/>` +
+      `<text class="jm-nom" x="${nf(a.x + (droite ? 9 : -9))}" y="${nf(a.y - 9)}" text-anchor="${droite ? "start" : "end"}">${esc(a.nom)}</text></g>`;
+  });
+
+  const v = c.vaisseau;
+  svg += `<g class="jm-vaisseau" style="transform: translate(${nf(v.x)}px, ${nf(v.y)}px) rotate(${nf(v.angle)}deg)">` +
+    `<circle r="10" fill="var(--acc)" fill-opacity="0.12"/><path d="M8 0 L-5 5 L-2.5 0 L-5 -5 Z" fill="var(--acc)" stroke="#140c00" stroke-width="0.5"/></g>`;
+
+  return `<svg class="jm-svg" viewBox="0 0 ${c.largeur} ${c.hauteur}" role="img" aria-label="Carte du parcours : ${esc(c.arrets.map((a) => a.nom).join(", puis "))}">${svg}</svg>`;
+}
+
+// Dessine (ou masque) le panneau carte. Appelé par renderJourney, donc à chaque refresh.
+function renderJourneyMap() {
+  const box = $("journeyMap");
+  if (!box) return;
+  if (!JOURNEY || !MARKET) { box.hidden = true; return; }
+  if (!STARMAP) { ensureStarmap(renderJourneyMap); box.hidden = true; return; }
+  const info = (nom) => {
+    const i = stationMap.get(stationLabel(nom, (journeyStations(JOURNEY).find((s) => s.name === nom) || {}).system || ""));
+    return i == null ? null : MARKET.terminals[i];
+  };
+  const c = journeyMap(journeyStations(JOURNEY), JOURNEY.current, STARMAP, info);
+  if (!c) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = `<span class="jm-label">◈ <b>Carte du parcours</b> <span class="muted">schéma — rayons compressés</span></span>${journeyMapHTML(c)}`;
+}
+
 // ---------- Compagnon de voyage : résumé du parcours (près du vaisseau) ----------
 // Sélectionne un trajet/une boucle/une chaîne -> met à jour le parcours (étend si ça s'enchaîne).
 // `apresAjout` (optionnel) tourne une fois le parcours à jour mais AVANT le rendu : c'est là que le
@@ -1112,6 +1204,17 @@ function pickJourney(legs, apresAjout) {
   syncViewsToJourney();
   renderJourney();
   refresh(); // reflète la nouvelle destination/origine dans la vue courante
+}
+
+// « Je suis ici » : pose la position courante et recale les vues. Deux chemins y mènent — le fil
+// d'étapes textuel (⦿) et les escales de la carte — et c'est délibéré : la carte n'introduit pas
+// une commande, elle en offre une seconde entrée.
+function setJourneyStop(i) {
+  if (!JOURNEY || !Number.isFinite(i)) return;
+  JOURNEY = setJourneyPosition(JOURNEY, i);
+  syncViewsToJourney();
+  renderJourney();
+  refresh();
 }
 
 // Pré-remplit les contrôles des vues d'après la POSITION COURANTE du parcours.
@@ -1485,6 +1588,7 @@ function renderJourney() {
     card.hidden = false;
     const recap0 = $("journeyRecap"); if (recap0) recap0.hidden = true; // pas de récap sans voyage
     const row0 = $("shipJourneyRow"); if (row0) row0.classList.remove("stacked");
+    renderJourneyMap();
     card.innerHTML =
       `<div class="journey-head"><span class="journey-title">◈ Nouveau voyage</span></div>
        <p class="journey-hint">Choisis un trajet (▶) dans une vue, ou démarre de zéro :</p>
@@ -1568,6 +1672,7 @@ function renderJourney() {
      <div class="journey-meta">${n} saut${n > 1 ? "s" : ""} · marge cumulée <b class="profit">${fmt(journeyMargin(JOURNEY))}</b> aUEC/SCU</div>`;
 
   renderJourneyRecap({ n, totalProfit, totalScu, totalFees, systems: new Set(stations.map((s) => s.system)).size });
+  renderJourneyMap();
 }
 
 // Récap du voyage (colonne de gauche, sous le vaisseau) : remplit l'espace avec des KPIs utiles.
@@ -2329,6 +2434,15 @@ async function init() {
     tr.insertAdjacentHTML("afterend", `<tr class="schema-row"><td colspan="${tr.children.length}">${html}</td></tr>`);
     btn.classList.add("open");
   });
+  // Carte du parcours : cliquer une escale déplace « je suis ici », comme le fil d'étapes.
+  $("journeyMap").addEventListener("click", (e) => {
+    const a = e.target.closest(".jm-arret");
+    if (a) setJourneyStop(Number(a.dataset.i));
+  });
+  $("journeyMap").addEventListener("keydown", (e) => {
+    const a = e.target.closest(".jm-arret");
+    if (a && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); setJourneyStop(Number(a.dataset.i)); }
+  });
   // Compagnon de voyage : ▶ sélectionne un trajet (Trajets / En route) ; ✕ efface le parcours.
   document.addEventListener("click", (e) => {
     const pick = e.target.closest(".journey-pick");
@@ -2365,12 +2479,7 @@ async function init() {
     if (head) { toggleLegEditor(Number(head.dataset.leg)); return; }
     // Parcours interactif : clic sur une étape (⦿) = « je suis ici » -> recale les vues.
     const step = e.target.closest(".jstep");
-    if (step && JOURNEY) {
-      JOURNEY = setJourneyPosition(JOURNEY, Number(step.dataset.i));
-      syncViewsToJourney();
-      renderJourney();
-      refresh();
-    }
+    if (step) setJourneyStop(Number(step.dataset.i));
   });
   // Ajout d'arrêt / de commodité à la touche Entrée.
   document.addEventListener("keydown", (e) => {
