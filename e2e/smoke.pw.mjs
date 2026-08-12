@@ -151,6 +151,24 @@ test("vue Corrections : les commodités d'une station tiennent sur PLUSIEURS col
   for (const t of await sec.nth(0).locator(".scomm-side .scomm-lbl").allTextContents()) expect(t.trim()).toBe("achat");
   for (const t of await sec.nth(1).locator(".scomm-side .scomm-lbl").allTextContents()) expect(t.trim()).toBe("vente");
 
+  // Le côté se lit à la COULEUR : une tuile n'affiche qu'une ligne, et l'en-tête de section sort
+  // de l'écran dès qu'on fait défiler.
+  const teintes = await page.locator("#correctionsStation .scomm").evaluateAll((els) => {
+    const bord = (e) => getComputedStyle(e).borderLeftColor;
+    const a = els.find((e) => e.classList.contains("achat"));
+    const v = els.find((e) => e.classList.contains("vente"));
+    return { achat: a && bord(a), vente: v && bord(v), memeQueFond: a && bord(a) === getComputedStyle(a).backgroundColor };
+  });
+  expect(teintes.achat).toBeTruthy();
+  expect(teintes.vente).toBeTruthy();
+  expect(teintes.achat).not.toBe(teintes.vente);   // deux teintes distinctes
+  expect(teintes.memeQueFond).toBe(false);          // et visibles sur le fond
+
+  // …mais la couleur n'est JAMAIS le seul signal : le mot reste écrit sur chaque tuile.
+  const etiquettes = await page.locator("#correctionsStation .scomm-lbl").allTextContents();
+  expect(etiquettes.length).toBe(n);
+  expect(etiquettes.every((t) => /achat|vente/i.test(t))).toBe(true);
+
   // Étroit : la grille se resserre au lieu de déborder horizontalement.
   await page.setViewportSize({ width: 520, height: 1000 });
   await expect(page.locator("#correctionsStation .scomm").first()).toBeVisible();
