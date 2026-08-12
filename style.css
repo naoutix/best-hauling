@@ -369,6 +369,79 @@ input.jman-qty { width: 56px; min-width: 0; padding: 3px 5px; text-align: right;
 .chain-pick { align-self: center; font-family: var(--font); font-size: 11px; font-weight: 700; white-space: nowrap; color: var(--acc-2); background: rgba(169, 112, 255, 0.1); border: 1px solid rgba(169, 112, 255, 0.4); border-radius: 3px; padding: 5px 11px; cursor: pointer; }
 .chain-pick:hover { color: #fff; background: rgba(169, 112, 255, 0.25); }
 
+/* ---------- La soute (ADR-002) ---------- */
+/* Bordure verte : ce panneau ne décrit pas un plan mais du fret RÉEL, déjà payé. La distinguer des
+   cartes ambre (calculs) et violettes (chaîne/carte) est ce qui empêche de la lire comme une
+   prévision de plus. */
+.hold-card {
+  position: relative; margin: 14px 0 0; padding: 14px 16px;
+  background: var(--panel); border: 1px solid var(--line); border-left: 2px solid var(--good);
+}
+.hold-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.hold-title { font-family: var(--display); font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--good); font-weight: 600; }
+.hold-lines { display: flex; flex-direction: column; gap: 7px; }
+.hold-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; font-size: 12.5px; }
+.hold-name { display: flex; align-items: center; gap: 5px; flex: 1 1 auto; min-width: 0; }
+.hold-scu { font-family: var(--mono); font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.hold-scu b { color: var(--text); }
+.hold-paid { font-family: var(--mono); font-size: 11px; color: var(--muted); cursor: help; }
+.hold-lots { display: flex; flex-wrap: wrap; gap: 5px; flex-basis: 100%; padding-left: 21px; }
+.hold-lot {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--mono); font-size: 10px; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 2px; padding: 1px 4px 1px 6px;
+}
+.mbord { color: var(--good); cursor: help; }
+
+/* « Où écouler » : le classement des destinations qui reprennent le résidu. */
+.hold-offload {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.5px; color: var(--acc);
+  background: none; border: none; padding: 0; margin-left: 8px; cursor: pointer;
+}
+.hold-offload:hover { color: #fff; }
+.hold-ecouler { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.ec-head { font-family: var(--mono); font-size: 9.5px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); }
+.ec-dest { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 12px; }
+.ec-nom { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; font-weight: 600; }
+.ec-profit { font-family: var(--mono); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+.ec-detail { grid-column: 1 / -1; font-size: 10.5px; color: var(--muted); line-height: 1.5; }
+.ec-detail b { color: var(--text); }
+/* La certitude se lit à la couleur : vert = capacité publiée, ambre = UEX ne dit rien. */
+.ec-sur { color: var(--good); }
+.ec-flou { color: var(--warn); cursor: help; }
+.hold-store {
+  font-family: var(--mono); font-size: 10px; color: var(--acc-2);
+  background: none; border: 1px solid rgba(169, 112, 255, 0.4); border-radius: 2px;
+  padding: 2px 6px; cursor: pointer;
+}
+.hold-store:hover { color: #fff; background: rgba(169, 112, 255, 0.25); }
+.hold-sell-btn, .hold-sell-ok, .hold-sell-no {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.5px; text-transform: uppercase;
+  color: var(--good); background: none; border: 1px solid rgba(70, 229, 160, 0.4);
+  border-radius: 2px; padding: 2px 6px; cursor: pointer; white-space: nowrap;
+}
+.hold-sell-btn:hover, .hold-sell-ok:hover { color: #04120a; background: var(--good); }
+.hold-sell-no { color: var(--muted); border-color: var(--line); }
+.hold-sell.open { display: inline-flex; align-items: center; gap: 4px; }
+.hold-sell-qty {
+  width: 66px; min-width: 0; padding: 2px 6px; font-size: 11px; text-align: center;
+  font-family: var(--mono);
+}
+.hold-del { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 11px; padding: 0 2px; line-height: 1; }
+.hold-del:hover { color: var(--bad); }
+.hold-del.solo { margin-left: auto; }
+.hold-meta { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.hold-meta b { color: var(--text); }
+
+/* « ✓ chargé » sur la jambe : le moment où l'intention devient un fait. Vert quand c'est à bord. */
+.jleg-load {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.5px; text-transform: uppercase;
+  white-space: nowrap; color: var(--muted); background: none;
+  border: 1px solid var(--line); border-radius: 2px; padding: 2px 6px; margin-left: 6px; cursor: pointer;
+}
+.jleg-load:hover { color: var(--good); border-color: var(--good); }
+.jleg-load.charge { color: #04120a; background: var(--good); border-color: var(--good); font-weight: 700; }
+
 /* ---------- Carte 2D du parcours (ADR-001) ---------- */
 /* Bandeau pleine largeur sous le compagnon. Tout est dessiné par app.js : aucun asset, aucune
    image. Les couleurs viennent des mêmes variables que le reste — la carte suit donc le thème. */
@@ -418,6 +491,9 @@ input.jman-qty { width: 56px; min-width: 0; padding: 3px 5px; text-align: right;
 .jm-arret:focus-visible { outline: none; }
 .jm-arret:focus-visible .jm-cible { stroke: var(--acc-2); stroke-width: 1.5; }
 
+/* En vol : la jambe est chargée, le vaisseau n'est plus à quai. Halo plus vif pour que l'état se
+   lise sans compter les points. */
+.jm-vaisseau.en-vol circle { fill-opacity: 0.28; }
 /* Le vaisseau glisse d'une escale à l'autre : c'est tout le geste du panneau. */
 .jm-vaisseau { transition: transform 700ms cubic-bezier(0.4, 0.05, 0.2, 1); }
 @media (prefers-reduced-motion: reduce) { .jm-vaisseau { transition: none; } }

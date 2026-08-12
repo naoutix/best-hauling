@@ -13,6 +13,8 @@ import {
   multiTrips, tripMetrics, legFromTrip,
   legFromRoute, legsFromLoop, legsFromChain, legFromManifest, stopSuggestions, bestLegBetween,
   manifestJourneyState, manifestIntent, sameIntent, legsToPin, journeyMap,
+  loadHold, holdScu, freeCargo, holdByCommodity, sellFromHold, refuseHere, sellableAt, sellAllAt,
+  offloadPlan, storeFromHold,
   startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   removeJourneyStop as removeStopPure,
@@ -805,7 +807,10 @@ function manifestTotalsHTML(m, t) {
   // Les frais sont exposés à part plutôt que fondus dans le profit : c'est le seul moyen de voir
   // ce que coûte la manutention d'un chargement à plusieurs commodités (une base par ligne).
   const fees = t.fees > 0 ? ` · <span class="fee-chip" title="${m.feeInfo ? esc(`${feeEndText(m.feeInfo.a)} · ${feeEndText(m.feeInfo.b)} · une transaction par commodité · estimation ±3 %`) : ""}">frais ≈ ${fmt(t.fees)}</span>` : "";
-  return `Profit <b class="profit">${fmtFee(t.profit, t.fees)}</b> aUEC${fees} · <b>${fmt(t.scu)}</b>/${fmt(m.cargo)} SCU${empty > 0 ? ` · ${fmt(empty)} SCU vides` : ""} · invest. ${fmt(t.invest)} · ~${fmtFee(profitHour, t.fees)}/h`;
+  // `m.aBord` : la soute n'était pas vide, le manifeste ne remplit donc que la place restante.
+  // Le dire ici évite de lire « 47/47 SCU » sur un vaisseau de 96 sans comprendre pourquoi.
+  const bord = m.aBord > 0 ? ` · <span class="mbord" title="Déjà en soute, payé — cf. panneau Soute">${fmt(m.aBord)} SCU à bord</span>` : "";
+  return `Profit <b class="profit">${fmtFee(t.profit, t.fees)}</b> aUEC${fees} · <b>${fmt(t.scu)}</b>/${fmt(m.cargo)} SCU${bord}${empty > 0 ? ` · ${fmt(empty)} SCU vides` : ""} · invest. ${fmt(t.invest)} · ~${fmtFee(profitHour, t.fees)}/h`;
 }
 
 // Espace/budget restants d'après les SCU actuellement affectés.
@@ -1009,14 +1014,27 @@ function renderManifest(origin, destSystem, f, destTerminal) {
     card.innerHTML = `<div class="manifest-hint">Active la <b>soute (SCU)</b> pour calculer un manifeste de remplissage.</div>`;
     return;
   }
-  const man = bestManifest(MARKET, origin, destSystem, f, effVals, destTerminal, feeResolver(f));
+  // La soute n'est pas vide : on ne peut charger QUE la place qui reste. C'est la question du
+  // scénario d'ADR-002 — « j'ai 30 SCU de libre, qu'est-ce que j'y mets maintenant ? ». Les autres
+  // vues gardent la soute nominale : elles répondent à « quelle est la meilleure route », pas à
+  // « que puis-je embarquer là, tout de suite ».
+  const aBord = holdScu(SOUTE);
+  const libre = freeCargo(SOUTE, f.cargo);
+  if (aBord > 0 && libre <= 0) {
+    card.hidden = false;
+    card.innerHTML = `<div class="manifest-hint">Soute pleine : <b>${fmt(aBord)} SCU</b> déjà à bord. Vends ou dépose du fret pour charger autre chose.</div>`;
+    return;
+  }
+  const fLibre = aBord > 0 ? { ...f, cargo: libre } : f;
+  const man = bestManifest(MARKET, origin, destSystem, fLibre, effVals, destTerminal, feeResolver(f));
   if (!man) {
     card.hidden = false;
-    card.innerHTML = `<div class="manifest-hint">Aucun chargement rentable depuis ce terminal vers cette destination.</div>`;
+    card.innerHTML = `<div class="manifest-hint">Aucun chargement rentable depuis ce terminal vers cette destination${aBord > 0 ? ` dans les <b>${fmt(libre)} SCU</b> qui restent libres` : ""}.</div>`;
     return;
   }
   man.originIdx = origin;
-  man.f = f;
+  man.f = fLibre;
+  man.aBord = aBord; // pour que la carte dise pourquoi elle ne remplit que ça
   // `man.fee` (le contexte de frais) vient de manifestsFrom : on ne le reconstruit pas, on ne
   // risque donc pas de le reconstruire AUTREMENT que ce qui a servi à choisir la destination.
   man.feeInfo = feeCtx(f, man.origin.name, man.dest.name, man.origin, man.dest);
@@ -1126,6 +1144,185 @@ function renderChain() {
   notifySuperseded();
 }
 
+// ---------- La soute : ce qui est à bord, et ce qu'on l'a payé (ADR-002) ----------
+// Un lot par chargement — la même commodité peut y figurer deux fois à des prix différents.
+// PERSISTÉE ET SANS PÉREMPTION : reprendre le jeu une semaine plus tard avec un vaisseau rangé
+// plein, ce n'est pas une soute périmée, c'est une soute exacte. C'est aussi pour ça qu'effacer le
+// voyage NE VIDE PAS la soute : le parcours est un plan, la soute est du fret réel.
+const HOLD_KEY = "best-hauling-hold";
+let SOUTE = [];
+function loadSoute() {
+  try { SOUTE = JSON.parse(localStorage.getItem(HOLD_KEY)) || []; } catch { SOUTE = []; }
+  if (!Array.isArray(SOUTE)) SOUTE = [];
+}
+function saveSoute() { try { localStorage.setItem(HOLD_KEY, JSON.stringify(SOUTE)); } catch {} }
+
+// Charge le manifeste d'une jambe dans la soute, au prix que l'app venait d'afficher. Les lots
+// portent la clé de la jambe : c'est ce qui permet d'annuler un chargement sans deviner.
+function chargerJambe(i) {
+  const leg = JOURNEY && JOURNEY.legs[i];
+  if (!leg || !MARKET) return;
+  const k = legKey(leg, i);
+  if (SOUTE.some((l) => l.leg === k)) { // déjà chargée -> le bouton annule
+    SOUTE = SOUTE.filter((l) => l.leg !== k);
+  } else {
+    const lignes = legEffectiveLines(leg, i, readFilters());
+    if (!lignes.length) return;
+    SOUTE = SOUTE.concat(loadHold([], lignes, leg.from, nowSec()).map((l) => ({ ...l, leg: k })));
+  }
+  saveSoute();
+  renderJourney();
+  refresh();
+}
+const jambeChargee = (leg, i) => SOUTE.some((l) => l.leg === legKey(leg, i));
+
+// « Où suis-je ? » — l'étape courante du voyage, ou à défaut le terminal de départ d'« En route ».
+// C'est ce terminal qui fixe le prix d'une vente et qui porte le marqueur « refusé ici ».
+function stationCourante() {
+  if (JOURNEY) {
+    const ici = journeyStations(JOURNEY)[JOURNEY.current];
+    if (ici) return stationMap.get(stationLabel(ici.name, ici.system));
+  }
+  return enrouteOrigin; // peut être null : la vente est alors impossible, et le bouton absent
+}
+
+// Vend `units` SCU ici. Si le comptoir n'a pas tout pris, le reste est marqué REFUSÉ à cette
+// station : il traversera la vente implicite du départ sans être effacé.
+function vendreIci(nom, units) {
+  const idx = stationCourante();
+  if (idx == null || !MARKET) return;
+  const pt = sellableAt(MARKET, idx, nom, effVals);
+  if (!pt) return;
+  const avant = SOUTE.reduce((s, l) => s + (l.name === nom ? l.units || 0 : 0), 0);
+  const r = sellFromHold(SOUTE, nom, units, pt.price);
+  if (!r.vendu) return;
+  SOUTE = r.vendu < avant ? refuseHere(r.hold, nom, pt.terminal) : r.hold;
+  saveSoute();
+  venteEnCours = null;
+  renderSoute(); refresh();
+  const reste = avant - r.vendu;
+  showToast(`✓ ${fmt(r.vendu)} SCU de ${nom} vendus — ${fmtSigne(r.profit)} aUEC` +
+    (reste > 0 ? ` · ${fmt(reste)} SCU restent à bord (refusés ici)` : ""));
+}
+
+// Quitter une escale sous-entend qu'on y a fait son affaire : ce qu'elle reprend est vendu.
+// Ce qu'une vente partielle y a laissé porte `refuse` et traverse intact.
+function venteImplicite(depuis) {
+  if (!SOUTE.length || !MARKET || depuis == null) return;
+  const r = sellAllAt(SOUTE, MARKET, depuis, effVals);
+  if (!r.ventes.length) return;
+  SOUTE = r.hold;
+  saveSoute();
+  const quoi = r.ventes.map((v) => `${fmt(v.units)} ${v.name}`).join(", ");
+  showToast(`✓ Vendu en quittant ${MARKET.terminals[depuis].name} : ${quoi} — ${fmtSigne(r.profit)} aUEC`);
+}
+
+const fmtSigne = (n) => (n >= 0 ? "+" : "") + fmt(Math.round(n));
+let venteEnCours = null; // commodité dont le champ « vendu » est ouvert
+
+// Le fret déposé à une station : ni vendu, ni perdu — du capital immobilisé qu'on peut oublier.
+const DEPOTS_KEY = "best-hauling-depots";
+let DEPOTS = {};
+function loadDepots() {
+  try { DEPOTS = JSON.parse(localStorage.getItem(DEPOTS_KEY)) || {}; } catch { DEPOTS = {}; }
+}
+function saveDepots() { try { localStorage.setItem(DEPOTS_KEY, JSON.stringify(DEPOTS)); } catch {} }
+
+function deposerIci(nom, units) {
+  const idx = stationCourante();
+  if (idx == null || !MARKET) return;
+  const t = MARKET.terminals[idx];
+  const r = storeFromHold(SOUTE, DEPOTS, nom, units, stationLabel(t.name, t.system));
+  if (r.hold === SOUTE) return;
+  SOUTE = r.hold; DEPOTS = r.entrepots;
+  saveSoute(); saveDepots();
+  venteEnCours = null;
+  renderSoute(); refresh();
+  showToast(`⬓ ${fmt(units)} SCU de ${nom} déposés à ${t.name} — ni vendus ni perdus`);
+}
+
+// « Où écouler ce qui reste ? » — le détour manuel par la vue Commodités, en un panneau.
+let ecoulerOuvert = false;
+function ecoulerHTML() {
+  const idx = stationCourante();
+  if (!ecoulerOuvert || idx == null || !MARKET) return "";
+  const f = readFilters();
+  const dest = offloadPlan(MARKET, SOUTE, idx, f, effVals, feeResolver(f), 5);
+  if (!dest.length) {
+    return `<div class="hold-ecouler"><p class="muted">Aucune destination ne reprend ce fret avec ces filtres.
+      Tu peux le <b>déposer</b> à une station : il n'est alors ni vendu ni perdu.</p></div>`;
+  }
+  const lignes = dest.map((d) => {
+    const cert = d.certitude === "connue"
+      ? `<span class="ec-sur" title="Capacité publiée par UEX">${fmt(d.garanti)} SCU garantis</span>`
+      : d.certitude === "inconnue"
+        ? `<span class="ec-flou" title="UEX ne publie pas la capacité de ce point : ni zéro, ni illimitée">capacité inconnue</span>`
+        : `<span class="ec-flou" title="Capacité publiée pour une partie seulement">${fmt(d.garanti)} SCU garantis, reste inconnu</span>`;
+    const detail = d.lignes.map((l) => `${esc(l.name)} ${fmt(l.absorbe)}${l.reste > 0 ? `/${fmt(l.absorbe + l.reste)}` : ""}`).join(" · ");
+    return `<div class="ec-dest">
+        <span class="ec-nom">${esc(d.terminal)}${sysBadge(d.system)}${d.cross ? ' <span class="cross">⚡</span>' : ""}${outpostTag(d.outpost)}</span>
+        <span class="ec-profit profit">+${fmt(Math.round(d.profit))}</span>
+        <span class="ec-detail">${esc(detail)} · ${cert}${d.reste > 0 ? ` · <b>${fmt(d.reste)}</b> SCU resteraient à bord` : " · <b>soute vidée</b>"}</span>
+      </div>`;
+  }).join("");
+  return `<div class="hold-ecouler"><div class="ec-head">Où écouler — classé par ce que tu encaisses vraiment</div>${lignes}</div>`;
+}
+
+function viderSoute() { SOUTE = []; saveSoute(); renderSoute(); refresh(); }
+function retirerLot(i) { SOUTE = SOUTE.filter((_, j) => j !== i); saveSoute(); renderSoute(); refresh(); }
+
+function renderSoute() {
+  const box = $("holdCard");
+  if (!box) return;
+  if (!SOUTE.length) { box.hidden = true; return; }
+  box.hidden = false;
+  const groupes = holdByCommodity(SOUTE);
+  const ici = stationCourante();
+  const scu = holdScu(SOUTE);
+  const f = readFilters();
+  const libre = f.useCargo && f.cargo > 0 ? freeCargo(SOUTE, f.cargo) : null;
+  const invest = groupes.reduce((s, g) => s + g.invest, 0);
+  // Le `kind` n'est pas persisté dans le lot : c'est une propriété de la commodité, pas de la
+  // transaction. On le relit au marché quand il est là, et on s'en passe sinon.
+  const icone = (nom) => {
+    const c = MARKET && findCommodity(nom);
+    return c ? commodityIcon(c.kind) : "";
+  };
+  const lignes = groupes.map((g) => {
+    // Le détail des lots n'apparaît que s'il y en a plusieurs : sinon c'est du bruit.
+    const lots = g.lots.length > 1
+      ? `<div class="hold-lots">${g.lots.map((l) => `<span class="hold-lot" title="Chargé à ${esc(l.from || "?")}">${fmt(l.units)} SCU @ ${fmt(l.paid)}<button class="hold-del" data-i="${l.i}" title="Retirer ce lot" aria-label="Retirer">✕</button></span>`).join("")}</div>`
+      : `<button class="hold-del solo" data-i="${g.lots[0].i}" title="Retirer ce lot" aria-label="Retirer">✕</button>`;
+    // Vendre suppose de savoir OÙ l'on est, et que le comptoir reprenne la commodité.
+    const pt = ici != null && MARKET ? sellableAt(MARKET, ici, g.name, effVals) : null;
+    // Vendre suppose que le comptoir reprenne la commodité ; DÉPOSER, non — c'est justement la
+    // sortie quand il n'en veut pas. Les deux ouvrent le même champ de quantité.
+    const vente = venteEnCours === g.name
+      ? `<span class="hold-sell open"><input class="hold-sell-qty" type="number" min="0" max="${g.units}" value="${g.units}" aria-label="SCU de ${esc(g.name)}" />
+           ${pt ? `<button class="hold-sell-ok" data-name="${esc(g.name)}" title="Vendre ici à ${fmt(pt.price)} aUEC/SCU">✓ vendre</button>` : ""}
+           <button class="hold-store" data-name="${esc(g.name)}" title="Déposer à la station : ni vendu, ni perdu">⬓ déposer</button>
+           <button class="hold-sell-no" title="Annuler">✕</button></span>`
+      : ici != null
+        ? `<button class="hold-sell-btn" data-name="${esc(g.name)}" title="${pt
+            ? `Vendre ou déposer ici — ${fmt(pt.price)} aUEC/SCU${pt.demand == null ? ", capacité inconnue chez UEX" : `, capacité annoncée ${fmt(pt.demand)} SCU`}`
+            : "Ce comptoir ne reprend pas cette commodité — tu peux quand même l'y déposer"}">${pt ? "vendu" : "déposer"}</button>`
+        : "";
+    return `<div class="hold-line">
+        <span class="hold-name">${icone(g.name)}${esc(g.name)}</span>
+        <span class="hold-scu"><b>${fmt(g.units)}</b> SCU</span>
+        <span class="hold-paid" title="Prix payé au SCU${g.lots.length > 1 ? " (moyenne des lots)" : ""}">@ ${fmt(Math.round(g.paidMoyen))}</span>
+        ${vente}
+        ${lots}
+      </div>`;
+  }).join("");
+  box.innerHTML =
+    `<div class="hold-head"><span class="hold-title">◈ Soute</span><button id="holdClear" class="journey-clear" title="Vider la soute (le fret est débarqué)" aria-label="Vider la soute">✕</button></div>
+     <div class="hold-lines">${lignes}</div>
+     <div class="hold-meta"><b>${fmt(scu)}</b> SCU à bord${libre != null ? ` · <b>${fmt(libre)}</b> libres` : ""} · capital engagé <b>${fmt(invest)}</b> aUEC
+       <button id="holdOffload" class="hold-offload">${ecoulerOuvert ? "▾" : "▸"} où écouler ?</button></div>
+     ${ecoulerHTML()}`;
+}
+
 // ---------- Carte 2D du parcours (ADR-001) ----------
 // Le calcul est PUR (journeyMap, logic.mjs) : ici on n'émet que du SVG. Aucun asset, aucune image.
 
@@ -1183,7 +1380,7 @@ function journeyMapHTML(c) {
   });
 
   const v = c.vaisseau;
-  svg += `<g class="jm-vaisseau" style="transform: translate(${nf(v.x)}px, ${nf(v.y)}px) rotate(${nf(v.angle)}deg)">` +
+  svg += `<g class="jm-vaisseau${v.enVol ? " en-vol" : ""}" style="transform: translate(${nf(v.x)}px, ${nf(v.y)}px) rotate(${nf(v.angle)}deg)">` +
     `<circle r="10" fill="var(--acc)" fill-opacity="0.12"/><path d="M8 0 L-5 5 L-2.5 0 L-5 -5 Z" fill="var(--acc)" stroke="#140c00" stroke-width="0.5"/></g>`;
 
   return `<svg class="jm-svg" viewBox="0 0 ${c.largeur} ${c.hauteur}" role="img" aria-label="Carte du parcours : ${esc(c.arrets.map((a) => a.nom).join(", puis "))}">${svg}</svg>`;
@@ -1199,7 +1396,10 @@ function renderJourneyMap() {
     const i = stationMap.get(stationLabel(nom, (journeyStations(JOURNEY).find((s) => s.name === nom) || {}).system || ""));
     return i == null ? null : MARKET.terminals[i];
   };
-  const c = journeyMap(journeyStations(JOURNEY), JOURNEY.current, STARMAP, info);
+  // Jambe courante chargée = on a payé et on est parti : le vaisseau quitte le quai sur la carte.
+  const legCourante = JOURNEY.legs[JOURNEY.current];
+  const enVol = !!legCourante && jambeChargee(legCourante, JOURNEY.current);
+  const c = journeyMap(journeyStations(JOURNEY), JOURNEY.current, STARMAP, info, enVol);
   if (!c) { box.hidden = true; return; }
   box.hidden = false;
   box.innerHTML = `<span class="jm-label">◈ <b>Carte du parcours</b> <span class="muted">schéma — rayons compressés</span></span>${journeyMapHTML(c)}`;
@@ -1224,6 +1424,9 @@ function pickJourney(legs, apresAjout) {
 // une commande, elle en offre une seconde entrée.
 function setJourneyStop(i) {
   if (!JOURNEY || !Number.isFinite(i)) return;
+  // AVANCER sous-entend qu'on a fait son affaire à l'escale qu'on quitte : ce qu'elle reprend part.
+  // Reculer, non — on ne revend pas en revenant sur ses pas.
+  if (i > JOURNEY.current) venteImplicite(stationCourante());
   JOURNEY = setJourneyPosition(JOURNEY, i);
   syncViewsToJourney();
   renderJourney();
@@ -1602,6 +1805,7 @@ function renderJourney() {
     const recap0 = $("journeyRecap"); if (recap0) recap0.hidden = true; // pas de récap sans voyage
     const row0 = $("shipJourneyRow"); if (row0) row0.classList.remove("stacked");
     renderJourneyMap();
+    renderSoute();
     card.innerHTML =
       `<div class="journey-head"><span class="journey-title">◈ Nouveau voyage</span></div>
        <p class="journey-hint">Choisis un trajet (▶) dans une vue, ou démarre de zéro :</p>
@@ -1629,6 +1833,7 @@ function renderJourney() {
     const pair = MARKET ? (legFeeCtx(leg, f) || {}).pair : null;
     const edited = MARKET && !!JOURNEY_EDITS[legKey(leg, i)];
     const pinned = edited && !!JOURNEY_PINS[legKey(leg, i)]; // figée par une correction, pas par toi
+    const charge = MARKET && jambeChargee(leg, i); // ce manifeste est-il déjà en soute ?
     const expanded = i === journeyExpandedLeg;
     let cargo, total;
     if (!MARKET) { cargo = '<span class="muted">calcul…</span>'; total = "—"; }
@@ -1659,7 +1864,7 @@ function renderJourney() {
     return `<div class="jleg${i === JOURNEY.current ? " current" : ""}${expanded ? " expanded" : ""}">
         <div class="jleg-head" data-leg="${i}" role="button" tabindex="0" title="Éditer le manifeste de cette jambe"><span class="jleg-n">${i + 1}</span><span class="jleg-route">${esc(leg.from)} → ${esc(leg.to)}</span>${edited ? (pinned
           ? '<span class="jleg-pinned" title="Quantités figées : le stock ou la demande de ce chargement a été corrigé depuis. Le trajet reste tel que tu l\'as décidé — les prix, eux, continuent de suivre le marché. « ↺ optimal » recalcule tout.">🔒</span>'
-          : '<span class="jleg-edited" title="Manifeste personnalisé">✎</span>') : ""}<span class="jleg-profit profit">+${total}</span><span class="jleg-caret">${expanded ? "▾" : "▸"}</span></div>
+          : '<span class="jleg-edited" title="Manifeste personnalisé">✎</span>') : ""}${MARKET && lines && lines.length ? `<button class="jleg-load${charge ? " charge" : ""}" data-leg="${i}" title="${charge ? "Annuler : ce chargement n'est plus à bord" : "J'ai payé et chargé ce manifeste — il entre en soute à ce prix"}">${charge ? "⬢ à bord" : "✓ chargé"}</button>` : ""}<span class="jleg-profit profit">+${total}</span><span class="jleg-caret">${expanded ? "▾" : "▸"}</span></div>
         <div class="jleg-cargo">${cargo}</div>
         ${editor}
       </div>`;
@@ -1686,6 +1891,7 @@ function renderJourney() {
 
   renderJourneyRecap({ n, totalProfit, totalScu, totalFees, systems: new Set(stations.map((s) => s.system)).size });
   renderJourneyMap();
+  renderSoute();
 }
 
 // Récap du voyage (colonne de gauche, sous le vaisseau) : remplit l'espace avec des KPIs utiles.
@@ -2542,6 +2748,25 @@ async function init() {
     btn.classList.add("open");
   });
   // Carte du parcours : cliquer une escale déplace « je suis ici », comme le fil d'étapes.
+  $("holdCard").addEventListener("click", (e) => {
+    if (e.target.closest("#holdClear")) { viderSoute(); return; }
+    if (e.target.closest("#holdOffload")) { ecoulerOuvert = !ecoulerOuvert; renderSoute(); return; }
+    const deposer = e.target.closest(".hold-store");
+    if (deposer) { deposerIci(deposer.dataset.name, Number(deposer.closest(".hold-sell").querySelector(".hold-sell-qty").value)); return; }
+    const ouvrir = e.target.closest(".hold-sell-btn");
+    if (ouvrir) { venteEnCours = ouvrir.dataset.name; renderSoute(); $("holdCard").querySelector(".hold-sell-qty")?.select(); return; }
+    if (e.target.closest(".hold-sell-no")) { venteEnCours = null; renderSoute(); return; }
+    const ok = e.target.closest(".hold-sell-ok");
+    if (ok) { vendreIci(ok.dataset.name, Number(ok.closest(".hold-sell").querySelector(".hold-sell-qty").value)); return; }
+    const del = e.target.closest(".hold-del");
+    if (del) retirerLot(Number(del.dataset.i));
+  });
+  // Entrée valide la vente, Échap l'annule — même patron que les corrections inline.
+  $("holdCard").addEventListener("keydown", (e) => {
+    if (!e.target.classList.contains("hold-sell-qty")) return;
+    if (e.key === "Enter") { e.preventDefault(); vendreIci(venteEnCours, Number(e.target.value)); }
+    else if (e.key === "Escape") { e.preventDefault(); venteEnCours = null; renderSoute(); }
+  });
   $("journeyMap").addEventListener("click", (e) => {
     const a = e.target.closest(".jm-arret");
     if (a) setJourneyStop(Number(a.dataset.i));
@@ -2579,6 +2804,8 @@ async function init() {
     if (legSug) { addLegSuggestion(Number(legSug.dataset.leg), legSug.dataset.name); return; }
     const legDel = e.target.closest(".jman-del");
     if (legDel) { delLegLine(Number(legDel.dataset.leg), legDel.dataset.name); return; }
+    const load = e.target.closest(".jleg-load");
+    if (load) { chargerJambe(Number(load.dataset.leg)); return; } // AVANT .jleg-head : le bouton y vit
     if (e.target.closest(".jman-reset")) { resetLeg(Number(e.target.closest(".jman-reset").dataset.leg)); return; }
     const addBtn = e.target.closest(".jman-add-btn");
     if (addBtn) { addLegLine(Number(addBtn.dataset.leg), addBtn.closest(".jman-add").querySelector(".jman-add-input").value); return; }
@@ -2636,6 +2863,8 @@ async function init() {
   loadAutoloadK();
   loadJourneyEdits();
   loadJourneyPins();
+  loadSoute();
+  loadDepots();
   updateOvBadge();
   syncToggles();
 
