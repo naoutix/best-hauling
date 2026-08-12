@@ -14,7 +14,8 @@ import {
   pairEligible, suggestionsFrom,
   manifestsFrom, multiTrips, tripMetrics, legFromTrip,
   commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
-  legFromRoute, legsFromLoop, legsFromChain, stopSuggestions, bestLegBetween,
+  legFromRoute, legsFromLoop, legsFromChain, legFromManifest, stopSuggestions, bestLegBetween,
+  manifestJourneyState, manifestIntent, sameIntent,
   startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   encodeJourney, decodeJourney, removeJourneyStop, freeManifestLine, hydrateManifestLine,
@@ -1624,6 +1625,116 @@ test("legFromTrip : jambe de voyage depuis un trajet multi (commodité de tête)
   assert.equal(leg.to, "B");
   assert.equal(leg.commodity, "Gold");
   assert.equal(leg.margin, 45);            // marge moyenne du chargement
+});
+
+test("legFromManifest : la jambe porte la marge du chargement, sans passer par tripMetrics", () => {
+  const toB = manifestsFrom(MKT(), 0, "", F({ useCargo: true, cargo: 400 }), idResolve)
+    .find((t) => t.dest.name === "B");
+  const leg = legFromManifest(toB);
+  assert.deepEqual(Object.keys(leg).sort(), ["buyPrice", "commodity", "from", "fromSystem", "margin", "sellPrice", "to", "toSystem"]);
+  assert.deepEqual([leg.from, leg.to, leg.commodity], ["A", "B", "Gold"]);
+  assert.equal(leg.margin, 45); // un manifeste n'a pas de champ `margin` : sans le calcul, ce serait 0
+  assert.deepEqual(leg, legFromTrip({ ...toB, ...tripMetrics(toB) })); // même jambe que la vue Trajets multi
+});
+
+test("legFromManifest : la marge reste BRUTE quand les frais d'autoload sont actifs", () => {
+  // La jambe est persistée et voyage dans le permalien : une marge nette y survivrait à
+  // l'extinction de l'interrupteur et se cumulerait avec les marges brutes des autres vues.
+  const f = F({ useCargo: true, cargo: 400 });
+  // Frais réels mais supportables : à k plus élevé, manifestsFrom écarte les lignes dont la
+  // manutention mange la marge et le chargement disparaît — il n'y aurait plus rien à mesurer.
+  const cher = () => ({ maxBox: 32, k: 0.1 });
+  const toB = manifestsFrom(MKT(), 0, "", f, idResolve, null, cher).find((t) => t.dest.name === "B");
+  const m = tripMetrics(toB);
+  assert.ok(m.fees > 0, "fixture sans frais : le test ne prouverait rien");
+  assert.ok(m.marginGross > m.margin, "la marge nette doit être plus basse que la brute");
+  assert.equal(legFromManifest(toB).margin, m.marginGross);
+});
+
+test("legFromManifest : un chargement « vend ailleurs » ne produit ni NaN ni jambe cassée", () => {
+  const man = { origin: { name: "A", system: "Stanton" }, dest: { name: "B", system: "Stanton" }, cross: false, cargo: 96, fee: null,
+    lines: [{ name: "Butin", units: 10, buyPrice: 0, sellPrice: null, margin: 0, stock: null, demand: null, acquired: true }] };
+  const leg = legFromManifest(man);
+  assert.equal(leg.commodity, "Butin");
+  assert.equal(leg.sellPrice, 0);   // `null` coercé, jamais NaN
+  assert.equal(leg.margin, 0);
+  assert.deepEqual(decodeJourney(encodeJourney(startJourney([leg]))).legs[0], leg); // survit au lien
+});
+
+// ---------- Manifeste -> voyage : ce que le parcours en cours autorise ----------
+test("manifestJourneyState : sans voyage, on en démarre un", () => {
+  assert.deepEqual(manifestJourneyState(null, { name: "A" }, { name: "B" }), { etat: "ajouter" });
+});
+
+test("manifestJourneyState : un chargement au départ de la FIN du parcours s'ajoute", () => {
+  const j = parcours(["A", "B", "C", "D"], 1);
+  assert.deepEqual(manifestJourneyState(j, { name: "D" }, { name: "E" }), { etat: "ajouter" });
+  // Voyage « de zéro » : la fin, c'est le point de départ posé.
+  assert.deepEqual(manifestJourneyState(startJourneyAt({ name: "Z", system: "S" }), { name: "Z" }, { name: "Y" }), { etat: "ajouter" });
+});
+
+test("manifestJourneyState : la jambe COURANTE n'est pas une incompatibilité", () => {
+  // État par défaut après tout ▶ : syncViewsToJourney pré-remplit En route avec la station
+  // courante, donc la carte affiche la jambe qu'on vient de choisir. Sans cet état, un clic
+  // passerait par la branche REMPLACER d'addToJourney et réduirait le voyage à cette seule jambe.
+  const j = parcours(["A", "B", "C", "D"], 1);
+  assert.deepEqual(manifestJourneyState(j, { name: "B" }, { name: "C" }), { etat: "deja", leg: 1 });
+  assert.deepEqual(manifestJourneyState(j, { name: "C" }, { name: "D" }), { etat: "deja", leg: 2 }); // autre jambe planifiée
+});
+
+test("manifestJourneyState : sur un parcours cyclique, le raccord PRIME sur « déjà »", () => {
+  // A→B→A, arrivé au bout : le chargement A→B est un nouveau tour, pas la jambe 0 déjà faite.
+  // C'est ce test qui verrouille l'ordre des branches ; il tombe si on cherche « déjà » en premier.
+  const boucle = { legs: [jambe("A", "B"), jambe("B", "A")], current: 2 };
+  assert.deepEqual(manifestJourneyState(boucle, { name: "A" }, { name: "B" }), { etat: "ajouter" });
+});
+
+test("manifestJourneyState : sinon conflit, en nommant la fin du parcours", () => {
+  const r = manifestJourneyState(parcours(["A", "B"], 0), { name: "A" }, { name: "Z" });
+  assert.deepEqual(r, { etat: "conflit", fin: "B" });
+});
+
+test("manifestJourneyState : une jambe venue d'un permalien reste reconnue", () => {
+  // decodeJourney coerce les systèmes absents à "" : la comparaison ne doit porter que sur les noms.
+  const j = decodeJourney(encodeJourney(startJourney([jambe("A", "B")])));
+  assert.equal(manifestJourneyState(j, { name: "B" }, { name: "C" }).etat, "ajouter");
+  assert.equal(manifestJourneyState(j, { name: "A" }, { name: "B" }).etat, "deja");
+});
+
+test("manifestIntent : ne persiste QUE le nom et les SCU, dans l'ordre", () => {
+  const lines = [
+    { name: "Gold", units: 300, buyPrice: 100, sellPrice: 150, stock: 500, buyUpdated: 1, cap: 300 },
+    { name: "Drug", units: 0, buyPrice: 50, sellPrice: 80 },   // 0 volontaire : doit survivre
+    { name: "Butin", units: 999, cap: 10 },                     // au-delà du cap : conservé tel quel
+  ];
+  const intent = manifestIntent(lines);
+  assert.deepEqual(intent, [{ name: "Gold", units: 300 }, { name: "Drug", units: 0 }, { name: "Butin", units: 999 }]);
+  // Le test qui interdit toute fuite d'instantané de marché dans le store.
+  for (const e of intent) assert.deepEqual(Object.keys(e), ["name", "units"]);
+});
+
+test("sameIntent : distingue longueur, nom et SCU", () => {
+  const a = [{ name: "Gold", units: 300 }, { name: "Drug", units: 10 }];
+  assert.equal(sameIntent(a, [{ name: "Gold", units: 300 }, { name: "Drug", units: 10 }]), true);
+  assert.equal(sameIntent(a, [{ name: "Gold", units: 300 }]), false);                              // longueur
+  assert.equal(sameIntent(a, [{ name: "Gold", units: 300 }, { name: "Butin", units: 10 }]), false); // nom
+  assert.equal(sameIntent(a, [{ name: "Gold", units: 299 }, { name: "Drug", units: 10 }]), false);  // SCU
+  assert.equal(sameIntent([], []), true);
+});
+
+test("manifeste intact : destination libre et destination forcée donnent le MÊME chargement", () => {
+  // C'est l'invariant qui justifie de ne RIEN persister quand le manifeste n'a pas été touché :
+  // legManifest, qui force le terminal d'arrivée, recalculera exactement ce que la carte affichait.
+  const f = F({ useCargo: true, cargo: 400 });
+  let compares = 0;
+  for (let o = 0; o < REAL.terminals.length; o++) {
+    const libre = bestManifest(REAL, o, "", f, idResolve);
+    if (!libre) continue;
+    const force = bestManifest(REAL, o, "", f, idResolve, libre.destIdx);
+    compares++;
+    assert.deepEqual(manifestIntent(force.lines), manifestIntent(libre.lines), `divergence depuis ${REAL.terminals[o].name}`);
+  }
+  assert.ok(compares > 10, `échantillon trop petit (${compares})`);
 });
 
 // ---------- Résolution confrontée aux VRAIES données ----------

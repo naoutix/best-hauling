@@ -11,7 +11,8 @@ import {
   commoditySummaries, commodityPoints, compactValue, valueTiers, resolveCommodity, ambiguousCodes,
   manifestTotals, freeAddUnits, manifestLine, freeManifestLine, hydrateManifestLine, stationLabel, parseStationLabel,
   multiTrips, tripMetrics, legFromTrip,
-  legFromRoute, legsFromLoop, legsFromChain, stopSuggestions, bestLegBetween,
+  legFromRoute, legsFromLoop, legsFromChain, legFromManifest, stopSuggestions, bestLegBetween,
+  manifestJourneyState, manifestIntent, sameIntent,
   startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   removeJourneyStop as removeStopPure,
@@ -850,6 +851,25 @@ function removeManifestLine(name) {
   paintManifest();
 }
 
+// Engager le chargement dans le voyage : le bouton, ou la phrase qui dit pourquoi il n'y est pas.
+// L'état vient de manifestJourneyState (pur, testé) — le rendu ne décide de rien.
+// Le bouton n'existe QUE dans l'état « ajouter », donc la branche REMPLACER d'addToJourney, qui
+// efface un voyage sans prévenir, est inatteignable depuis cette carte.
+function manifestJourneyHTML(m) {
+  if (!m.lines.length) return `<span class="journey-hint">Manifeste vide — ajoute une commodité pour l'engager.</span>`;
+  const st = manifestJourneyState(JOURNEY, m.origin, m.dest);
+  if (st.etat === "ajouter") {
+    const neuf = !JOURNEY;
+    return `<button id="manifestToJourney" class="chain-pick" title="${neuf ? "Démarrer un voyage avec ce chargement" : "Ajouter ce chargement à la suite du voyage"}">▶ ${neuf ? "Démarrer un voyage" : "Ajouter au voyage"}</button>`;
+  }
+  // « Déjà » est l'état NORMAL après tout ▶ (En route est pré-rempli avec la jambe courante) et
+  // celui où l'on retombe après un ajout réussi : la phrase fait donc office de confirmation, à
+  // l'endroit exact du clic. Un bouton y serait un clic mort.
+  if (st.etat === "deja") return `<span class="journey-hint">✓ C'est déjà la jambe ${st.leg + 1} de ton voyage.</span>`;
+  if (!st.fin) return "";
+  return `<span class="journey-hint">Ce chargement part de <b>${esc(m.origin.name)}</b>, mais le voyage se termine à <b>${esc(st.fin)}</b> — seul un chargement au départ de <b>${esc(st.fin)}</b> s'y ajoute.</span>`;
+}
+
 // Dessine le manifeste courant : totaux + lignes (SCU/prix/stock éditables) + suggestions.
 function paintManifest() {
   const m = currentManifest;
@@ -860,6 +880,7 @@ function paintManifest() {
     `<div class="manifest-head">
       <span class="manifest-title">◈ Manifeste — ${esc(m.origin.name)}${sysBadge(m.origin.system)} → ${esc(m.dest.name)}${sysBadge(m.dest.system)}${m.cross ? ' <span class="cross">⚡ inter-système</span>' : ""}</span>
       <span class="manifest-tot" id="manifestTot">${manifestTotalsHTML(m, totals)}</span>
+      ${manifestJourneyHTML(m)}
       <button id="copyManifest" class="copy-btn" title="Copier le plan de chargement">⧉ Copier</button>
     </div>
     <div class="manifest-lines">` +
@@ -1074,9 +1095,13 @@ function renderChain() {
 
 // ---------- Compagnon de voyage : résumé du parcours (près du vaisseau) ----------
 // Sélectionne un trajet/une boucle/une chaîne -> met à jour le parcours (étend si ça s'enchaîne).
-function pickJourney(legs) {
+// `apresAjout` (optionnel) tourne une fois le parcours à jour mais AVANT le rendu : c'est là que le
+// manifeste d'« En route » dépose son chargement ajusté, pour que la jambe s'affiche du premier
+// coup avec les bons SCU et son badge ✎.
+function pickJourney(legs, apresAjout) {
   if (!legs || !legs.length) return;
   JOURNEY = addToJourney(JOURNEY, legs);
+  if (apresAjout) apresAjout();
   syncViewsToJourney();
   renderJourney();
   refresh(); // reflète la nouvelle destination/origine dans la vue courante
@@ -1180,10 +1205,30 @@ function legEffectiveLines(leg, i, f) {
 // Bascule la jambe en mode « édité » la 1re fois : on y copie l'intention issue de l'optimal.
 function legIntent(leg, i, f) {
   const k = legKey(leg, i);
-  if (!JOURNEY_EDITS[k]) {
-    JOURNEY_EDITS[k] = (legManifest(leg, f)?.lines || []).map((l) => ({ name: l.name, units: l.units }));
-  }
+  if (!JOURNEY_EDITS[k]) JOURNEY_EDITS[k] = manifestIntent(legManifest(leg, f)?.lines || []);
   return JOURNEY_EDITS[k];
+}
+
+// Engage le manifeste d'« En route » comme nouvelle jambe du voyage (bouton de la carte Manifeste).
+// La garde d'état est REJOUÉE ici : le rendu peut dater d'avant un changement de parcours.
+function manifestToJourney() {
+  const m = currentManifest;
+  if (!m || !m.lines.length || !MARKET) return;
+  if (manifestJourneyState(JOURNEY, m.origin, m.dest).etat !== "ajouter") return;
+  const intent = manifestIntent(m.lines);
+  pickJourney([legFromManifest(m)], () => {
+    const i = JOURNEY.legs.length - 1;
+    const k = legKey(JOURNEY.legs[i], i);
+    // Ce que legManifest recalculera pour cette jambe. Si le chargement affiché EST celui-là, on ne
+    // persiste rien : la jambe reste branchée sur le marché et sur les filtres, et ne porte pas le
+    // badge ✎ à tort. On impose l'état de la clé dans les DEUX sens, pour qu'une édition laissée
+    // par un voyage abandonné au même rang et au même couple de stations ne vienne pas contredire
+    // le chargement qu'on envoie.
+    const opt = bestManifest(MARKET, m.originIdx, "", m.f, effVals, m.destIdx, feeResolver(m.f));
+    if (sameIntent(intent, manifestIntent(opt ? opt.lines : []))) delete JOURNEY_EDITS[k];
+    else JOURNEY_EDITS[k] = intent;
+    saveJourneyEdits();
+  });
 }
 
 // Contexte de manifeste d'une jambe, à la forme attendue par suggestionsFor/manifestRemaining
@@ -2169,6 +2214,9 @@ async function init() {
     if (e.target.classList.contains("mqty-input")) updateManifestTotals();
   });
   $("manifest").addEventListener("click", (e) => {
+    // Ici et pas dans le délégué global du compagnon : celui-ci lit `pick.closest("table").id`,
+    // qui lèverait un TypeError depuis une carte. La carte n'est pas un tableau.
+    if (e.target.closest("#manifestToJourney")) { manifestToJourney(); return; }
     if (e.target.closest("#copyManifest")) { copyManifest(); return; }
     if (e.target.closest("#manifestAddBtn")) { addManifestCommodity($("manifestAddInput").value); return; }
     const del = e.target.closest(".mline-del");

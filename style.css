@@ -359,7 +359,10 @@ input.jman-qty { width: 56px; min-width: 0; padding: 3px 5px; text-align: right;
 /* Boucles pertinentes pour le parcours (partent de l'arrivée courante) : remontées + surlignées. */
 #loops tr.from-here td { background: rgba(169, 112, 255, 0.07); }
 #loops tr.from-here td.loop-cell { box-shadow: inset 2px 0 0 var(--acc-2); }
-.chain-pick { font-family: var(--font); font-size: 11px; font-weight: 700; white-space: nowrap; color: var(--acc-2); background: rgba(169, 112, 255, 0.1); border: 1px solid rgba(169, 112, 255, 0.4); border-radius: 3px; padding: 5px 11px; cursor: pointer; }
+/* `align-self` parce que ce bouton vit dans deux en-têtes flex (.chain-head, .manifest-head) dont
+   aucune ne pose align-items : sans lui il s'étire sur toute la hauteur de la ligne. Règle commune
+   aux deux, volontairement : le bouton du manifeste est le MÊME que celui de la chaîne. */
+.chain-pick { align-self: center; font-family: var(--font); font-size: 11px; font-weight: 700; white-space: nowrap; color: var(--acc-2); background: rgba(169, 112, 255, 0.1); border: 1px solid rgba(169, 112, 255, 0.4); border-radius: 3px; padding: 5px 11px; cursor: pointer; }
 .chain-pick:hover { color: #fff; background: rgba(169, 112, 255, 0.25); }
 
 /* ---------- Contrôles En route / Chaîne / Corrections ---------- */
@@ -546,6 +549,10 @@ input.editv-input { width: 80px; min-width: 0; padding: 2px 5px; font-size: 12px
 .manifest-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px 18px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
 .manifest-title { font-family: var(--display); font-weight: 600; font-size: 15px; letter-spacing: 0.5px; color: #fff; }
 .manifest-tot { font-family: var(--mono); font-size: 12px; color: var(--muted); align-self: center; }
+/* Refus d'engager le chargement : la phrase remplace le bouton, à sa place et sur sa ligne.
+   La marge haute de .journey-hint est faite pour un paragraphe de la carte Voyage, pas pour un
+   élément flex d'en-tête. */
+.manifest-head .journey-hint { margin: 0; align-self: center; max-width: 52ch; }
 .manifest-tot b { color: var(--text); }
 .manifest-tot b.profit { color: var(--good); }
 .copy-btn {

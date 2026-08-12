@@ -311,6 +311,81 @@ test("Compagnon de voyage : retirer un arrêt du milieu reconnecte le parcours",
   expect((await page.locator("#journeyCard .jstep").nth(1).innerText()).trim()).toBe(last);
 });
 
+// ---------- Carte Manifeste (« En route ») -> jambe de voyage ----------
+// Ouvre « En route » sur un terminal de départ donné et attend que la carte Manifeste soit peinte.
+async function manifesteDepuis(page, label) {
+  await page.click("#viewEnroute");
+  await page.fill("#origin", label);
+  await expect(page.locator("#manifest .manifest-head")).toBeVisible({ timeout: 8000 });
+  await expect(page.locator("#manifest .mqty-input").first()).toBeVisible();
+}
+// Les noms d'étape sont mis en capitales par le CSS : on compare donc sans tenir compte de la casse.
+const memeStation = (nom) => new RegExp(nom.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+// Parcours encodé dans le lien partageable (paramètre `j` du hash), ou null.
+const lienVoyage = (page) => page.evaluate(() => new URLSearchParams(location.hash.slice(1)).get("j"));
+
+test("Manifeste -> voyage : sans voyage, le bouton en démarre un", async ({ page }) => {
+  await manifesteDepuis(page, "Megumi — Pyro");
+  await expect(page.locator("#manifestToJourney")).toHaveText(/Démarrer un voyage/);
+  await page.click("#manifestToJourney");
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2);
+  await expect(page.locator("#journeyCard .jleg")).toHaveCount(1);
+  await expect(page.locator("#journeyCard .jstep").nth(0)).toHaveText(memeStation("Megumi"));
+  // La carte confirme sur place : le bouton cède la place à la phrase, à l'endroit du clic.
+  await expect(page.locator("#manifest .journey-hint")).toHaveText(/déjà la jambe 1/);
+  await expect(page.locator("#manifestToJourney")).toHaveCount(0);
+});
+
+test("Manifeste -> voyage : la jambe COURANTE n'offre pas de bouton (non-destruction)", async ({ page }) => {
+  // LE test qui compte : après un ▶, En route est pré-rempli avec la jambe courante. Sans garde,
+  // un clic passait par la branche REMPLACER d'addToJourney et réduisait le voyage à cette jambe.
+  await page.locator("#rows tr").first().locator(".journey-pick").click();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2);
+  await page.click("#viewEnroute");
+  await expect(page.locator("#manifest")).toBeVisible({ timeout: 8000 });
+  await expect(page.locator("#manifestToJourney")).toHaveCount(0);
+  await expect(page.locator("#manifest .journey-hint")).toHaveText(/déjà la jambe 1/);
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2); // le voyage n'a pas bougé
+});
+
+test("Manifeste -> voyage : un départ étranger au parcours nomme les deux bouts, sans agir", async ({ page }) => {
+  await manifesteDepuis(page, "Megumi — Pyro");
+  await page.click("#manifestToJourney");
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2);
+  const fin = (await page.locator("#journeyCard .jstep").nth(1).innerText()).trim();
+  await page.fill("#origin", "Rod's Fuel — Pyro"); // ne part ni de la fin, ni d'une jambe planifiée
+  await expect(page.locator("#manifest .journey-hint")).toContainText("Rod's Fuel");
+  await expect(page.locator("#manifest .journey-hint")).toContainText(memeStation(fin));
+  await expect(page.locator("#manifestToJourney")).toHaveCount(0);
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(2); // aucune modification du voyage
+});
+
+test("Manifeste -> voyage : un chargement AJUSTÉ part tel quel (et hors du lien)", async ({ page }) => {
+  await manifesteDepuis(page, "Megumi — Pyro");
+  const qty = page.locator("#manifest .mqty-input").first();
+  const nom = await page.locator("#manifest .mline-del").first().getAttribute("data-name");
+  await qty.fill("13");
+  await qty.blur();
+  await page.click("#manifestToJourney");
+  await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(1); // ✎ = manifeste personnalisé
+  await expect(page.locator("#journeyCard .jleg-cargo").first()).toContainText(`${nom} 13 SCU`);
+  const edits = JSON.parse(await page.evaluate(() => localStorage.getItem("best-hauling-journey-edits-v2")));
+  expect(edits[Object.keys(edits)[0]]).toContainEqual({ name: nom, units: 13 });
+  // Le lien ne transporte que le PARCOURS : la jambe y tient en 8 champs, sans aucun SCU.
+  const legs = JSON.parse(await lienVoyage(page)).l;
+  expect(legs[0]).toHaveLength(8);
+  expect(legs.flat()).not.toContain(13);
+});
+
+test("Manifeste -> voyage : un chargement INTACT ne persiste rien (la jambe suit le marché)", async ({ page }) => {
+  await manifesteDepuis(page, "Megumi — Pyro");
+  await page.click("#manifestToJourney");
+  await expect(page.locator("#journeyCard .jleg")).toHaveCount(1);
+  await expect(page.locator("#journeyCard .jleg-edited")).toHaveCount(0); // pas de ✎ à tort
+  const edits = await page.evaluate(() => localStorage.getItem("best-hauling-journey-edits-v2"));
+  expect(Object.keys(JSON.parse(edits || "{}"))).toHaveLength(0);
+});
+
 test("Compagnon de voyage : retirer l'arrivée d'un parcours à DEUX arrêts garde le départ", async ({ page }) => {
   await page.locator("#rows tr").first().locator(".journey-pick").click();
   await expect(page.locator("#journeyCard .jstep")).toHaveCount(2);

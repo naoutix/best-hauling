@@ -779,6 +779,18 @@ export function legFromTrip(t) {
   };
 }
 
+// Jambe de voyage depuis un MANIFESTE (vue « En route »). Un trajet de manifestsFrom a exactement
+// la forme d'un trajet multi-commodité — origin, dest, lines, fee, cargo — à une exception près :
+// il ne porte pas de marge, celle-ci vit dans tripMetrics. On la calcule donc ici, et on prend
+// `marginGross` : la jambe est persistée et voyage dans le permalien `j=`, où une marge NETTE des
+// frais d'autoload n'aurait plus de sens (l'interrupteur peut être éteint depuis) et se cumulerait
+// avec les marges brutes des jambes venues des autres vues. Sans ce calcul, legFromTrip retomberait
+// sur `t.margin` absent -> une jambe à 0 figée dans le lien.
+// Ne PAS dériver la marge de `man.profit` : il est déjà net des frais.
+export function legFromManifest(man) {
+  return legFromTrip({ ...man, marginGross: tripMetrics(man).marginGross });
+}
+
 // Balaye TOUT le marché : pour chaque terminal d'achat, tous les remplissages multi-commodité vers
 // chaque destination atteignable. Filtres appliqués : sysFilter/noOutpost sur le terminal de départ,
 // sameOnly sur le saut, q sur les commodités chargées (legalOnly/noOutpost-arrivée/maxAge le sont
@@ -1081,6 +1093,50 @@ export function addToJourney(journey, legs) {
   if (journeyConnects(journey, legs)) return { legs: journey.legs.concat(legs), current: journey.current };
   return startJourney(legs);
 }
+// Que peut-on faire d'un chargement (origine -> destination) vis-à-vis du parcours en cours ?
+// Renvoie { etat: "ajouter" | "deja" | "conflit", leg, fin }.
+//
+// L'ORDRE DES BRANCHES EST SIGNIFIANT :
+//   1. pas de voyage        -> ajouter (on en démarre un, comme le ▶ des tableaux) ;
+//   2. ça se RACCORDE       -> ajouter. Testé AVANT « déjà » : sur un parcours cyclique A→B→A dont
+//      on est au bout, le chargement A→B est un nouveau tour, pas la jambe 0 qu'on a déjà faite ;
+//   3. c'est la jambe COURANTE, puis n'importe quelle jambe planifiée -> déjà (aucune action) ;
+//   4. sinon                -> conflit, en nommant la fin du parcours.
+//
+// « déjà » est l'état NORMAL, pas une anomalie : après tout ▶, syncViewsToJourney pré-remplit
+// « En route » avec la station courante, donc la carte affiche précisément la jambe qu'on vient de
+// choisir. C'est aussi l'état d'arrivée après un ajout réussi — la phrase sert alors de
+// confirmation, à l'endroit exact du clic.
+//
+// Le raccord passe par journeyConnects et non par une comparaison recopiée : une seule source de
+// vérité, qui suivra son durcissement éventuel. Comme elle — et comme legKey — on compare les NOMS
+// de station seuls : introduire ici une seconde règle d'identité (nom + système) ferait diverger
+// deux définitions du même mot.
+export function manifestJourneyState(journey, origin, dest) {
+  if (!journey) return { etat: "ajouter" };
+  if (journeyConnects(journey, [{ from: origin.name }])) return { etat: "ajouter" };
+  const cur = currentLeg(journey);
+  if (cur && cur.from === origin.name && cur.to === dest.name) return { etat: "deja", leg: journey.current };
+  const i = journey.legs.findIndex((l) => l.from === origin.name && l.to === dest.name);
+  if (i >= 0) return { etat: "deja", leg: i };
+  const fin = journeyEnd(journey);
+  return { etat: "conflit", fin: fin ? fin.name : null };
+}
+
+// INTENTION d'un chargement : la seule forme persistable. Jamais un instantané de marché — prix,
+// stock, demande et dates sont relus au rendu (cf. hydrateManifestLine), sinon un manifeste
+// continuerait d'afficher le prix du jour de l'édition longtemps après qu'UEX l'ait republié.
+// Aucun filtre sur `units` : un 0 posé volontairement est une décision de l'utilisateur
+// (editLegQty l'autorise explicitement) et doit survivre.
+export function manifestIntent(lines) {
+  return lines.map((l) => ({ name: l.name, units: l.units }));
+}
+// Deux intentions décrivent-elles le même chargement ? Sert à ne RIEN persister quand le manifeste
+// n'a pas été touché : la jambe reste alors branchée sur le marché et sur les filtres.
+export function sameIntent(a, b) {
+  return a.length === b.length && a.every((l, i) => l.name === b[i].name && l.units === b[i].units);
+}
+
 // Retire un ARRÊT du parcours (stopIndex indexe les STATIONS, pas les jambes).
 // `bridge` = jambe de remplacement pour un arrêt du MILIEU, calculée par l'appelant depuis le
 // marché (elle reconnecte stations[stopIndex-1] à stations[stopIndex+1]) ; ignorée aux extrémités.

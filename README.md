@@ -14,6 +14,7 @@ reconstruites/redéployées **quand UEX a réellement changé** — et le site e
 - [Démarrage rapide (local)](#démarrage-rapide-local)
 - [Déploiement (une seule fois)](#déploiement-une-seule-fois)
 - [Architecture](#architecture)
+- [Compagnon de voyage](#compagnon-de-voyage)
 - [Corrections locales](#corrections-locales)
 - [Frais d'autoload](#frais-dautoload)
 - [Tests](#tests)
@@ -159,6 +160,35 @@ Le workflow tourne **toutes les 30 min** mais évite le travail inutile :
 Pourquoi 30 min : UEX met ses prix en cache ~30 min (`Cache-Control: max-age=1800`), donc interroger
 plus souvent ne renverrait pas de données plus fraîches. Le dépôt étant **public**, les minutes GitHub
 Actions sont gratuites — l'intérêt du rebuild conditionnel est surtout d'**éviter les déploiements à vide**.
+
+## Compagnon de voyage
+
+Le **voyage en cours** est un parcours d'arrêts (`A → B → C…`) avec un marqueur « je suis ici ».
+Chaque jambe porte son propre manifeste, recalculé au marché et ajustable à la main.
+
+**Cinq points d'entrée**, tous marqués `▶` :
+
+| Depuis | Geste | Ce qui part au voyage |
+|--------|-------|-----------------------|
+| Trajets, Trajets multi, En route (tableaux) | `▶` sur une ligne | la route de cette ligne |
+| Boucles | `▶` sur une boucle | ses **deux** jambes, entrées par le bout qui touche le parcours |
+| Chaîne | `▶ Ajouter au voyage` | tous les sauts de la chaîne |
+| **En route** (carte Manifeste) | `▶ Ajouter au voyage` | le **chargement composé**, tes ajustements compris |
+
+**La règle de raccord** : une jambe s'ajoute si elle **part de la dernière station** du parcours,
+sinon elle le **remplace**. La carte Manifeste, elle, ne propose son bouton *que* dans le premier
+cas — c'est là qu'on efface un voyage par mégarde, et l'entrée la plus récente ferme cette porte.
+Elle affiche sinon soit `✓ C'est déjà la jambe N` (cas normal : après tout `▶`, « En route » est
+pré-rempli avec la jambe courante), soit une phrase nommant les deux bouts qui ne se rejoignent pas.
+
+**La frontière à connaître** : le **parcours** voyage dans le permalien `j=` ; le **chargement**
+reste **local** (localStorage), comme les corrections. Un lien partagé transmet donc les arrêts, et
+le destinataire voit des manifestes recalculés avec **ses** filtres et le marché du moment. Pour
+transmettre un chargement précis, c'est `⧉ Copier`.
+
+Un manifeste que tu ajustes avant de l'engager part **tel quel** : la jambe porte alors le badge
+`✎` et cesse de suivre les prix UEX et les filtres, jusqu'à `↺ optimal`. Un manifeste que tu
+n'as pas touché n'est **pas** persisté — la jambe reste branchée sur le marché.
 
 ## Corrections locales
 
