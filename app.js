@@ -2392,33 +2392,44 @@ function stationFeeHTML(S) {
 // Tableau éditable des commodités d'une station (prix/stock à l'achat, prix/demande à la vente).
 function stationTableHTML(S, q) {
   const t = MARKET.terminals[S];
-  const rows = [];
+  // DEUX sections : ce qu'on peut acheter ici, puis ce qu'on peut y vendre. Mesuré sur
+  // l'instantané : aucune commodité n'est des deux côtés au même comptoir (0 sur 2 373 couples,
+  // 114 stations) — un terminal achète ou vend, jamais les deux. La règle « les deux -> avec les
+  // achats » est donc écrite mais inerte ; elle protège d'un changement de données, pas d'un cas
+  // observé. La répartition, elle, est très déséquilibrée : GrimHEX offre 3 achats pour 89 ventes,
+  // et ces trois-là se perdaient au milieu des quatre-vingt-neuf autres.
+  const achats = [], ventes = [];
   MARKET.commodities.forEach((c) => {
     if (q && !c.name.toLowerCase().includes(q)) return;
     const b = c.buys.find((x) => x[0] === S);
     const s = c.sells.find((x) => x[0] === S);
     if (!b && !s) return;
-    const buyCell = b
-      ? (() => { const e = effVals(c.name, t.name, "buy", b[1], b[2], b[3]); return `${editv(c.name, t.name, "buy", "price", e.price, e.oprice, b[3])} aUEC · stock ${editv(c.name, t.name, "buy", "vol", e.vol, e.ovol, b[3])}`; })()
-      : '<span class="muted">—</span>';
-    const sellCell = s
-      ? (() => { const e = effVals(c.name, t.name, "sell", s[1], s[2], s[3]); return `${editv(c.name, t.name, "sell", "price", e.price, e.oprice, s[3])} aUEC · dem. ${editv(c.name, t.name, "sell", "vol", e.vol, e.ovol, s[3])}`; })()
-      : '<span class="muted">—</span>';
-    // Une TUILE par commodité, et non une ligne de tableau. Une station bien fournie en compte 92
-    // (GrimHEX) : en une colonne, ça faisait 4 546 px — quatre écrans et demi à parcourir pour
-    // corriger un chiffre — alors que les trois colonnes du tableau mesuraient 444 px chacune pour
-    // du contenu qui en demande 200. La grille rend l'espace horizontal et divise la hauteur d'autant.
-    rows.push(`<div class="scomm">
+    const cote = (p, side, libelle, unite) => {
+      const e = effVals(c.name, t.name, side, p[1], p[2], p[3]);
+      return `<div class="scomm-side"><span class="scomm-lbl">${libelle}</span>` +
+        `${editv(c.name, t.name, side, "price", e.price, e.oprice, p[3])} aUEC · ${unite} ` +
+        `${editv(c.name, t.name, side, "vol", e.vol, e.ovol, p[3])}</div>`;
+    };
+    // Une seule ligne par côté RÉEL : plus de « achat — » à afficher sous chaque vente.
+    const corps = (b ? cote(b, "buy", "achat", "stock") : "") + (s ? cote(s, "sell", "vente", "dem.") : "");
+    const tuile = `<div class="scomm">
         <div class="scomm-name">${commodityIcon(c.kind)}<span>${esc(c.name)}${illegalTag(c.illegal)}</span></div>
-        <div class="scomm-side"><span class="scomm-lbl">achat</span>${buyCell}</div>
-        <div class="scomm-side"><span class="scomm-lbl">vente</span>${sellCell}</div>
-      </div>`);
+        ${corps}
+      </div>`;
+    (b ? achats : ventes).push(tuile);
   });
+
   const fee = stationFeeHTML(S);
-  if (!rows.length) return `${fee}<p class="empty">Aucune commodité ${q ? "correspondante " : ""}à ${esc(t.name)}.</p>`;
-  return `<div class="station-title">◈ ${esc(t.name)}${sysBadge(t.system)} — clique un chiffre pour le corriger localement <span class="station-count">${rows.length} commodité${rows.length > 1 ? "s" : ""}${q ? " filtrées" : ""}</span></div>
+  const total = achats.length + ventes.length;
+  if (!total) return `${fee}<p class="empty">Aucune commodité ${q ? "correspondante " : ""}à ${esc(t.name)}.</p>`;
+  const section = (titre, aide, tuiles) => tuiles.length
+    ? `<div class="station-section"><h4 class="station-section-head">◈ ${titre} <span class="station-count">${tuiles.length}</span><span class="station-section-aide">${aide}</span></h4>
+       <div class="station-grid">${tuiles.join("")}</div></div>`
+    : "";
+  return `<div class="station-title">◈ ${esc(t.name)}${sysBadge(t.system)} — clique un chiffre pour le corriger localement <span class="station-count">${total} commodité${total > 1 ? "s" : ""}${q ? " filtrées" : ""}</span></div>
     ${fee}
-    <div class="station-grid">${rows.join("")}</div>`;
+    ${section("On y achète", "ce que la station te vend — prix et stock", achats)}
+    ${section("On y vend", "ce qu'elle te reprend — prix et demande", ventes)}`;
 }
 
 // Liste des relevés d'autoload, à côté des corrections locales et sur le même modèle : ils sont de

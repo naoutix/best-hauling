@@ -126,9 +126,30 @@ test("vue Corrections : les commodités d'une station tiennent sur PLUSIEURS col
   const parLigne = tops.filter((t) => t === tops[0]).length;
   expect(parLigne).toBeGreaterThanOrEqual(3);
 
-  // Et la hauteur totale reste sous ce qu'une colonne unique aurait donné.
-  const h = await page.locator("#correctionsStation .station-grid").evaluate((e) => e.getBoundingClientRect().height);
+  // Et la hauteur totale reste sous ce qu'une colonne unique aurait donné (4 546 px mesurés).
+  // On mesure la vue ENTIÈRE, pas une grille : c'est elle qu'on fait défiler, et il y en a deux.
+  const h = await page.locator("#correctionsStation").evaluate((e) => e.getBoundingClientRect().height);
   expect(h).toBeLessThan(2600);
+
+  // Deux sections : ce qu'on achète ici d'abord, ce qu'on y vend ensuite.
+  const titres = await page.locator("#correctionsStation .station-section-head").allTextContents();
+  expect(titres.length).toBe(2);
+  expect(titres[0]).toMatch(/achète/i);
+  expect(titres[1]).toMatch(/vend/i);
+
+  // Chaque tuile ne porte QUE son côté réel : plus de ligne « — » sous chaque vente.
+  const cotes = await page.locator("#correctionsStation .scomm-side").count();
+  expect(cotes).toBe(n); // exactement une ligne de côté par tuile
+  expect(await page.locator("#correctionsStation .scomm-side", { hasText: /^\s*(achat|vente)\s*—\s*$/ }).count()).toBe(0);
+
+  // Une commodité n'apparaît jamais deux fois — celle qui serait des deux côtés va aux achats.
+  const noms = await page.locator("#correctionsStation .scomm-name").allTextContents();
+  expect(new Set(noms).size).toBe(noms.length);
+
+  // La section « achat » ne contient que des lignes d'achat, et réciproquement.
+  const sec = page.locator("#correctionsStation .station-section");
+  for (const t of await sec.nth(0).locator(".scomm-side .scomm-lbl").allTextContents()) expect(t.trim()).toBe("achat");
+  for (const t of await sec.nth(1).locator(".scomm-side .scomm-lbl").allTextContents()) expect(t.trim()).toBe("vente");
 
   // Étroit : la grille se resserre au lieu de déborder horizontalement.
   await page.setViewportSize({ width: 520, height: 1000 });
