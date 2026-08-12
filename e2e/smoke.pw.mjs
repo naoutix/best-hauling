@@ -341,6 +341,82 @@ test("Multi commodité : « avec les simples » remet les trajets à une commodi
   await expect(page.locator("#multiModeField")).toBeVisible();
 });
 
+// ---------- La soute (ADR-002) ----------
+async function jambeChargeable(page) {
+  await manifesteDepuis(page, "Megumi — Pyro");
+  await page.click("#manifestToJourney");
+  await expect(page.locator("#journeyCard .jleg-load")).toBeVisible({ timeout: 8000 });
+}
+
+test("Soute : « chargé » prend le manifeste au prix affiché, et le geste s'annule", async ({ page }) => {
+  await expect(page.locator("#holdCard")).toBeHidden(); // pas de fret, pas de panneau
+  await jambeChargeable(page);
+  const cargo = (await page.locator("#journeyCard .jleg-cargo").first().innerText()).trim();
+
+  await page.locator("#journeyCard .jleg-load").click();
+  await expect(page.locator("#holdCard")).toBeVisible();
+  await expect(page.locator("#journeyCard .jleg-load")).toHaveText(/à bord/i);
+
+  // Un lot par ligne du manifeste, avec le prix que l'app venait d'afficher — jamais 0.
+  const lots = JSON.parse(await page.evaluate(() => localStorage.getItem("best-hauling-hold")));
+  expect(lots.length).toBeGreaterThan(0);
+  for (const l of lots) {
+    expect(l.paid).toBeGreaterThan(0); // LE point d'ADR-002 : le coût cesse d'être nul
+    expect(l.units).toBeGreaterThan(0);
+    expect(l.from).toBe("Megumi");
+  }
+  // Les SCU de la soute correspondent bien au manifeste chargé.
+  const scu = lots.reduce((s, l) => s + l.units, 0);
+  await expect(page.locator("#holdCard .hold-meta")).toContainText(String(scu));
+  expect(cargo).toContain(String(lots[0].units));
+
+  // Re-cliquer annule le chargement : rien n'est à bord, le panneau disparaît.
+  await page.locator("#journeyCard .jleg-load").click();
+  await expect(page.locator("#holdCard")).toBeHidden();
+  expect(JSON.parse(await page.evaluate(() => localStorage.getItem("best-hauling-hold")))).toEqual([]);
+});
+
+test("Soute : elle survit au rechargement, et effacer le VOYAGE ne la vide pas", async ({ page }) => {
+  await jambeChargeable(page);
+  await page.locator("#journeyCard .jleg-load").click();
+  await expect(page.locator("#holdCard")).toBeVisible();
+
+  await page.reload();
+  // La vue restaurée est « En route » (c'est de là qu'on a engagé la jambe) : on attend le
+  // compagnon, pas la table des Trajets qui est masquée.
+  await expect(page.locator("#journeyCard .jstep").first()).toBeVisible({ timeout: 8000 });
+  await expect(page.locator("#holdCard")).toBeVisible(); // aucune péremption : le fret est réel
+
+  // Le parcours est un PLAN, la soute est du fret payé : effacer l'un ne débarque pas l'autre.
+  await page.locator("#journeyClear").click();
+  await expect(page.locator("#journeyCard .jstep")).toHaveCount(0);
+  await expect(page.locator("#holdCard")).toBeVisible();
+
+  // Seul son propre ✕ la vide.
+  await page.locator("#holdClear").click();
+  await expect(page.locator("#holdCard")).toBeHidden();
+});
+
+test("Soute : recharger la même commodité crée un SECOND lot, sans fondre les prix", async ({ page }) => {
+  await jambeChargeable(page);
+  await page.locator("#journeyCard .jleg-load").click();
+  const avant = JSON.parse(await page.evaluate(() => localStorage.getItem("best-hauling-hold")));
+
+  // Un second chargement depuis une autre station : les lots s'ajoutent, ils ne fusionnent pas.
+  await page.evaluate((lots) => {
+    const doubles = lots.map((l) => ({ ...l, paid: l.paid + 500, from: "Ruin Station", leg: "9|X|Y" }));
+    localStorage.setItem("best-hauling-hold", JSON.stringify(lots.concat(doubles)));
+  }, avant);
+  await page.reload();
+  await expect(page.locator("#holdCard")).toBeVisible({ timeout: 8000 });
+
+  // Une ligne par commodité, avec le détail des lots dessous.
+  await expect(page.locator("#holdCard .hold-line")).toHaveCount(avant.length);
+  await expect(page.locator("#holdCard .hold-lot").first()).toBeVisible();
+  const total = avant.reduce((s, l) => s + l.units, 0) * 2;
+  await expect(page.locator("#holdCard .hold-meta")).toContainText(String(total));
+});
+
 // ---------- Carte 2D du parcours (ADR-001) ----------
 test("Carte : absente sans voyage, dessinée dès qu'il y en a un", async ({ page }) => {
   await expect(page.locator("#journeyMap")).toBeHidden();

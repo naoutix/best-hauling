@@ -209,6 +209,30 @@ script de collecte se lance **à la main** et jamais depuis la CI — l'endpoint
 interne et non documenté, le site ne doit pas en dépendre. On ne dessine que ce qui porte un
 terminal chez UEX, ce qui tient les systèmes du lore (Castra, Terra…) hors de la carte.
 
+### La soute : ce qui est à bord, et ce que ça a coûté
+
+Le bouton **`✓ chargé`** sur une jambe dit à l'app « j'ai payé ce manifeste, il est en soute ». Elle
+en prend l'instantané **au prix qu'elle venait d'afficher** — donc sans rien ressaisir. Le panneau
+**Soute** liste alors ce que tu transportes, avec le capital engagé. Re-cliquer annule.
+
+Pourquoi ça compte : jusque-là, une commodité ajoutée depuis un terminal qui ne la vend pas était
+classée **butin**, donc à **coût nul**. Sur 2 200 SCU achetés 1 000 et revendus 1 400, le profit
+annoncé était de 3 038 000 aUEC au lieu de 868 000 — **250 % de surestimation**, et le classement
+des routes avec. « Butin » reste offert pour ce qu'il désigne vraiment : minage, salvage, caisse
+trouvée — un coût réellement nul.
+
+La soute tient un **lot par chargement** : la même commodité peut y figurer deux fois à des prix
+différents, et le panneau montre le détail. C'est plus lourd qu'une moyenne, mais c'est juste.
+
+Deux règles à connaître :
+
+- **Le prix payé ne se périme jamais.** Partout ailleurs le dépôt refuse de persister un prix — il
+  ne garde que l'intention, et relit le marché. Le prix payé échappe à cette règle parce que ce
+  n'est pas un prix affiché : c'est le montant d'une transaction qui a eu lieu.
+- **Effacer le voyage ne vide pas la soute.** Le parcours est un plan, la soute est du fret réel :
+  reprendre le jeu une semaine plus tard avec un vaisseau rangé plein, c'est une soute exacte, pas
+  une soute périmée. Elle a son propre ✕.
+
 ### Ce qu'une correction fait au voyage
 
 Une jambe non ajustée suit le marché : corriger un **prix** mesure donc aussitôt ses effets sur les

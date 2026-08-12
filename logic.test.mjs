@@ -17,6 +17,7 @@ import {
   legFromRoute, legsFromLoop, legsFromChain, legFromManifest, stopSuggestions, bestLegBetween,
   manifestJourneyState, manifestIntent, sameIntent, legsToPin,
   journeyMap, nameAngle, CARTE,
+  loadHold, holdScu, freeCargo, holdByCommodity, sellFromHold, storeFromHold,
   startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   encodeJourney, decodeJourney, removeJourneyStop, freeManifestLine, hydrateManifestLine,
@@ -1799,6 +1800,120 @@ test("manifestJourneyState : une jambe venue d'un permalien reste reconnue", () 
   const j = decodeJourney(encodeJourney(startJourney([jambe("A", "B")])));
   assert.equal(manifestJourneyState(j, { name: "B" }, { name: "C" }).etat, "ajouter");
   assert.equal(manifestJourneyState(j, { name: "A" }, { name: "B" }).etat, "deja");
+});
+
+// ---------- La soute : lots, chargement, vente FIFO, dépôt (ADR-002) ----------
+const GOLD = { name: "Gold", kind: "metal", illegal: false };
+const ligne = (units, buyPrice, sellPrice, o = {}) => ({ name: "Gold", units, buyPrice, sellPrice, margin: sellPrice - buyPrice, ...o });
+
+test("manifestLine : sans `paid`, une commodité non vendue au départ reste du BUTIN (coût nul)", () => {
+  const l = manifestLine(GOLD, null, { price: 1400, vol: 50, ovol: true }, 0, 0, 10, 10);
+  assert.equal(l.buyPrice, 0);
+  assert.equal(l.margin, 1400);   // comportement historique : minage, salvage, caisse trouvée
+  assert.equal(l.acquired, true);
+  assert.equal(l.aBord, false);
+});
+
+test("manifestLine : avec `paid`, le fret embarqué porte son COÛT et non zéro", () => {
+  // LE bug d'ADR-002 : 2 170 SCU achetés 1 000 comptaient 1 400 de marge au lieu de 400.
+  const l = manifestLine(GOLD, null, { price: 1400, vol: 50, ovol: true }, 0, 0, 2170, 2170, 1000);
+  assert.equal(l.buyPrice, 1000);
+  assert.equal(l.margin, 400);
+  assert.equal(l.aBord, true);
+  assert.equal(l.acquired, true); // rien n'a été chargé ICI : l'autoload du départ ne le facture pas
+  const t = manifestTotals([l]);
+  assert.equal(t.profit, 2170 * 400);
+  assert.equal(t.invest, 2170 * 1000); // le capital engagé cesse d'être invisible
+});
+
+test("manifestLine : `paid` à 0 reste du butin, et n'est pas confondu avec « pas de prix »", () => {
+  const l = manifestLine(GOLD, null, { price: 1400, vol: 50, ovol: true }, 0, 0, 10, 10, 0);
+  assert.equal(l.buyPrice, 0);
+  assert.equal(l.aBord, true); // déclaré à bord, simplement gratuit
+});
+
+test("loadHold : un lot par ligne chargée, au prix affiché au moment de l'achat", () => {
+  const h = loadHold([], [ligne(100, 1000, 1400), ligne(50, 200, 300, { name: "Fer" })], "Megumi", 111);
+  assert.equal(h.length, 2);
+  assert.deepEqual(h[0], { name: "Gold", units: 100, paid: 1000, from: "Megumi", at: 111 });
+  assert.equal(holdScu(h), 150);
+});
+
+test("loadHold : ni les lignes vides, ni ce qui était DÉJÀ à bord", () => {
+  // Une ligne `aBord` traverse le manifeste sans être rechargée — sinon elle doublerait à chaque étape.
+  const h = loadHold([], [ligne(0, 1000, 1400), ligne(80, 1000, 1400, { aBord: true }), ligne(20, 1000, 1400)], "A", 1);
+  assert.equal(h.length, 1);
+  assert.equal(h[0].units, 20);
+});
+
+test("loadHold : recharger la même commodité crée un SECOND lot, sans fondre les prix", () => {
+  let h = loadHold([], [ligne(100, 1000, 1400)], "Megumi", 1);
+  h = loadHold(h, [ligne(100, 1400, 1800)], "Ruin Station", 2);
+  assert.equal(h.length, 2);
+  assert.deepEqual(h.map((l) => l.paid), [1000, 1400]); // la traçabilité est le but des lots
+  const g = holdByCommodity(h);
+  assert.equal(g.length, 1);
+  assert.equal(g[0].units, 200);
+  assert.equal(g[0].invest, 100 * 1000 + 100 * 1400);
+  assert.equal(g[0].paidMoyen, 1200); // affichage seulement — les ventes consomment lot par lot
+});
+
+test("sellFromHold : FIFO — le lot le plus ancien part en premier", () => {
+  let h = loadHold([], [ligne(100, 1000, 1400)], "A", 1);
+  h = loadHold(h, [ligne(100, 1400, 1800)], "B", 2);
+  const r = sellFromHold(h, "Gold", 30, 1500);
+  assert.equal(r.vendu, 30);
+  assert.equal(r.cout, 30 * 1000);          // le lot à 1 000, pas la moyenne
+  assert.equal(r.profit, 30 * (1500 - 1000));
+  assert.deepEqual(r.lots, [{ name: "Gold", units: 30, paid: 1000, from: "A" }]);
+  assert.equal(holdScu(r.hold), 170);
+  assert.deepEqual(r.hold.map((l) => [l.paid, l.units]), [[1000, 70], [1400, 100]]); // 1er lot entamé
+});
+
+test("sellFromHold : une vente qui traverse plusieurs lots les consomme dans l'ordre", () => {
+  let h = loadHold([], [ligne(100, 1000, 1400)], "A", 1);
+  h = loadHold(h, [ligne(100, 1400, 1800)], "B", 2);
+  const r = sellFromHold(h, "Gold", 150, 1500);
+  assert.equal(r.vendu, 150);
+  assert.equal(r.cout, 100 * 1000 + 50 * 1400); // 100 du 1er lot, 50 du second
+  assert.equal(r.lots.length, 2);
+  assert.deepEqual(r.hold.map((l) => [l.paid, l.units]), [[1400, 50]]); // 1er lot épuisé, disparu
+});
+
+test("sellFromHold : le scénario d'ADR-002 — la station ne reprend que 30 SCU", () => {
+  const h = loadHold([], [ligne(2200, 1000, 1400)], "Megumi", 1);
+  const r = sellFromHold(h, "Titanium", 30, 1400); // mauvaise commodité : rien ne part
+  assert.equal(r.vendu, 0);
+  const g = sellFromHold(h, "Gold", 30, 1400);
+  assert.equal(g.vendu, 30);
+  assert.equal(g.profit, 30 * 400);
+  assert.equal(holdScu(g.hold), 2170); // le résidu demeure, AVEC son prix payé
+  assert.equal(g.hold[0].paid, 1000);
+});
+
+test("sellFromHold : vendre plus que ce qu'on a ne crée rien, et ne passe pas en négatif", () => {
+  const h = loadHold([], [ligne(50, 1000, 1400)], "A", 1);
+  const r = sellFromHold(h, "Gold", 999, 1400);
+  assert.equal(r.vendu, 50);
+  assert.deepEqual(r.hold, []);
+  assert.equal(sellFromHold([], "Gold", 10, 1400).vendu, 0); // soute vide
+});
+
+test("freeCargo : la place libre tient compte de ce qui est à bord", () => {
+  const h = loadHold([], [ligne(2170, 1000, 1400)], "A", 1);
+  assert.equal(freeCargo(h, 2200), 30);   // les 30 SCU que le scénario veut recharger
+  assert.equal(freeCargo(h, 100), 0);     // jamais négatif
+  assert.equal(freeCargo([], 96), 96);
+});
+
+test("storeFromHold : déposer libère la soute SANS vendre, et garde le capital tracé", () => {
+  const h = loadHold([], [ligne(2200, 1000, 1400)], "Megumi", 1);
+  const r = storeFromHold(h, {}, "Gold", 2170, "Ruin Station — Pyro");
+  assert.equal(holdScu(r.hold), 30);
+  assert.equal(r.entrepots["Ruin Station — Pyro"][0].units, 2170);
+  assert.equal(r.entrepots["Ruin Station — Pyro"][0].paid, 1000); // ni vendu ni perdu : immobilisé
+  // Un dépôt qui ne consomme rien ne crée pas d'entrepôt fantôme.
+  assert.deepEqual(storeFromHold(h, {}, "Inconnue", 10, "X").entrepots, {});
 });
 
 // ---------- Carte 2D du parcours (ADR-001) ----------

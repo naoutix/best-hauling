@@ -281,8 +281,13 @@ export function freeAddUnits(stock, cargoLeft) {
 // d'achat « 0 » indiscernable d'un vrai relevé UEX :
 //   - sans vente (`sell` null) -> `carry` : chargée ici pour être écoulée ailleurs ;
 //   - sans achat (`buy` null)  -> `acquired` : déjà en soute (butin, minage, salvage), coût nul.
-export function manifestLine(c, buy, sell, buyUpdated, sellUpdated, units, cap) {
-  const buyPrice = buy ? buy.price : 0;
+// `paid` (optionnel) = prix RÉELLEMENT payé au SCU pour une cargaison déjà à bord. Sans lui, une
+// commodité qu'aucun terminal de départ ne vend est classée `acquired` — butin, coût nul — et son
+// profit compte la revente ENTIÈRE comme gain. C'est juste pour du minage ou du salvage, et faux
+// de 250 % pour du fret acheté ailleurs qu'on transporte encore (cf. ADR-002).
+export function manifestLine(c, buy, sell, buyUpdated, sellUpdated, units, cap, paid = null) {
+  const porte = paid != null && paid >= 0;          // fret embarqué dont on connaît le coût
+  const buyPrice = porte ? paid : buy ? buy.price : 0;
   return {
     name: c.name, kind: c.kind, illegal: c.illegal,
     buyPrice, stock: buy ? buy.vol : Infinity,
@@ -291,7 +296,12 @@ export function manifestLine(c, buy, sell, buyUpdated, sellUpdated, units, cap) 
     demandKnown: sell ? sell.ovol : false,
     margin: sell ? sell.price - buyPrice : 0,
     buyUpdated: buyUpdated || 0, sellUpdated: sellUpdated || 0,
-    units, cap, carry: !sell, acquired: !buy,
+    units, cap, carry: !sell,
+    // `acquired` dit « rien n'a été chargé ici » : vrai pour du butin comme pour du fret embarqué
+    // ailleurs — dans les deux cas l'autoload du terminal de départ ne l'a pas manipulé. Ce qui
+    // les sépare, c'est le COÛT, et c'est `paid` qui le porte.
+    acquired: !buy || porte,
+    aBord: porte,
   };
 }
 
@@ -1227,6 +1237,77 @@ export function currentLeg(journey) {
 // Profit total du parcours = somme des marges (les unités sont décidées ailleurs par vue).
 export function journeyMargin(journey) {
   return journey ? journey.legs.reduce((a, l) => a + (l.margin || 0), 0) : 0;
+}
+
+// ---------- La soute : ce qui est à bord, et ce qu'on l'a payé (cf. ADR-002) ----------
+// Une LIGNE PAR LOT. La même commodité peut y figurer plusieurs fois, à des prix différents : la
+// moyenne pondérée était plus simple, les lots sont justes. Chaque lot :
+//   { name, units, paid, from, at }   `paid` = prix d'achat au SCU, `at` = horodatage du chargement
+//
+// `paid` est la SEULE donnée de marché que le dépôt persiste volontairement. Ailleurs la règle est
+// stricte — on ne garde que l'intention, jamais un instantané de prix, parce qu'un prix figé
+// continuerait de s'afficher longtemps après qu'UEX l'ait republié. `paid` y échappe parce que ce
+// n'est pas un prix affiché : c'est le montant d'une transaction qui a eu lieu. Il ne vieillit pas.
+
+// Charge un manifeste dans la soute : un lot par ligne, au prix que l'app venait d'afficher.
+// Les lignes sans quantité ne créent pas de lot (on n'a rien chargé), et une ligne déjà à bord
+// (`aBord`) n'est pas rechargée — elle ne fait que traverser le manifeste.
+export function loadHold(hold, lignes, from, at) {
+  const lots = lignes
+    .filter((l) => (l.units || 0) > 0 && !l.aBord)
+    .map((l) => ({ name: l.name, units: l.units, paid: l.buyPrice || 0, from: from || "", at: at || 0 }));
+  return hold.concat(lots);
+}
+
+// SCU à bord, toutes commodités confondues — donc la place qu'il reste pour charger.
+export const holdScu = (hold) => hold.reduce((s, l) => s + (l.units || 0), 0);
+export const freeCargo = (hold, cargo) => Math.max(0, (cargo || 0) - holdScu(hold));
+
+// Regroupe les lots par commodité, pour l'affichage : un total, et le détail dessous.
+// `paidMoyen` n'est calculé QUE pour l'affichage — les ventes, elles, consomment lot par lot.
+export function holdByCommodity(hold) {
+  const par = new Map();
+  hold.forEach((l, i) => {
+    if (!par.has(l.name)) par.set(l.name, { name: l.name, units: 0, invest: 0, lots: [] });
+    const g = par.get(l.name);
+    g.units += l.units || 0;
+    g.invest += (l.units || 0) * (l.paid || 0);
+    g.lots.push({ ...l, i });
+  });
+  return [...par.values()]
+    .map((g) => ({ ...g, paidMoyen: g.units > 0 ? g.invest / g.units : 0 }))
+    .sort((a, b) => b.invest - a.invest); // le capital le plus engagé d'abord
+}
+
+// Vend `units` SCU d'une commodité au prix `price`. FIFO : le lot le plus ancien part en premier.
+// Retenu parce que déterministe et explicable ; « le plus cher d'abord » gonflerait le profit
+// affiché sans rien changer à la réalité, et choisir à chaque vente coûterait une décision pour
+// un gain nul. Le rendu affiche quel lot part, donc rien ne se décide en silence.
+// Renvoie { hold, vendu, recette, cout, profit, lots } — `lots` détaille ce qui a été consommé.
+export function sellFromHold(hold, name, units, price) {
+  let reste = Math.max(0, Math.floor(units || 0));
+  const suivant = [], consommes = [];
+  let vendu = 0, cout = 0;
+  for (const l of hold) {
+    if (l.name !== name || reste <= 0) { suivant.push(l); continue; }
+    const pris = Math.min(l.units || 0, reste);
+    if (pris <= 0) { suivant.push(l); continue; }
+    reste -= pris; vendu += pris; cout += pris * (l.paid || 0);
+    consommes.push({ name: l.name, units: pris, paid: l.paid || 0, from: l.from });
+    if ((l.units || 0) > pris) suivant.push({ ...l, units: l.units - pris }); // le lot survit, entamé
+  }
+  const recette = vendu * (price || 0);
+  return { hold: suivant, vendu, recette, cout, profit: recette - cout, lots: consommes };
+}
+
+// Dépose des SCU à une station : ils quittent la soute SANS être vendus. Troisième sortie du fret,
+// et souvent la bonne quand le seul débouché est saturé — on libère la place sans vendre à perte.
+// Renvoie { hold, entrepots } ; les lots déposés gardent leur prix payé, c'est du capital immobilisé.
+export function storeFromHold(hold, entrepots, name, units, station) {
+  const r = sellFromHold(hold, name, units, 0); // même consommation FIFO, sans recette
+  if (!r.vendu) return { hold, entrepots };
+  const deja = entrepots[station] || [];
+  return { hold: r.hold, entrepots: { ...entrepots, [station]: deja.concat(r.lots) } };
 }
 
 // ---------- Carte 2D du parcours (cf. ADR-001) ----------

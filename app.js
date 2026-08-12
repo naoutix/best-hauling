@@ -13,6 +13,7 @@ import {
   multiTrips, tripMetrics, legFromTrip,
   legFromRoute, legsFromLoop, legsFromChain, legFromManifest, stopSuggestions, bestLegBetween,
   manifestJourneyState, manifestIntent, sameIntent, legsToPin, journeyMap,
+  loadHold, holdScu, freeCargo, holdByCommodity,
   startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   removeJourneyStop as removeStopPure,
@@ -1126,6 +1127,75 @@ function renderChain() {
   notifySuperseded();
 }
 
+// ---------- La soute : ce qui est à bord, et ce qu'on l'a payé (ADR-002) ----------
+// Un lot par chargement — la même commodité peut y figurer deux fois à des prix différents.
+// PERSISTÉE ET SANS PÉREMPTION : reprendre le jeu une semaine plus tard avec un vaisseau rangé
+// plein, ce n'est pas une soute périmée, c'est une soute exacte. C'est aussi pour ça qu'effacer le
+// voyage NE VIDE PAS la soute : le parcours est un plan, la soute est du fret réel.
+const HOLD_KEY = "best-hauling-hold";
+let SOUTE = [];
+function loadSoute() {
+  try { SOUTE = JSON.parse(localStorage.getItem(HOLD_KEY)) || []; } catch { SOUTE = []; }
+  if (!Array.isArray(SOUTE)) SOUTE = [];
+}
+function saveSoute() { try { localStorage.setItem(HOLD_KEY, JSON.stringify(SOUTE)); } catch {} }
+
+// Charge le manifeste d'une jambe dans la soute, au prix que l'app venait d'afficher. Les lots
+// portent la clé de la jambe : c'est ce qui permet d'annuler un chargement sans deviner.
+function chargerJambe(i) {
+  const leg = JOURNEY && JOURNEY.legs[i];
+  if (!leg || !MARKET) return;
+  const k = legKey(leg, i);
+  if (SOUTE.some((l) => l.leg === k)) { // déjà chargée -> le bouton annule
+    SOUTE = SOUTE.filter((l) => l.leg !== k);
+  } else {
+    const lignes = legEffectiveLines(leg, i, readFilters());
+    if (!lignes.length) return;
+    SOUTE = SOUTE.concat(loadHold([], lignes, leg.from, nowSec()).map((l) => ({ ...l, leg: k })));
+  }
+  saveSoute();
+  renderJourney();
+  refresh();
+}
+const jambeChargee = (leg, i) => SOUTE.some((l) => l.leg === legKey(leg, i));
+
+function viderSoute() { SOUTE = []; saveSoute(); renderSoute(); refresh(); }
+function retirerLot(i) { SOUTE = SOUTE.filter((_, j) => j !== i); saveSoute(); renderSoute(); refresh(); }
+
+function renderSoute() {
+  const box = $("holdCard");
+  if (!box) return;
+  if (!SOUTE.length) { box.hidden = true; return; }
+  box.hidden = false;
+  const groupes = holdByCommodity(SOUTE);
+  const scu = holdScu(SOUTE);
+  const f = readFilters();
+  const libre = f.useCargo && f.cargo > 0 ? freeCargo(SOUTE, f.cargo) : null;
+  const invest = groupes.reduce((s, g) => s + g.invest, 0);
+  // Le `kind` n'est pas persisté dans le lot : c'est une propriété de la commodité, pas de la
+  // transaction. On le relit au marché quand il est là, et on s'en passe sinon.
+  const icone = (nom) => {
+    const c = MARKET && findCommodity(nom);
+    return c ? commodityIcon(c.kind) : "";
+  };
+  const lignes = groupes.map((g) => {
+    // Le détail des lots n'apparaît que s'il y en a plusieurs : sinon c'est du bruit.
+    const lots = g.lots.length > 1
+      ? `<div class="hold-lots">${g.lots.map((l) => `<span class="hold-lot" title="Chargé à ${esc(l.from || "?")}">${fmt(l.units)} SCU @ ${fmt(l.paid)}<button class="hold-del" data-i="${l.i}" title="Retirer ce lot" aria-label="Retirer">✕</button></span>`).join("")}</div>`
+      : `<button class="hold-del solo" data-i="${g.lots[0].i}" title="Retirer ce lot" aria-label="Retirer">✕</button>`;
+    return `<div class="hold-line">
+        <span class="hold-name">${icone(g.name)}${esc(g.name)}</span>
+        <span class="hold-scu"><b>${fmt(g.units)}</b> SCU</span>
+        <span class="hold-paid" title="Prix payé au SCU${g.lots.length > 1 ? " (moyenne des lots)" : ""}">@ ${fmt(Math.round(g.paidMoyen))}</span>
+        ${lots}
+      </div>`;
+  }).join("");
+  box.innerHTML =
+    `<div class="hold-head"><span class="hold-title">◈ Soute</span><button id="holdClear" class="journey-clear" title="Vider la soute (le fret est débarqué)" aria-label="Vider la soute">✕</button></div>
+     <div class="hold-lines">${lignes}</div>
+     <div class="hold-meta"><b>${fmt(scu)}</b> SCU à bord${libre != null ? ` · <b>${fmt(libre)}</b> libres` : ""} · capital engagé <b>${fmt(invest)}</b> aUEC</div>`;
+}
+
 // ---------- Carte 2D du parcours (ADR-001) ----------
 // Le calcul est PUR (journeyMap, logic.mjs) : ici on n'émet que du SVG. Aucun asset, aucune image.
 
@@ -1602,6 +1672,7 @@ function renderJourney() {
     const recap0 = $("journeyRecap"); if (recap0) recap0.hidden = true; // pas de récap sans voyage
     const row0 = $("shipJourneyRow"); if (row0) row0.classList.remove("stacked");
     renderJourneyMap();
+    renderSoute();
     card.innerHTML =
       `<div class="journey-head"><span class="journey-title">◈ Nouveau voyage</span></div>
        <p class="journey-hint">Choisis un trajet (▶) dans une vue, ou démarre de zéro :</p>
@@ -1629,6 +1700,7 @@ function renderJourney() {
     const pair = MARKET ? (legFeeCtx(leg, f) || {}).pair : null;
     const edited = MARKET && !!JOURNEY_EDITS[legKey(leg, i)];
     const pinned = edited && !!JOURNEY_PINS[legKey(leg, i)]; // figée par une correction, pas par toi
+    const charge = MARKET && jambeChargee(leg, i); // ce manifeste est-il déjà en soute ?
     const expanded = i === journeyExpandedLeg;
     let cargo, total;
     if (!MARKET) { cargo = '<span class="muted">calcul…</span>'; total = "—"; }
@@ -1659,7 +1731,7 @@ function renderJourney() {
     return `<div class="jleg${i === JOURNEY.current ? " current" : ""}${expanded ? " expanded" : ""}">
         <div class="jleg-head" data-leg="${i}" role="button" tabindex="0" title="Éditer le manifeste de cette jambe"><span class="jleg-n">${i + 1}</span><span class="jleg-route">${esc(leg.from)} → ${esc(leg.to)}</span>${edited ? (pinned
           ? '<span class="jleg-pinned" title="Quantités figées : le stock ou la demande de ce chargement a été corrigé depuis. Le trajet reste tel que tu l\'as décidé — les prix, eux, continuent de suivre le marché. « ↺ optimal » recalcule tout.">🔒</span>'
-          : '<span class="jleg-edited" title="Manifeste personnalisé">✎</span>') : ""}<span class="jleg-profit profit">+${total}</span><span class="jleg-caret">${expanded ? "▾" : "▸"}</span></div>
+          : '<span class="jleg-edited" title="Manifeste personnalisé">✎</span>') : ""}${MARKET && lines && lines.length ? `<button class="jleg-load${charge ? " charge" : ""}" data-leg="${i}" title="${charge ? "Annuler : ce chargement n'est plus à bord" : "J'ai payé et chargé ce manifeste — il entre en soute à ce prix"}">${charge ? "⬢ à bord" : "✓ chargé"}</button>` : ""}<span class="jleg-profit profit">+${total}</span><span class="jleg-caret">${expanded ? "▾" : "▸"}</span></div>
         <div class="jleg-cargo">${cargo}</div>
         ${editor}
       </div>`;
@@ -1686,6 +1758,7 @@ function renderJourney() {
 
   renderJourneyRecap({ n, totalProfit, totalScu, totalFees, systems: new Set(stations.map((s) => s.system)).size });
   renderJourneyMap();
+  renderSoute();
 }
 
 // Récap du voyage (colonne de gauche, sous le vaisseau) : remplit l'espace avec des KPIs utiles.
@@ -2542,6 +2615,11 @@ async function init() {
     btn.classList.add("open");
   });
   // Carte du parcours : cliquer une escale déplace « je suis ici », comme le fil d'étapes.
+  $("holdCard").addEventListener("click", (e) => {
+    if (e.target.closest("#holdClear")) { viderSoute(); return; }
+    const del = e.target.closest(".hold-del");
+    if (del) retirerLot(Number(del.dataset.i));
+  });
   $("journeyMap").addEventListener("click", (e) => {
     const a = e.target.closest(".jm-arret");
     if (a) setJourneyStop(Number(a.dataset.i));
@@ -2579,6 +2657,8 @@ async function init() {
     if (legSug) { addLegSuggestion(Number(legSug.dataset.leg), legSug.dataset.name); return; }
     const legDel = e.target.closest(".jman-del");
     if (legDel) { delLegLine(Number(legDel.dataset.leg), legDel.dataset.name); return; }
+    const load = e.target.closest(".jleg-load");
+    if (load) { chargerJambe(Number(load.dataset.leg)); return; } // AVANT .jleg-head : le bouton y vit
     if (e.target.closest(".jman-reset")) { resetLeg(Number(e.target.closest(".jman-reset").dataset.leg)); return; }
     const addBtn = e.target.closest(".jman-add-btn");
     if (addBtn) { addLegLine(Number(addBtn.dataset.leg), addBtn.closest(".jman-add").querySelector(".jman-add-input").value); return; }
@@ -2636,6 +2716,7 @@ async function init() {
   loadAutoloadK();
   loadJourneyEdits();
   loadJourneyPins();
+  loadSoute();
   updateOvBadge();
   syncToggles();
 
