@@ -251,8 +251,10 @@ Reculer ne revend rien.
 rien** — c'est précisément le cas où elle sert. Le fret quitte la soute sans être vendu : ni perdu,
 ni encaissé, du capital immobilisé qui reste tracé.
 
-**Où écouler ?** Le panneau classe les destinations par **ce que tu encaisses vraiment** —
-`min(résidu, capacité) × prix`, net des frais, le coût venant des lots réellement consommés. Deux
+**Où écouler ?** Le panneau classe les destinations par **ce que ça rapporte, prix d'achat déduit** —
+`min(résidu, capacité) × prix`, net des frais, moins ce que les lots consommés ont coûté. Le chiffre
+descend **sous zéro** quand une destination te ferait vendre à perte : c'est une information, pas
+une erreur — libérer la soute vaut parfois une perte, mais tu dois le savoir. Deux
 chiffres par destination, jamais un seul, parce qu'UEX ne publie la capacité que de **15,6 %** des
 points de vente : ce qui est **garanti** (capacité publiée) et ce qui est **optimiste** (l'inconnu
 prend tout). La couleur dit sur quoi le chiffre repose.

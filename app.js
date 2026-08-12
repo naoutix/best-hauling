@@ -1301,11 +1301,11 @@ function ecoulerHTML() {
     const perte = d.aPerte ? ` · <span class="ec-perte" title="Le prix ici est inférieur à ce que tu as payé">sous le prix payé</span>` : "";
     return `<div class="ec-dest">
         <span class="ec-nom">${esc(d.terminal)}${sysBadge(d.system)}${d.cross ? ' <span class="cross">⚡</span>' : ""}${outpostTag(d.outpost)}</span>
-        <span class="ec-profit profit" title="Ce qui rentre : recette nette des frais. Le prix d'achat est déjà payé — il ne dépend plus d'aucune décision.">+${fmt(Math.round(d.encaisse))}</span>
+        <span class="ec-profit ${d.profit < 0 ? "perte" : "profit"}" title="Ce que ça rapporte, prix d'achat déduit${d.profit < 0 ? " — négatif : tu vendrais à perte ici" : ""}. Encaissement brut : ${fmt(Math.round(d.encaisse))} aUEC.">${d.profit >= 0 ? "+" : ""}${fmt(Math.round(d.profit))}</span>
         <span class="ec-detail">${esc(detail)} · ${cert}${perte}${d.reste > 0 ? ` · <b>${fmt(d.reste)}</b> SCU resteraient à bord` : " · <b>soute vidée</b>"}</span>
       </div>`;
   }).join("");
-  return `<div class="hold-ecouler"><div class="ec-head">Où écouler — classé par ce qui rentre (le prix d'achat est déjà payé)</div>${lignes}</div>`;
+  return `<div class="hold-ecouler"><div class="ec-head">Où écouler — classé par ce que ça rapporte, prix d'achat déduit</div>${lignes}</div>`;
 }
 
 function viderSoute() { SOUTE = []; saveSoute(); renderSoute(); refresh(); }
