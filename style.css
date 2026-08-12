@@ -342,6 +342,8 @@ input::placeholder { color: #4d5670; }
 .jleg-head { cursor: pointer; }
 .jleg-caret { color: var(--acc-2); font-size: 9px; margin-left: 4px; }
 .jleg-edited { color: var(--acc); font-size: 10px; margin-left: 4px; }
+/* Gel par correction de volume : même place que ✎, mais l'emoji porte sa propre couleur. */
+.jleg-pinned { font-size: 10px; margin-left: 4px; cursor: help; }
 .jleg.expanded { border-left-color: var(--acc-2); }
 .jman { margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 8px; display: flex; flex-direction: column; gap: 5px; }
 .jman-line { display: grid; grid-template-columns: auto auto 1fr auto auto; align-items: center; gap: 6px 10px; font-size: 11px; }

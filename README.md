@@ -190,6 +190,22 @@ Un manifeste que tu ajustes avant de l'engager part **tel quel** : la jambe port
 `✎` et cesse de suivre les prix UEX et les filtres, jusqu'à `↺ optimal`. Un manifeste que tu
 n'as pas touché n'est **pas** persisté — la jambe reste branchée sur le marché.
 
+### Ce qu'une correction fait au voyage
+
+Une jambe non ajustée suit le marché : corriger un **prix** mesure donc aussitôt ses effets sur les
+bénéfices du parcours, jambe par jambe.
+
+Corriger un **volume** (stock ou demande) est autre chose. Dire « il ne reste que 3 SCU ici », c'est
+le plus souvent constater qu'on vient soi-même de vider la station — le trajet, lui, est déjà
+décidé. Les jambes qui **touchent ce point** (le terminal corrigé est leur départ pour un stock,
+leur arrivée pour une demande, et leur chargement porte cette commodité) **figent donc leurs SCU**
+et prennent le marqueur `🔒`. Elles continuent de suivre les prix ; seules leurs quantités sont
+gelées. Tout ce qui est calculé **ensuite** — les autres jambes, les six vues, un arrêt ajouté plus
+tard — voit le stock tel que tu l'as corrigé. `↺ optimal` lève le gel.
+
+`🔒` et `✎` se distinguent : le premier vient d'une correction, le second de ta main. Toucher au
+chargement d'une jambe figée la fait passer de l'un à l'autre.
+
 ## Corrections locales
 
 Quand un relevé UEX est faux, tu peux corriger un **prix** ou un **stock/demande** en cliquant le chiffre
