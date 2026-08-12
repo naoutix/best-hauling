@@ -18,7 +18,7 @@ import {
   manifestJourneyState, manifestIntent, sameIntent, legsToPin,
   journeyMap, nameAngle, CARTE,
   loadHold, holdScu, freeCargo, holdByCommodity, sellFromHold, storeFromHold,
-  refuseHere, sellableAt, sellAllAt, offloadPlan,
+  refuseHere, sellableAt, sellAllAt, offloadPlan, stockApres,
   startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   encodeJourney, decodeJourney, removeJourneyStop, freeManifestLine, hydrateManifestLine,
@@ -1933,6 +1933,22 @@ test("sellAllAt : quitter une escale vend tout ce qu'elle reprend, et laisse le 
   const b = sellAllAt(h, MARCHE_SOUTE, 1, null);
   assert.deepEqual(b.hold.map((l) => l.name), ["Fer"]);
   assert.equal(b.ventes[0].price, 1800);
+});
+
+test("stockApres : charger vide le rayon d'autant, et jamais en dessous de zéro", () => {
+  assert.equal(stockApres(200, 59), 141);
+  assert.equal(stockApres(200, 200), 0);
+  // Avoir pris PLUS que le stock publié ne veut pas dire que la station nous en doit : le relevé
+  // était faux. Le seul fait certain est qu'il n'en reste plus.
+  assert.equal(stockApres(10, 2170), 0);
+  assert.equal(stockApres(0, 50), 0);
+});
+
+test("stockApres : ne déduit rien d'un stock qu'on ne connaît pas, et ignore les entrées absurdes", () => {
+  assert.equal(stockApres(null, 59), null);   // inconnu reste inconnu — surtout pas 0
+  assert.equal(stockApres(200, 0), 200);
+  assert.equal(stockApres(200, -5), 200);     // pas de recharge par une quantité négative
+  assert.equal(stockApres(200, 12.7), 188);   // les SCU sont entiers
 });
 
 test("refuseHere + sellAllAt : le résidu refusé TRAVERSE l'étape intact", () => {

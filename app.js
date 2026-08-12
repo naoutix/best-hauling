@@ -14,7 +14,7 @@ import {
   legFromRoute, legsFromLoop, legsFromChain, legFromManifest, stopSuggestions, bestLegBetween,
   manifestJourneyState, manifestIntent, sameIntent, legsToPin, journeyMap,
   loadHold, holdScu, freeCargo, holdByCommodity, sellFromHold, refuseHere, sellableAt, sellAllAt,
-  offloadPlan, storeFromHold,
+  offloadPlan, storeFromHold, stockApres,
   startJourney, startJourneyAt, journeyStations, journeyEnd,
   journeyConnects, addToJourney, setJourneyPosition, currentLeg, journeyMargin,
   removeJourneyStop as removeStopPure,
@@ -1159,16 +1159,53 @@ function saveSoute() { try { localStorage.setItem(HOLD_KEY, JSON.stringify(SOUTE
 
 // Charge le manifeste d'une jambe dans la soute, au prix que l'app venait d'afficher. Les lots
 // portent la clé de la jambe : c'est ce qui permet d'annuler un chargement sans deviner.
+// Le point d'achat d'une commodité à un terminal, avec son stock EFFECTIF (corrections comprises)
+// et la date UEX qui sert d'ancre à toute correction locale.
+function pointAchat(nomCommodite, nomTerminal) {
+  const c = MARKET && findCommodity(nomCommodite);
+  const idx = stationMap.size ? [...stationMap].find(([lab]) => parseStationLabel(lab).name === nomTerminal) : null;
+  if (!c || !idx) return null;
+  const b = c.buys.find((x) => x[0] === idx[1]);
+  if (!b) return null;
+  const e = effVals(c.name, nomTerminal, "buy", b[1], b[2], b[3]);
+  return { commodite: c.name, stock: e.vol, base: b[3] };
+}
+
 function chargerJambe(i) {
   const leg = JOURNEY && JOURNEY.legs[i];
   if (!leg || !MARKET) return;
   const k = legKey(leg, i);
-  if (SOUTE.some((l) => l.leg === k)) { // déjà chargée -> le bouton annule
+  if (SOUTE.some((l) => l.leg === k)) {
+    // Annulation : on rend à la station ce qu'on lui avait retiré. La valeur d'AVANT est portée par
+    // le lot, donc on restaure exactement — et non « stock + units », qui gonflerait un rayon qu'on
+    // avait vidé au-delà de ce qu'il annonçait.
+    for (const l of SOUTE.filter((x) => x.leg === k && x.avant != null)) {
+      const p = pointAchat(l.name, l.from);
+      if (p) setOverride(l.name, l.from, "buy", "vol", l.avant, p.base);
+    }
     SOUTE = SOUTE.filter((l) => l.leg !== k);
+    updateOvBadge();
   } else {
     const lignes = legEffectiveLines(leg, i, readFilters());
     if (!lignes.length) return;
-    SOUTE = SOUTE.concat(loadHold([], lignes, leg.from, nowSec()).map((l) => ({ ...l, leg: k })));
+    const lots = loadHold([], lignes, leg.from, nowSec()).map((l) => ({ ...l, leg: k }));
+    // Charger, c'est vider le rayon d'autant. On fige d'abord les jambes qui achetaient ce point
+    // (même règle qu'une correction de volume saisie à la main), puis on écrit la déduction.
+    const vides = [];
+    for (const l of lots) {
+      const p = pointAchat(l.name, l.from);
+      if (!p || p.stock == null) continue;
+      l.avant = p.stock;
+      pinLegsForVolume(l.name, l.from, "buy");
+      const reste = stockApres(p.stock, l.units);
+      setOverride(l.name, l.from, "buy", "vol", reste, p.base);
+      if (p.stock < l.units) vides.push(l.name); // le relevé annonçait moins que ce qu'on a pris
+    }
+    SOUTE = SOUTE.concat(lots);
+    updateOvBadge();
+    if (vides.length) {
+      showToast(`✓ Chargé — stock mis à 0 pour ${vides.join(", ")} : le relevé UEX en annonçait moins que ce que tu as pris`);
+    }
   }
   saveSoute();
   renderJourney();

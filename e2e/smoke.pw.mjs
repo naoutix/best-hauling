@@ -447,6 +447,55 @@ test("Soute : « chargé » prend le manifeste au prix affiché, et le geste s'a
   expect(JSON.parse(await page.evaluate(() => localStorage.getItem("best-hauling-hold")))).toEqual([]);
 });
 
+test("Soute : charger DÉDUIT le stock de la station, et annuler le rend", async ({ page }) => {
+  // Sans ça, la station continuait d'annoncer un stock qu'on venait d'emporter, et le manifeste
+  // suivant le reproposait. Les 494 points d'achat de l'instantané publient tous leur stock.
+  const stock = async (nom) => {
+    await page.click("#viewCorrections");
+    await page.fill("#station", "Megumi — Pyro");
+    const c = page.locator(`#correctionsStation .editv[data-c="${nom}"][data-s="buy"][data-f="vol"]`).first();
+    await expect(c).toBeVisible({ timeout: 8000 });
+    return Number(await c.getAttribute("data-v"));
+  };
+
+  await manifesteDepuis(page, "Megumi — Pyro");
+  const nom = await page.locator("#manifest .mline-del").first().getAttribute("data-name");
+  const pris = Number(await page.locator("#manifest .mline", { hasText: nom }).first().locator(".mqty-input").inputValue());
+  const avant = await stock(nom);
+  expect(pris).toBeGreaterThan(0);
+
+  await manifesteDepuis(page, "Megumi — Pyro");
+  await page.click("#manifestToJourney");
+  await page.locator("#journeyCard .jleg-load").first().click();
+  await expect(page.locator("#holdCard")).toBeVisible();
+
+  expect(await stock(nom)).toBe(Math.max(0, avant - pris)); // le rayon s'est vidé d'autant
+  await expect(page.locator("#viewCorrections")).toHaveText(/Corrections \(\d+\)/); // c'est une correction locale
+
+  // Annuler rend EXACTEMENT ce qui avait été retiré — le lot porte la valeur d'avant.
+  await page.click("#viewEnroute");
+  await page.locator("#journeyCard .jleg-load").first().click();
+  await expect(page.locator("#holdCard")).toBeHidden();
+  expect(await stock(nom)).toBe(avant);
+});
+
+test("Soute : avoir pris plus que le stock publié met le rayon à 0, jamais en négatif", async ({ page }) => {
+  await manifesteDepuis(page, "Megumi — Pyro");
+  const nom = await page.locator("#manifest .mline-del").first().getAttribute("data-name");
+  // On force la prise BIEN au-delà de ce que la station annonce : le relevé était faux.
+  await page.locator("#manifest .mline", { hasText: nom }).first().locator(".mqty-input").fill("99999");
+  await page.locator("#manifest .mline", { hasText: nom }).first().locator(".mqty-input").blur();
+  await page.click("#manifestToJourney");
+  await page.locator("#journeyCard .jleg-load").first().click();
+  await expect(page.locator("#holdCard")).toBeVisible();
+
+  await page.click("#viewCorrections");
+  await page.fill("#station", "Megumi — Pyro");
+  const c = page.locator(`#correctionsStation .editv[data-c="${nom}"][data-s="buy"][data-f="vol"]`).first();
+  await expect(c).toBeVisible({ timeout: 8000 });
+  expect(Number(await c.getAttribute("data-v"))).toBe(0); // et surtout pas une valeur négative
+});
+
 test("Soute : elle survit au rechargement, et effacer le VOYAGE ne la vide pas", async ({ page }) => {
   await jambeChargeable(page);
   await page.locator("#journeyCard .jleg-load").click();
